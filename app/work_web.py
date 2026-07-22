@@ -379,11 +379,20 @@ def work_page() -> str:
     .shipment-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .shipment-fields label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
     .shipment-fields input { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
+    .progress-track { height: 10px; margin: 0 0 14px; overflow: hidden; border-radius: 5px; background: #dde5e8; }
+    .progress-fill { width: 0; height: 100%; background: var(--accent); transition: width .2s ease; }
+    .problem-box { display: none; padding: 13px 0 0; border-top: 1px solid var(--line); }
+    .problem-box.visible { display: block; }
+    .problem-head { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .problem-list { display: grid; gap: 1px; background: var(--line); }
+    .problem-row { padding: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; background: var(--surface-soft); }
+    .problem-status { color: var(--danger); font-size: 12px; font-weight: 850; }
+    .queue-divider { padding: 9px 22px; border-top: 1px solid var(--line); background: #eaf0f2; color: #46565e; font-size: 11px; font-weight: 900; text-transform: uppercase; }
     @media (max-width: 900px) {
       .work-header { grid-template-columns: 1fr auto; gap: 10px; padding: 9px 12px; }
       .context { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; width: 100%; }
       .work-layout { padding: 12px; grid-template-columns: 1fr; }
-      .operation-nav { position: static; grid-template-columns: repeat(4, 1fr); }
+      .operation-nav { position: static; grid-template-columns: repeat(5, 1fr); }
       .nav-title, .nav-separator, .quiet-link { display: none; }
     }
     @media (max-width: 620px) {
@@ -410,7 +419,10 @@ def work_page() -> str:
       .facts { grid-template-columns: 1fr 1fr; }
       .shipment-fields { grid-template-columns: 1fr; }
       .action-row > * { width: 100%; }
+      .problem-row { grid-template-columns: 1fr; }
+      .problem-row .text-button { width: 100%; }
       .queue-head, .queue-row { padding-inline: 13px; }
+      .queue-divider { padding-inline: 13px; }
     }
   </style>
 </head>
@@ -453,6 +465,11 @@ def work_page() -> str:
         <strong>Отгрузка</strong>
         <span id="shipmentCount" class="queue-count">0</span>
       </button>
+      <button class="operation-button" type="button" data-operation="inventory">
+        <span class="operation-number">5</span>
+        <strong>Инвентаризация</strong>
+        <span id="inventoryCount" class="queue-count">0</span>
+      </button>
       <div class="nav-separator"></div>
       <a class="quiet-link" href="/cards">Поиск объекта</a>
       <a class="quiet-link" href="/tech">Все функции</a>
@@ -486,6 +503,11 @@ def work_page() -> str:
             </div>
           </div>
           <button id="createShipmentBtn" class="primary-action" type="button">Создать заявку на отгрузку</button>
+        </div>
+
+        <div id="inventoryStart" class="shipment-create">
+          <strong id="inventoryStartTitle">Начать обход склада</strong>
+          <button id="startInventoryBtn" class="primary-action" type="button">Начать инвентаризацию</button>
         </div>
 
         <div id="scanArea" class="scan-area">
@@ -526,6 +548,33 @@ def work_page() -> str:
           </div>
         </div>
 
+        <div id="inventoryObject" class="current-object">
+          <div class="object-head">
+            <div>
+              <div class="object-kicker">Текущая инвентаризация</div>
+              <div id="inventoryCode" class="object-code">-</div>
+            </div>
+            <button id="clearInventoryBtn" class="text-button" type="button">Сменить обход</button>
+          </div>
+          <div class="facts">
+            <div class="fact"><b>Статус</b><span id="inventoryStatus">-</span></div>
+            <div class="fact"><b>Склад</b><span id="inventoryWarehouse">-</span></div>
+            <div class="fact"><b>Проверено</b><span id="inventoryChecked">0 / 0</span></div>
+            <div class="fact"><b>Расхождений</b><span id="inventoryProblemsCount">0</span></div>
+          </div>
+          <div class="progress-track" aria-label="Прогресс инвентаризации">
+            <div id="inventoryProgressFill" class="progress-fill"></div>
+          </div>
+        </div>
+
+        <div id="inventoryProblems" class="problem-box">
+          <div class="problem-head">
+            <h2>Расхождения</h2>
+            <span id="inventoryProblemBadge" class="queue-count">0</span>
+          </div>
+          <div id="inventoryProblemList" class="problem-list"></div>
+        </div>
+
         <div id="completion" class="completion">
           <strong id="completionTitle">Операция завершена</strong>
           <div id="completionText"></div>
@@ -540,6 +589,9 @@ def work_page() -> str:
           <button id="toExpeditionBtn" class="primary-action" type="button" hidden>Передать в экспедицию</button>
           <button id="closeShipmentBtn" class="primary-action" type="button" hidden>Завершить отгрузку</button>
           <button id="newShipmentBtn" class="primary-action" type="button" hidden>Следующая отгрузка</button>
+          <button id="emptyLocationBtn" class="secondary-action" type="button" hidden>Пусто</button>
+          <button id="completeInventoryBtn" class="primary-action" type="button" hidden>Завершить инвентаризацию</button>
+          <button id="newInventoryBtn" class="primary-action" type="button" hidden>Следующая инвентаризация</button>
         </div>
       </div>
 
@@ -560,7 +612,7 @@ def work_page() -> str:
     const $ = (id) => document.getElementById(id);
     const requestedOperation = new URLSearchParams(window.location.search).get("operation");
     const state = {
-      operation: ["place", "move", "ship"].includes(requestedOperation) ? requestedOperation : "build",
+      operation: ["place", "move", "ship", "inventory"].includes(requestedOperation) ? requestedOperation : "build",
       activePalletUid: localStorage.getItem("wms.work.activePalletUid") || "",
       pallet: null,
       boxes: [],
@@ -574,6 +626,11 @@ def work_page() -> str:
       activeShipmentUid: localStorage.getItem("wms.work.activeShipmentUid") || "",
       shipment: null,
       shipmentPallets: [],
+      inventories: [],
+      activeInventoryUid: localStorage.getItem("wms.work.activeInventoryUid") || "",
+      inventory: null,
+      inventoryProgress: null,
+      inventoryLines: [],
       warehouseCode: localStorage.getItem("wms.work.warehouse") || "",
       completedPlacement: null,
       completedMove: null,
@@ -605,6 +662,19 @@ def work_page() -> str:
       reserved: "В резерве",
       expedition: "Ожидает погрузки",
       loaded: "Погружена",
+    };
+
+    const inventoryStatusLabels = {
+      open: "Открыта",
+      completed: "Завершена",
+    };
+
+    const inventoryLineStatusLabels = {
+      expected: "Ожидается",
+      scanned: "Совпадение",
+      missing: "Палета отсутствует",
+      extra: "Лишняя палета",
+      wrong_location: "Чужая ячейка",
     };
 
     function escapeHtml(value) {
@@ -650,6 +720,16 @@ def work_page() -> str:
         ["pallet does not belong to this shipment", "Палета не входит в выбранную заявку"],
         ["pallet already loaded", "Палета уже погружена"],
         ["all shipment pallets must be loaded before close", "Сначала погрузите все палеты заявки"],
+        ["inventory not found", "Инвентаризация не найдена"],
+        ["warehouse already has open inventory", "На складе уже идёт инвентаризация"],
+        ["inventory is already completed", "Инвентаризация уже завершена"],
+        ["scan location first", "Сначала отсканируйте ячейку"],
+        ["location belongs to another warehouse", "Ячейка относится к другому складу"],
+        ["only storage locations are included", "В обход входят только ячейки хранения"],
+        ["pallet already scanned in this inventory", "Палета уже проверена в этой инвентаризации"],
+        ["inventory has unchecked locations", "Сначала проверьте все ячейки склада"],
+        ["inventory discrepancy is already resolved", "Расхождение уже обработано"],
+        ["inventory discrepancy line not found", "Расхождение не найдено"],
       ];
       const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
       return found ? found[1] : text;
@@ -707,7 +787,9 @@ def work_page() -> str:
     function storageLocations() {
       const warehouse = selectedWarehouse();
       if (!warehouse) return [];
-      return state.locations.filter((item) => item.warehouse_id === warehouse.id && item.kind === "storage");
+      return state.locations.filter(
+        (item) => item.warehouse_id === warehouse.id && item.kind === "storage" && item.is_active,
+      );
     }
 
     function palletBelongsToSelectedWarehouse(pallet) {
@@ -727,6 +809,12 @@ def work_page() -> str:
       return warehouseCodeForPallet(firstPallet);
     }
 
+    function openInventoriesForSelectedWarehouse() {
+      return state.inventories.filter(
+        (inventory) => inventory.status === "open" && inventory.warehouse_code === state.warehouseCode,
+      );
+    }
+
     function persistActivePallet(uid) {
       state.activePalletUid = uid || "";
       if (state.activePalletUid) localStorage.setItem("wms.work.activePalletUid", state.activePalletUid);
@@ -737,6 +825,12 @@ def work_page() -> str:
       state.activeShipmentUid = uid || "";
       if (state.activeShipmentUid) localStorage.setItem("wms.work.activeShipmentUid", state.activeShipmentUid);
       else localStorage.removeItem("wms.work.activeShipmentUid");
+    }
+
+    function persistActiveInventory(uid) {
+      state.activeInventoryUid = uid || "";
+      if (state.activeInventoryUid) localStorage.setItem("wms.work.activeInventoryUid", state.activeInventoryUid);
+      else localStorage.removeItem("wms.work.activeInventoryUid");
     }
 
     function clearCompletion() {
@@ -759,6 +853,16 @@ def work_page() -> str:
       persistActiveShipment("");
       state.shipment = null;
       state.shipmentPallets = [];
+      clearCompletion();
+      render();
+      setNotice(message, "warn");
+    }
+
+    async function clearActiveInventory(message = "Выбор инвентаризации сброшен") {
+      persistActiveInventory("");
+      state.inventory = null;
+      state.inventoryProgress = null;
+      state.inventoryLines = [];
       clearCompletion();
       render();
       setNotice(message, "warn");
@@ -806,21 +910,55 @@ def work_page() -> str:
       }
     }
 
+    async function loadActiveInventory() {
+      if (!state.activeInventoryUid) {
+        state.inventory = null;
+        state.inventoryProgress = null;
+        state.inventoryLines = [];
+        return;
+      }
+      try {
+        const [inventory, progress, lines] = await Promise.all([
+          api(`/api/inventories/${encodeURIComponent(state.activeInventoryUid)}`),
+          api(`/api/inventories/${encodeURIComponent(state.activeInventoryUid)}/progress`),
+          api(`/api/inventories/${encodeURIComponent(state.activeInventoryUid)}/lines`),
+        ]);
+        state.inventory = inventory;
+        state.inventoryProgress = progress;
+        state.inventoryLines = lines;
+      } catch (error) {
+        persistActiveInventory("");
+        state.inventory = null;
+        state.inventoryProgress = null;
+        state.inventoryLines = [];
+        setNotice(error.message, "err");
+      }
+    }
+
     async function refreshQueues() {
-      const [rows, availableRows, shipments] = await Promise.all([
+      const [rows, availableRows, shipments, inventories] = await Promise.all([
         api("/api/pallets?status=open&status=waiting_placement&limit=200"),
         api(`/api/pallets?status=available&warehouse_code=${encodeURIComponent(state.warehouseCode)}&limit=200`),
         api("/api/shipments?status=draft&status=reserved&status=expedition&status=loading&limit=100"),
+        api("/api/inventories?limit=100"),
       ]);
       state.openPallets = rows.filter((item) => item.status === "open");
       state.waitingPallets = rows.filter((item) => item.status === "waiting_placement");
       state.availablePallets = availableRows;
       state.shipments = shipments;
+      state.inventories = inventories;
       $("openCount").textContent = state.openPallets.length;
       $("waitingCount").textContent = state.waitingPallets.length;
       $("availableCount").textContent = state.availablePallets.length;
       $("shipmentCount").textContent = state.shipments.length;
+      $("inventoryCount").textContent = openInventoriesForSelectedWarehouse().length;
       renderQueue();
+    }
+
+    async function refreshWorkplace() {
+      await Promise.all([loadActivePallet(), loadActiveShipment(), loadActiveInventory()]);
+      await refreshQueues();
+      render();
     }
 
     function renderCurrentPallet() {
@@ -845,7 +983,54 @@ def work_page() -> str:
       $("shipmentProgress").textContent = `${state.shipment.loaded_count} / ${state.shipment.pallet_count}`;
     }
 
+    function renderCurrentInventory() {
+      const visible = state.operation === "inventory" && Boolean(state.inventory);
+      $("inventoryObject").classList.toggle("visible", visible);
+      if (!visible) return;
+      const progress = state.inventoryProgress;
+      $("inventoryCode").textContent = state.inventory.inventory_uid;
+      $("inventoryStatus").textContent = inventoryStatusLabels[state.inventory.status] || state.inventory.status;
+      $("inventoryWarehouse").textContent = state.inventory.warehouse_code || "-";
+      $("inventoryChecked").textContent = progress ? `${progress.checked_locations} / ${progress.total_locations}` : "0 / 0";
+      $("inventoryProblemsCount").textContent = progress?.problem_lines.length || 0;
+      $("inventoryProgressFill").style.width = `${progress?.progress_percent || 0}%`;
+    }
+
+    function inventoryResolution(status) {
+      if (status === "missing") return { endpoint: "confirm-missing", label: "Подтвердить недостачу" };
+      if (status === "extra") return { endpoint: "place-found", label: "Разместить по факту" };
+      if (status === "wrong_location") return { endpoint: "move-to-actual", label: "Переместить по факту" };
+      return null;
+    }
+
+    function renderInventoryProblems() {
+      const problems = state.operation === "inventory" ? state.inventoryProgress?.problem_lines || [] : [];
+      $("inventoryProblems").classList.toggle("visible", problems.length > 0);
+      $("inventoryProblemBadge").textContent = problems.length;
+      $("inventoryProblemList").innerHTML = problems.map((line) => {
+        const action = inventoryResolution(line.status);
+        return `
+          <div class="problem-row">
+            <div>
+              <div class="queue-code">${escapeHtml(line.pallet.pallet_uid)}</div>
+              <div class="problem-status">${escapeHtml(inventoryLineStatusLabels[line.status] || line.status)}</div>
+              <div class="queue-meta">Ожидалась: ${escapeHtml(line.expected_location_code || "-")} · Факт: ${escapeHtml(line.actual_location_code || "-")}</div>
+            </div>
+            ${action ? `<button class="text-button" type="button" data-resolve-inventory="${escapeHtml(line.pallet.pallet_uid)}" data-inventory-status="${escapeHtml(line.status)}">${escapeHtml(action.label)}</button>` : ""}
+          </div>`;
+      }).join("");
+      document.querySelectorAll("[data-resolve-inventory]").forEach((button) => {
+        button.addEventListener("click", () => resolveInventoryProblem(
+          button.dataset.resolveInventory,
+          button.dataset.inventoryStatus,
+        ).catch(showError));
+      });
+    }
+
     function renderQueue() {
+      if (state.operation === "inventory") {
+        return renderInventoryQueue();
+      }
       if (state.operation === "ship") {
         return renderShipmentQueue();
       }
@@ -883,6 +1068,56 @@ def work_page() -> str:
       `).join("") || `<div class="empty-row">${queueConfig.empty}</div>`;
       document.querySelectorAll("[data-pallet]").forEach((button) => {
         button.addEventListener("click", () => selectPallet(button.dataset.pallet).catch(showError));
+      });
+    }
+
+    function renderInventoryQueue() {
+      if (!state.inventory || state.inventory.status === "completed") {
+        const openRows = openInventoriesForSelectedWarehouse();
+        $("queueTitle").textContent = `Инвентаризации склада ${state.warehouseCode}`;
+        $("queueSubtitle").textContent = "Продолжите открытый обход или начните новый";
+        $("queueList").innerHTML = openRows.map((inventory) => `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(inventory.inventory_uid)}</div>
+              <div class="queue-meta">Проверено палет: ${inventory.scanned_count} · Расхождений: ${inventory.missing_count + inventory.extra_count + inventory.wrong_location_count}</div>
+            </div>
+            <button class="text-button" type="button" data-inventory="${escapeHtml(inventory.inventory_uid)}">Продолжить</button>
+          </div>
+        `).join("") || '<div class="empty-row">Открытых инвентаризаций нет</div>';
+        document.querySelectorAll("[data-inventory]").forEach((button) => {
+          button.addEventListener("click", () => selectInventory(button.dataset.inventory).catch(showError));
+        });
+        return;
+      }
+
+      const progress = state.inventoryProgress;
+      const locations = progress?.unchecked_locations_list || [];
+      const pallets = progress?.unchecked_pallets || [];
+      $("queueTitle").textContent = "Осталось проверить";
+      $("queueSubtitle").textContent = `${locations.length} яч. · ${pallets.length} пал.`;
+      const locationRows = locations.map((location) => `
+        <div class="queue-row">
+          <div>
+            <div class="queue-code">${escapeHtml(location.location_code)}</div>
+            <div class="queue-meta">Ожидается палет: ${location.expected_count}</div>
+          </div>
+          <button class="text-button" type="button" data-inventory-location="${escapeHtml(location.location_code)}">Выбрать</button>
+        </div>
+      `).join("") || '<div class="empty-row">Все ячейки проверены</div>';
+      const palletRows = pallets.length
+        ? `<div class="queue-divider">Непроверенные палеты</div>${pallets.map((pallet) => `
+            <div class="queue-row">
+              <div>
+                <div class="queue-code">${escapeHtml(pallet.pallet_uid)}</div>
+                <div class="queue-meta">${escapeHtml(pallet.current_location_code || "-")} · ${pallet.box_count} кор.</div>
+              </div>
+            </div>
+          `).join("")}`
+        : "";
+      $("queueList").innerHTML = locationRows + palletRows;
+      document.querySelectorAll("[data-inventory-location]").forEach((button) => {
+        button.addEventListener("click", () => scanInventoryLocation(button.dataset.inventoryLocation).catch(showError));
       });
     }
 
@@ -1158,12 +1393,94 @@ def work_page() -> str:
       );
     }
 
+    function renderInventory() {
+      setStepCount(4);
+      $("operationTitle").textContent = "Инвентаризация";
+      $("operationDescription").textContent = `Проверьте все ячейки хранения склада ${state.warehouseCode || "-"}.`;
+      $("stepOneLabel").textContent = "Начало";
+      $("stepTwoLabel").textContent = "Ячейка";
+      $("stepThreeLabel").textContent = "Палета";
+      $("stepFourLabel").textContent = "Итог";
+      $("newPalletBtn").hidden = true;
+      $("closePalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("nextPalletBtn").hidden = true;
+      $("toExpeditionBtn").hidden = true;
+      $("closeShipmentBtn").hidden = true;
+      $("newShipmentBtn").hidden = true;
+      $("emptyLocationBtn").hidden = true;
+      $("completeInventoryBtn").hidden = true;
+      $("newInventoryBtn").hidden = true;
+      $("inventoryStart").classList.remove("visible");
+      $("scanArea").hidden = false;
+      $("workScan").disabled = false;
+      clearCompletion();
+
+      if (!state.inventory) {
+        const hasOpenInventory = openInventoriesForSelectedWarehouse().length > 0;
+        setSteps(1);
+        $("scanArea").hidden = true;
+        $("inventoryStart").classList.add("visible");
+        $("inventoryStartTitle").textContent = hasOpenInventory
+          ? "На складе уже есть открытая инвентаризация"
+          : `Склад ${state.warehouseCode} готов к обходу`;
+        $("startInventoryBtn").disabled = hasOpenInventory;
+        $("startInventoryBtn").textContent = hasOpenInventory
+          ? "Продолжите обход из списка ниже"
+          : "Начать инвентаризацию";
+        return;
+      }
+
+      if (state.inventory.status === "completed") {
+        setSteps(4, [1, 2, 3, 4]);
+        $("scanArea").hidden = true;
+        $("newInventoryBtn").hidden = false;
+        showCompletion(
+          "Инвентаризация завершена",
+          `Проверено ${state.inventoryProgress?.checked_locations || 0} яч. Расхождения сохранены.`,
+          state.inventory.inventory_uid,
+        );
+        return;
+      }
+
+      if (state.inventory.current_location_code) {
+        setSteps(3, [1, 2]);
+        $("nextAction").textContent = `Ячейка ${state.inventory.current_location_code}: сканируйте палету`;
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = "Если ячейка пустая, нажмите «Пусто»";
+        $("emptyLocationBtn").hidden = false;
+        return;
+      }
+
+      if ((state.inventoryProgress?.unchecked_locations || 0) > 0) {
+        setSteps(2, [1]);
+        $("nextAction").textContent = "Отсканируйте следующую ячейку";
+        $("workScan").placeholder = "Код ячейки";
+        $("scanHint").textContent = `Осталось ${state.inventoryProgress.unchecked_locations} яч.`;
+        return;
+      }
+
+      setSteps(4, [1, 2, 3]);
+      $("scanArea").hidden = true;
+      $("completeInventoryBtn").hidden = false;
+      $("completeInventoryBtn").textContent = state.inventoryProgress?.problem_lines.length
+        ? "Завершить с расхождениями"
+        : "Завершить инвентаризацию";
+    }
+
     function render() {
       if (state.operation !== "ship") {
         $("shipmentCreate").classList.remove("visible");
         $("toExpeditionBtn").hidden = true;
         $("closeShipmentBtn").hidden = true;
         $("newShipmentBtn").hidden = true;
+      }
+      if (state.operation !== "inventory") {
+        $("inventoryStart").classList.remove("visible");
+        $("emptyLocationBtn").hidden = true;
+        $("completeInventoryBtn").hidden = true;
+        $("newInventoryBtn").hidden = true;
+        $("inventoryProblems").classList.remove("visible");
       }
       document.querySelectorAll("[data-operation]").forEach((button) => {
         button.classList.toggle("active", button.dataset.operation === state.operation);
@@ -1175,11 +1492,14 @@ def work_page() -> str:
       }
       renderCurrentPallet();
       renderCurrentShipment();
+      renderCurrentInventory();
+      renderInventoryProblems();
       renderQueue();
       if (state.operation === "build") renderBuild();
       else if (state.operation === "place") renderPlace();
       else if (state.operation === "move") renderMove();
-      else renderShipment();
+      else if (state.operation === "ship") renderShipment();
+      else renderInventory();
     }
 
     async function selectPallet(uid) {
@@ -1289,6 +1609,120 @@ def work_page() -> str:
       setNotice("Отгрузка завершена. Складские ячейки освобождены.", "ok");
     }
 
+    async function selectInventory(uid) {
+      clearCompletion();
+      persistActiveInventory(uid);
+      await loadActiveInventory();
+      if (!state.inventory) return render();
+      if (state.inventory.warehouse_code && state.inventory.warehouse_code !== state.warehouseCode) {
+        state.warehouseCode = state.inventory.warehouse_code;
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+      }
+      await refreshQueues();
+      render();
+      setNotice(`Выбрана инвентаризация ${uid}`, "ok");
+      focusScan();
+    }
+
+    async function startInventory() {
+      const inventory = await post("/api/inventories", {
+        warehouse_code: state.warehouseCode,
+        actor: actor(),
+      });
+      persistActiveInventory(inventory.inventory_uid);
+      await loadActiveInventory();
+      await refreshQueues();
+      render();
+      setNotice(`Начат обход склада ${state.warehouseCode}. Сканируйте ячейку.`, "ok");
+      focusScan();
+    }
+
+    async function scanInventoryLocation(locationCodeValue) {
+      if (!state.inventory || state.inventory.status !== "open") {
+        throw new Error("Сначала начните или выберите инвентаризацию");
+      }
+      if (state.inventory.current_location_code) {
+        throw new Error("Сначала отсканируйте палету или нажмите «Пусто»");
+      }
+      const location = storageLocations().find((item) => item.code === locationCodeValue);
+      if (!location) throw new Error(`Ячейка ${locationCodeValue} не относится к складу ${state.warehouseCode}`);
+      const unchecked = state.inventoryProgress?.unchecked_locations_list.some(
+        (item) => item.location_code === locationCodeValue,
+      );
+      if (!unchecked) throw new Error("Эта ячейка уже проверена");
+      await post(`/api/inventories/${encodeURIComponent(state.inventory.inventory_uid)}/scan-location`, {
+        location_code: locationCodeValue,
+        actor: actor(),
+      });
+      await loadActiveInventory();
+      render();
+      setNotice(`Ячейка ${locationCodeValue}: сканируйте палету или нажмите «Пусто».`, "ok");
+      focusScan();
+    }
+
+    async function scanInventoryPallet(palletUid) {
+      if (!state.inventory?.current_location_code) throw new Error("Сначала отсканируйте ячейку");
+      const locationCodeValue = state.inventory.current_location_code;
+      await post(`/api/inventories/${encodeURIComponent(state.inventory.inventory_uid)}/scan`, {
+        pallet_uid: palletUid,
+        actor: actor(),
+      });
+      await loadActiveInventory();
+      const line = state.inventoryLines.find((item) => item.pallet.pallet_uid === palletUid);
+      render();
+      if (line?.status === "scanned") {
+        setNotice(`Совпадение: ${palletUid} находится в ${locationCodeValue}.`, "ok");
+      } else {
+        setNotice(`${inventoryLineStatusLabels[line?.status] || "Зафиксировано расхождение"}: ${palletUid}.`, "warn");
+      }
+      focusScan();
+    }
+
+    async function confirmEmptyInventoryLocation() {
+      if (!state.inventory?.current_location_code) throw new Error("Сначала отсканируйте ячейку");
+      const locationCodeValue = state.inventory.current_location_code;
+      const locationProgress = state.inventoryProgress?.unchecked_locations_list.find(
+        (item) => item.location_code === locationCodeValue,
+      );
+      await post(`/api/inventories/${encodeURIComponent(state.inventory.inventory_uid)}/confirm-location`, {
+        location_code: locationCodeValue,
+        actor: actor(),
+      });
+      await loadActiveInventory();
+      render();
+      if ((locationProgress?.expected_count || 0) > 0) {
+        setNotice(`Ячейка ${locationCodeValue} закрыта. Зафиксировано отсутствие ожидаемой палеты.`, "warn");
+      } else {
+        setNotice(`Пустая ячейка подтверждена: ${locationCodeValue}.`, "ok");
+      }
+      focusScan();
+    }
+
+    async function resolveInventoryProblem(palletUid, status) {
+      if (!state.inventory) throw new Error("Сначала выберите инвентаризацию");
+      const action = inventoryResolution(status);
+      if (!action) throw new Error("Для расхождения нет доступного действия");
+      await post(
+        `/api/inventories/${encodeURIComponent(state.inventory.inventory_uid)}/discrepancies/${encodeURIComponent(palletUid)}/${action.endpoint}`,
+        { actor: actor(), reason: "Обработано в рабочем месте WMS" },
+      );
+      await loadActiveInventory();
+      await refreshQueues();
+      render();
+      setNotice(`${action.label}: ${palletUid}`, "ok");
+      focusScan();
+    }
+
+    async function completeActiveInventory() {
+      if (!state.inventory) throw new Error("Сначала выберите инвентаризацию");
+      await post(`/api/inventories/${encodeURIComponent(state.inventory.inventory_uid)}/complete`, { actor: actor() });
+      await loadActiveInventory();
+      await refreshQueues();
+      render();
+      setNotice("Инвентаризация завершена. Расхождения сохранены.", "ok");
+    }
+
     async function createPallet() {
       const pallet = await post("/api/pallets", { actor: actor() });
       persistActivePallet(pallet.pallet_uid);
@@ -1378,10 +1812,22 @@ def work_page() -> str:
     }
 
     async function handleScan(rawValue) {
-      const value = rawValue.trim();
+      const value = rawValue.trim().toUpperCase();
       if (!value) return;
       const isPallet = value.startsWith(state.prefixes.pallet);
       const isBox = value.startsWith(state.prefixes.box);
+
+      if (state.operation === "inventory") {
+        if (!state.inventory) throw new Error("Сначала начните или выберите инвентаризацию");
+        if (state.inventory.status !== "open") throw new Error("Инвентаризация уже завершена");
+        if (state.inventory.current_location_code) {
+          if (!isPallet) throw new Error("Сейчас ожидается код палеты или кнопка «Пусто»");
+          return scanInventoryPallet(value);
+        }
+        if (isPallet) throw new Error("Сначала отсканируйте ячейку");
+        if (isBox) throw new Error("Сейчас ожидается код ячейки");
+        return scanInventoryLocation(value);
+      }
 
       if (state.operation === "ship") {
         if (!state.shipment) throw new Error("Сначала создайте или выберите заявку");
@@ -1415,6 +1861,23 @@ def work_page() -> str:
       focusScan();
     }
 
+    function defaultOperationNotice() {
+      if (state.operation === "build") return "Выберите палету или откройте новую";
+      if (state.operation === "place") return "Отсканируйте палету, ожидающую размещения";
+      if (state.operation === "move") return "Отсканируйте размещённую палету";
+      if (state.operation === "ship") {
+        if (!state.shipment) return "Создайте новую заявку или выберите отгрузку в работе";
+        return state.shipment.status === "completed"
+          ? "Отгрузка завершена. Складские ячейки освобождены"
+          : "Продолжайте текущий этап отгрузки";
+      }
+      if (!state.inventory) return "Начните новую инвентаризацию или продолжите открытый обход";
+      if (state.inventory.status === "completed") return "Инвентаризация завершена";
+      if (state.inventory.current_location_code) return "Сканируйте палету или нажмите «Пусто»";
+      if ((state.inventoryProgress?.unchecked_locations || 0) === 0) return "Все ячейки проверены. Завершите инвентаризацию";
+      return "Отсканируйте следующую ячейку";
+    }
+
     async function switchOperation(operation, keepPallet = false) {
       state.operation = operation;
       clearCompletion();
@@ -1423,6 +1886,12 @@ def work_page() -> str:
         state.pallet = null;
         state.boxes = [];
         await loadActiveShipment();
+      }
+      if (operation === "inventory") {
+        persistActivePallet("");
+        state.pallet = null;
+        state.boxes = [];
+        await loadActiveInventory();
       }
       if (!keepPallet) {
         const compatible = state.pallet && (
@@ -1440,19 +1909,7 @@ def work_page() -> str:
       }
       history.replaceState(null, "", `/work?operation=${operation}`);
       render();
-      setNotice(
-        operation === "build"
-          ? "Выберите палету или откройте новую"
-          : operation === "place"
-            ? "Отсканируйте палету, ожидающую размещения"
-            : operation === "move"
-              ? "Отсканируйте размещённую палету"
-              : state.shipment
-                ? state.shipment.status === "completed"
-                  ? "Отгрузка завершена. Складские ячейки освобождены"
-                  : "Продолжайте текущий этап отгрузки"
-                : "Создайте новую заявку или выберите отгрузку в работе",
-      );
+      setNotice(defaultOperationNotice());
       focusScan();
     }
 
@@ -1480,10 +1937,19 @@ def work_page() -> str:
       $("workWarehouse").value = state.warehouseCode;
       $("workActor").value = localStorage.getItem("wms.work.actor") || "Кладовщик";
 
-      await Promise.all([loadActivePallet(), loadActiveShipment()]);
+      await Promise.all([loadActivePallet(), loadActiveShipment(), loadActiveInventory()]);
       const shipmentWarehouseCode = activeShipmentWarehouseCode();
       if (state.operation === "ship" && shipmentWarehouseCode && shipmentWarehouseCode !== state.warehouseCode) {
         state.warehouseCode = shipmentWarehouseCode;
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+      }
+      if (
+        state.operation === "inventory"
+        && state.inventory?.warehouse_code
+        && state.inventory.warehouse_code !== state.warehouseCode
+      ) {
+        state.warehouseCode = state.inventory.warehouse_code;
         localStorage.setItem("wms.work.warehouse", state.warehouseCode);
         $("workWarehouse").value = state.warehouseCode;
       }
@@ -1501,19 +1967,7 @@ def work_page() -> str:
       }
       await refreshQueues();
       render();
-      setNotice(
-        state.operation === "build"
-          ? "Выберите палету или откройте новую"
-          : state.operation === "place"
-            ? "Отсканируйте палету, ожидающую размещения"
-            : state.operation === "move"
-              ? "Отсканируйте размещённую палету"
-              : state.shipment
-                ? state.shipment.status === "completed"
-                  ? "Отгрузка завершена. Складские ячейки освобождены"
-                  : "Продолжайте текущий этап отгрузки"
-                : "Создайте новую заявку или выберите отгрузку в работе",
-      );
+      setNotice(defaultOperationNotice());
       focusScan();
     }
 
@@ -1538,6 +1992,10 @@ def work_page() -> str:
         persistActiveShipment("");
         state.shipment = null;
         state.shipmentPallets = [];
+        persistActiveInventory("");
+        state.inventory = null;
+        state.inventoryProgress = null;
+        state.inventoryLines = [];
         clearCompletion();
         await refreshQueues();
         render();
@@ -1549,7 +2007,7 @@ def work_page() -> str:
     $("newPalletBtn").addEventListener("click", () => createPallet().catch(showError));
     $("closePalletBtn").addEventListener("click", () => closePallet().catch(showError));
     $("clearPalletBtn").addEventListener("click", () => clearActivePallet().catch(showError));
-    $("refreshQueueBtn").addEventListener("click", () => refreshQueues().then(render).then(focusScan).catch(showError));
+    $("refreshQueueBtn").addEventListener("click", () => refreshWorkplace().then(focusScan).catch(showError));
     $("toPlacementBtn").addEventListener("click", () => switchOperation("place", true).catch(showError));
     $("nextPalletBtn").addEventListener("click", () => {
       clearCompletion();
@@ -1562,6 +2020,11 @@ def work_page() -> str:
     $("toExpeditionBtn").addEventListener("click", () => moveShipmentToExpedition().catch(showError));
     $("closeShipmentBtn").addEventListener("click", () => closeActiveShipment().catch(showError));
     $("newShipmentBtn").addEventListener("click", () => clearActiveShipment("Создайте следующую заявку или выберите отгрузку в работе").catch(showError));
+    $("startInventoryBtn").addEventListener("click", () => startInventory().catch(showError));
+    $("clearInventoryBtn").addEventListener("click", () => clearActiveInventory().catch(showError));
+    $("emptyLocationBtn").addEventListener("click", () => confirmEmptyInventoryLocation().catch(showError));
+    $("completeInventoryBtn").addEventListener("click", () => completeActiveInventory().catch(showError));
+    $("newInventoryBtn").addEventListener("click", () => clearActiveInventory("Начните следующую инвентаризацию или выберите открытый обход").catch(showError));
 
     initialize().catch(showError);
   </script>
