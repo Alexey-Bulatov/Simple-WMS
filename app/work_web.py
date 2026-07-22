@@ -370,7 +370,7 @@ def work_page() -> str:
       .work-header { grid-template-columns: 1fr auto; gap: 10px; padding: 9px 12px; }
       .context { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; width: 100%; }
       .work-layout { padding: 12px; grid-template-columns: 1fr; }
-      .operation-nav { position: static; grid-template-columns: 1fr 1fr; }
+      .operation-nav { position: static; grid-template-columns: repeat(3, 1fr); }
       .nav-title, .nav-separator, .quiet-link { display: none; }
     }
     @media (max-width: 620px) {
@@ -380,7 +380,8 @@ def work_page() -> str:
       .tech-link::after { content: "..."; position: absolute; color: #d9e4e8; font-size: 18px; }
       .context { grid-template-columns: 1fr; }
       .work-layout { padding: 8px; gap: 8px; }
-      .operation-button { min-height: 52px; grid-template-columns: 24px 1fr auto; padding: 7px; }
+      .operation-nav { display: flex; overflow-x: auto; padding-bottom: 3px; }
+      .operation-button { flex: 0 0 175px; min-height: 52px; grid-template-columns: 24px 1fr auto; padding: 7px; }
       .operation-number { width: 24px; height: 24px; }
       .workflow-head, .workflow-body { padding: 16px 13px; }
       h1 { font-size: 21px; }
@@ -423,6 +424,11 @@ def work_page() -> str:
         <span class="operation-number">2</span>
         <strong>Размещение палеты</strong>
         <span id="waitingCount" class="queue-count">0</span>
+      </button>
+      <button class="operation-button" type="button" data-operation="move">
+        <span class="operation-number">3</span>
+        <strong>Перемещение палеты</strong>
+        <span id="availableCount" class="queue-count">0</span>
       </button>
       <div class="nav-separator"></div>
       <a class="quiet-link" href="/cards">Поиск объекта</a>
@@ -495,8 +501,9 @@ def work_page() -> str:
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const requestedOperation = new URLSearchParams(window.location.search).get("operation");
     const state = {
-      operation: new URLSearchParams(window.location.search).get("operation") === "place" ? "place" : "build",
+      operation: ["place", "move"].includes(requestedOperation) ? requestedOperation : "build",
       activePalletUid: localStorage.getItem("wms.work.activePalletUid") || "",
       pallet: null,
       boxes: [],
@@ -505,8 +512,10 @@ def work_page() -> str:
       batches: [],
       openPallets: [],
       waitingPallets: [],
+      availablePallets: [],
       warehouseCode: localStorage.getItem("wms.work.warehouse") || "",
       completedPlacement: null,
+      completedMove: null,
       prefixes: { pallet: "PLT-", box: "BOX-" },
     };
 
@@ -549,8 +558,11 @@ def work_page() -> str:
         ["different batch", "На палете уже находится другая партия"],
         ["different product", "На палете уже находится другой товар"],
         ["location is occupied", "Ячейка занята"],
+        ["location capacity is already reached", "Ячейка занята"],
         ["cannot be accepted", "Коробка уже была принята"],
         ["must be closed", "Сначала завершите формирование палеты"],
+        ["already in this location", "Палета уже находится в этой ячейке"],
+        ["between warehouses without a transfer", "Для перемещения между складами нужен документ"],
       ];
       const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
       return found ? found[1] : text;
@@ -605,6 +617,12 @@ def work_page() -> str:
       return state.locations.filter((item) => item.warehouse_id === warehouse.id && item.kind === "storage");
     }
 
+    function palletBelongsToSelectedWarehouse(pallet) {
+      const warehouse = selectedWarehouse();
+      const location = state.locations.find((item) => item.id === pallet?.current_location_id);
+      return Boolean(warehouse && location && location.warehouse_id === warehouse.id);
+    }
+
     function persistActivePallet(uid) {
       state.activePalletUid = uid || "";
       if (state.activePalletUid) localStorage.setItem("wms.work.activePalletUid", state.activePalletUid);
@@ -613,6 +631,7 @@ def work_page() -> str:
 
     function clearCompletion() {
       state.completedPlacement = null;
+      state.completedMove = null;
       $("completion").classList.remove("visible");
     }
 
@@ -648,11 +667,16 @@ def work_page() -> str:
     }
 
     async function refreshQueues() {
-      const rows = await api("/api/pallets?status=open&status=waiting_placement&limit=200");
+      const [rows, availableRows] = await Promise.all([
+        api("/api/pallets?status=open&status=waiting_placement&limit=200"),
+        api(`/api/pallets?status=available&warehouse_code=${encodeURIComponent(state.warehouseCode)}&limit=200`),
+      ]);
       state.openPallets = rows.filter((item) => item.status === "open");
       state.waitingPallets = rows.filter((item) => item.status === "waiting_placement");
+      state.availablePallets = availableRows;
       $("openCount").textContent = state.openPallets.length;
       $("waitingCount").textContent = state.waitingPallets.length;
+      $("availableCount").textContent = state.availablePallets.length;
       renderQueue();
     }
 
@@ -668,20 +692,38 @@ def work_page() -> str:
     }
 
     function renderQueue() {
-      const rows = state.operation === "build" ? state.openPallets : state.waitingPallets;
-      $("queueTitle").textContent = state.operation === "build" ? "Открытые палеты" : "Ожидают размещения";
-      $("queueSubtitle").textContent = state.operation === "build"
-        ? "Можно продолжить ранее начатую работу"
-        : "Выберите палету или отсканируйте её код";
+      const queueConfig = state.operation === "build"
+        ? {
+            rows: state.openPallets,
+            title: "Открытые палеты",
+            subtitle: "Можно продолжить ранее начатую работу",
+            empty: "Открытых палет нет",
+          }
+        : state.operation === "place"
+          ? {
+              rows: state.waitingPallets,
+              title: "Ожидают размещения",
+              subtitle: "Выберите палету или отсканируйте её код",
+              empty: "Все палеты размещены",
+            }
+          : {
+              rows: state.availablePallets,
+              title: `Палеты на складе ${state.warehouseCode}`,
+              subtitle: "Выберите палету или отсканируйте её код",
+              empty: "На складе нет доступных палет",
+            };
+      const rows = queueConfig.rows;
+      $("queueTitle").textContent = queueConfig.title;
+      $("queueSubtitle").textContent = queueConfig.subtitle;
       $("queueList").innerHTML = rows.map((pallet) => `
         <div class="queue-row">
           <div>
             <div class="queue-code">${escapeHtml(pallet.pallet_uid)}</div>
-            <div class="queue-meta">${pallet.box_count} кор. · ${escapeHtml(batchLabel(pallet.batch_id))}</div>
+            <div class="queue-meta">${pallet.box_count} кор. · ${escapeHtml(batchLabel(pallet.batch_id))}${state.operation === "move" ? ` · ${escapeHtml(pallet.current_location_code || "-")}` : ""}</div>
           </div>
           <button class="text-button" type="button" data-pallet="${escapeHtml(pallet.pallet_uid)}">Выбрать</button>
         </div>
-      `).join("") || `<div class="empty-row">${state.operation === "build" ? "Открытых палет нет" : "Все палеты размещены"}</div>`;
+      `).join("") || `<div class="empty-row">${queueConfig.empty}</div>`;
       document.querySelectorAll("[data-pallet]").forEach((button) => {
         button.addEventListener("click", () => selectPallet(button.dataset.pallet).catch(showError));
       });
@@ -762,6 +804,7 @@ def work_page() -> str:
         setSteps(3, [1, 2, 3]);
         $("scanArea").hidden = true;
         $("nextPalletBtn").hidden = false;
+        $("nextPalletBtn").textContent = "Разместить следующую палету";
         showCompletion(
           "Палета размещена",
           `Ячейка ${state.completedPlacement.locationCode}.`,
@@ -792,14 +835,68 @@ def work_page() -> str:
       setNotice("Палета уже размещена или недоступна для размещения.", "warn");
     }
 
+    function renderMove() {
+      $("operationTitle").textContent = "Перемещение палеты";
+      $("operationDescription").textContent = `Переместите палету в другую ячейку склада ${state.warehouseCode || "-"}.`;
+      $("stepOneLabel").textContent = "Палета";
+      $("stepTwoLabel").textContent = "Новая ячейка";
+      $("stepThreeLabel").textContent = "Готово";
+      $("newPalletBtn").hidden = true;
+      $("closePalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("nextPalletBtn").hidden = true;
+      $("scanArea").hidden = false;
+      $("workScan").disabled = false;
+
+      if (state.completedMove) {
+        setSteps(3, [1, 2, 3]);
+        $("scanArea").hidden = true;
+        $("nextPalletBtn").hidden = false;
+        $("nextPalletBtn").textContent = "Переместить следующую палету";
+        showCompletion(
+          "Палета перемещена",
+          `${state.completedMove.fromLocationCode} → ${state.completedMove.locationCode}`,
+          state.completedMove.palletUid,
+        );
+        return;
+      }
+
+      clearCompletion();
+      if (!state.pallet) {
+        setSteps(1);
+        $("nextAction").textContent = "Отсканируйте палету";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = `Нужна размещённая палета склада ${state.warehouseCode}`;
+        return;
+      }
+
+      if (state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)) {
+        setSteps(2, [1]);
+        $("nextAction").textContent = "Отсканируйте новую ячейку";
+        $("workScan").placeholder = "Код ячейки";
+        $("scanHint").textContent = `Текущая ячейка: ${locationCode(state.pallet.current_location_id)}`;
+        return;
+      }
+
+      setSteps(1);
+      $("scanArea").hidden = true;
+      setNotice(`Палета недоступна для перемещения на складе ${state.warehouseCode}.`, "warn");
+    }
+
     function render() {
       document.querySelectorAll("[data-operation]").forEach((button) => {
         button.classList.toggle("active", button.dataset.operation === state.operation);
       });
+      const operationNav = document.querySelector(".operation-nav");
+      const activeOperation = document.querySelector(`[data-operation="${state.operation}"]`);
+      if (operationNav.scrollWidth > operationNav.clientWidth && activeOperation) {
+        operationNav.scrollLeft = activeOperation.offsetLeft - (operationNav.clientWidth - activeOperation.offsetWidth) / 2;
+      }
       renderCurrentPallet();
       renderQueue();
       if (state.operation === "build") renderBuild();
-      else renderPlace();
+      else if (state.operation === "place") renderPlace();
+      else renderMove();
     }
 
     async function selectPallet(uid) {
@@ -809,7 +906,9 @@ def work_page() -> str:
       if (!state.pallet) return render();
       const allowed = state.operation === "build"
         ? ["open", "waiting_placement"].includes(state.pallet.status)
-        : state.pallet.status === "waiting_placement";
+        : state.operation === "place"
+          ? state.pallet.status === "waiting_placement"
+          : state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet);
       if (!allowed) {
         await clearActivePallet("Палета не подходит для выбранной операции");
         return;
@@ -881,6 +980,32 @@ def work_page() -> str:
       setNotice(`Палета размещена в ячейке ${locationCodeValue}`, "ok");
     }
 
+    async function movePallet(locationCodeValue) {
+      if (!state.pallet || state.pallet.status !== "available") {
+        throw new Error("Сначала отсканируйте размещённую палету");
+      }
+      if (!palletBelongsToSelectedWarehouse(state.pallet)) {
+        throw new Error(`Палета находится не на складе ${state.warehouseCode}`);
+      }
+      const location = storageLocations().find((item) => item.code === locationCodeValue);
+      if (!location) throw new Error(`Ячейка ${locationCodeValue} не относится к складу ${state.warehouseCode}`);
+      const fromLocationCode = locationCode(state.pallet.current_location_id);
+      if (fromLocationCode === locationCodeValue) throw new Error("Палета уже находится в этой ячейке");
+      const palletUid = state.pallet.pallet_uid;
+      await post(`/api/pallets/${encodeURIComponent(palletUid)}/move`, {
+        actor: actor(),
+        reason: "Рабочее место WMS",
+        location_code: locationCodeValue,
+      });
+      state.completedMove = { palletUid, fromLocationCode, locationCode: locationCodeValue };
+      persistActivePallet("");
+      state.pallet = null;
+      state.boxes = [];
+      await refreshQueues();
+      render();
+      setNotice(`Палета перемещена в ячейку ${locationCodeValue}`, "ok");
+    }
+
     async function handleScan(rawValue) {
       const value = rawValue.trim();
       if (!value) return;
@@ -903,7 +1028,7 @@ def work_page() -> str:
       }
       if (isPallet) return selectPallet(value);
       if (isBox) throw new Error("Сейчас ожидается код ячейки");
-      return placePallet(value);
+      return state.operation === "place" ? placePallet(value) : movePallet(value);
     }
 
     function showError(error) {
@@ -918,7 +1043,9 @@ def work_page() -> str:
         const compatible = state.pallet && (
           operation === "build"
             ? ["open", "waiting_placement"].includes(state.pallet.status)
-            : state.pallet.status === "waiting_placement"
+            : operation === "place"
+              ? state.pallet.status === "waiting_placement"
+              : state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)
         );
         if (!compatible) {
           persistActivePallet("");
@@ -931,7 +1058,9 @@ def work_page() -> str:
       setNotice(
         operation === "build"
           ? "Выберите палету или откройте новую"
-          : "Отсканируйте палету, ожидающую размещения",
+          : operation === "place"
+            ? "Отсканируйте палету, ожидающую размещения"
+            : "Отсканируйте размещённую палету",
       );
       focusScan();
     }
@@ -964,7 +1093,9 @@ def work_page() -> str:
       const activeIsCompatible = state.pallet && (
         state.operation === "build"
           ? ["open", "waiting_placement"].includes(state.pallet.status)
-          : state.pallet.status === "waiting_placement"
+          : state.operation === "place"
+            ? state.pallet.status === "waiting_placement"
+            : state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)
       );
       if (state.pallet && !activeIsCompatible) {
         persistActivePallet("");
@@ -976,7 +1107,9 @@ def work_page() -> str:
       setNotice(
         state.operation === "build"
           ? "Выберите палету или откройте новую"
-          : "Отсканируйте палету, ожидающую размещения",
+          : state.operation === "place"
+            ? "Отсканируйте палету, ожидающую размещения"
+            : "Отсканируйте размещённую палету",
       );
       focusScan();
     }
@@ -992,12 +1125,19 @@ def work_page() -> str:
       try { await handleScan(value); } catch (error) { showError(error); } finally { focusScan(); }
     });
     $("workWarehouse").addEventListener("change", (event) => {
-      state.warehouseCode = event.currentTarget.value;
-      localStorage.setItem("wms.work.warehouse", state.warehouseCode);
-      clearCompletion();
-      render();
-      setNotice(`Выбран склад: ${state.warehouseCode}`, "ok");
-      focusScan();
+      const warehouseCode = event.currentTarget.value;
+      Promise.resolve().then(async () => {
+        state.warehouseCode = warehouseCode;
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        persistActivePallet("");
+        state.pallet = null;
+        state.boxes = [];
+        clearCompletion();
+        await refreshQueues();
+        render();
+        setNotice(`Выбран склад: ${state.warehouseCode}`, "ok");
+        focusScan();
+      }).catch(showError);
     });
     $("workActor").addEventListener("change", () => localStorage.setItem("wms.work.actor", actor()));
     $("newPalletBtn").addEventListener("click", () => createPallet().catch(showError));

@@ -668,6 +668,11 @@ def move_pallet(db: Session, *, pallet_uid: str, location_code: str, actor: str 
         raise bad_request("pallet can be moved only to an active storage location")
     if pallet.status != PalletStatus.AVAILABLE:
         raise bad_request(f"pallet cannot be moved from status {pallet.status}")
+    current_location = db.get(Location, pallet.current_location_id) if pallet.current_location_id else None
+    if current_location is None:
+        raise bad_request("available pallet must have a current location")
+    if current_location.warehouse_id != location.warehouse_id:
+        raise bad_request("pallet cannot be moved between warehouses without a transfer")
     if pallet.current_location_id == location.id:
         raise bad_request("pallet is already in this location")
     if location_occupied_count(db, location.id) >= location.capacity_pallets:

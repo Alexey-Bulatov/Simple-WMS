@@ -26,6 +26,7 @@ from app.services import (
     generate_demo_pallets,
     generate_boxes,
     move_inventory_pallet_to_actual,
+    move_pallet,
     open_pallet,
     place_inventory_found_pallet,
     place_pallet,
@@ -207,6 +208,46 @@ def test_block_and_release_pallet(db):
 
     assert blocked_status == PalletStatus.BLOCKED
     assert released.status == PalletStatus.AVAILABLE
+
+
+def test_regular_pallet_move_cannot_cross_warehouses(db):
+    _, batch, _, source_location = create_fixture_data(db)
+    target_location = create_location(
+        db,
+        LocationCreate(
+            warehouse_id=source_location.warehouse_id,
+            zone_id=source_location.zone_id,
+            code="WH01-FR01-P02",
+            kind=LocationKind.STORAGE,
+        ),
+    )
+    other_warehouse = create_warehouse(db, WarehouseCreate(code="WH02", name="Другой склад"))
+    other_zone = create_zone(
+        db,
+        ZoneCreate(warehouse_id=other_warehouse.id, code="FR01", name="Хранение", kind=LocationKind.STORAGE),
+    )
+    other_location = create_location(
+        db,
+        LocationCreate(
+            warehouse_id=other_warehouse.id,
+            zone_id=other_zone.id,
+            code="WH02-FR01-P01",
+            kind=LocationKind.STORAGE,
+        ),
+    )
+    box = generate_boxes(db, batch_id=batch.id, quantity=1)[0]
+    accept_box(db, box_uid=box.box_uid)
+    pallet = open_pallet(db)
+    add_box_to_pallet(db, pallet_uid=pallet.pallet_uid, box_uid=box.box_uid)
+    close_pallet(db, pallet_uid=pallet.pallet_uid)
+    place_pallet(db, pallet_uid=pallet.pallet_uid, location_code=source_location.code)
+
+    moved = move_pallet(db, pallet_uid=pallet.pallet_uid, location_code=target_location.code)
+    assert moved.current_location_id == target_location.id
+
+    with pytest.raises(HTTPException) as error:
+        move_pallet(db, pallet_uid=pallet.pallet_uid, location_code=other_location.code)
+    assert "without a transfer" in error.value.detail
 
 
 def test_shipment_flow_reserve_expedition_load_close(db):
@@ -864,10 +905,12 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
     assert 'id="workActor"' in workplace
     assert 'data-operation="build"' in workplace
     assert 'data-operation="place"' in workplace
+    assert 'data-operation="move"' in workplace
     assert 'href="/tech"' in workplace
     assert 'post("/api/pallets"' in workplace
     assert '/boxes/${encodeURIComponent(boxUid)}' in workplace
     assert '/place`' in workplace
+    assert '/move`' in workplace
 
     technical = tech_page()
     assert "Все функции системы" in technical
