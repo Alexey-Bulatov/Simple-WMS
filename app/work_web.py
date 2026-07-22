@@ -206,6 +206,8 @@ def work_page() -> str:
       grid-template-columns: repeat(3, 1fr);
       list-style: none;
     }
+    .steps.four { grid-template-columns: repeat(4, 1fr); }
+    .step[hidden] { display: none; }
     .step {
       min-width: 0;
       display: grid;
@@ -366,11 +368,22 @@ def work_page() -> str:
     .completion.visible { display: block; }
     .completion strong { display: block; color: var(--ok); font-size: 17px; }
     .completion-code { margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 850; }
+    .shipment-create {
+      display: none;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-soft);
+    }
+    .shipment-create.visible { display: grid; gap: 12px; }
+    .shipment-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .shipment-fields label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
+    .shipment-fields input { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
     @media (max-width: 900px) {
       .work-header { grid-template-columns: 1fr auto; gap: 10px; padding: 9px 12px; }
       .context { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; width: 100%; }
       .work-layout { padding: 12px; grid-template-columns: 1fr; }
-      .operation-nav { position: static; grid-template-columns: repeat(3, 1fr); }
+      .operation-nav { position: static; grid-template-columns: repeat(4, 1fr); }
       .nav-title, .nav-separator, .quiet-link { display: none; }
     }
     @media (max-width: 620px) {
@@ -389,8 +402,13 @@ def work_page() -> str:
       .step { grid-template-columns: 25px 1fr; gap: 5px; }
       .step-mark { width: 25px; height: 25px; }
       .step::after { display: none; }
+      .steps.four { grid-template-columns: 1fr 1fr 1.2fr 1.05fr; }
+      .steps.four .step { grid-template-columns: 20px minmax(0, 1fr); gap: 3px; font-size: 11px; }
+      .steps.four .step-mark { width: 20px; height: 20px; }
+      .steps.four .step > span:last-child { min-width: 0; }
       .scan-input { height: 58px; font-size: 19px; }
       .facts { grid-template-columns: 1fr 1fr; }
+      .shipment-fields { grid-template-columns: 1fr; }
       .action-row > * { width: 100%; }
       .queue-head, .queue-row { padding-inline: 13px; }
     }
@@ -430,6 +448,11 @@ def work_page() -> str:
         <strong>Перемещение палеты</strong>
         <span id="availableCount" class="queue-count">0</span>
       </button>
+      <button class="operation-button" type="button" data-operation="ship">
+        <span class="operation-number">4</span>
+        <strong>Отгрузка</strong>
+        <span id="shipmentCount" class="queue-count">0</span>
+      </button>
       <div class="nav-separator"></div>
       <a class="quiet-link" href="/cards">Поиск объекта</a>
       <a class="quiet-link" href="/tech">Все функции</a>
@@ -444,11 +467,26 @@ def work_page() -> str:
           <li class="step active" data-step="1"><span class="step-mark">1</span><span id="stepOneLabel">Палета</span></li>
           <li class="step" data-step="2"><span class="step-mark">2</span><span id="stepTwoLabel">Коробки</span></li>
           <li class="step" data-step="3"><span class="step-mark">3</span><span id="stepThreeLabel">Завершение</span></li>
+          <li class="step" data-step="4" hidden><span class="step-mark">4</span><span id="stepFourLabel">Готово</span></li>
         </ol>
       </div>
 
       <div class="workflow-body">
         <div id="notice" class="notice">Загрузка рабочего места...</div>
+
+        <div id="shipmentCreate" class="shipment-create">
+          <div class="shipment-fields">
+            <div>
+              <label for="shipmentCustomer">Получатель</label>
+              <input id="shipmentCustomer" autocomplete="off" value="Демо-клиент">
+            </div>
+            <div>
+              <label for="shipmentDestination">Адрес доставки</label>
+              <input id="shipmentDestination" autocomplete="off" value="Тестовая точка">
+            </div>
+          </div>
+          <button id="createShipmentBtn" class="primary-action" type="button">Создать заявку на отгрузку</button>
+        </div>
 
         <div id="scanArea" class="scan-area">
           <label id="nextAction" class="next-action" for="workScan">Отсканируйте палету</label>
@@ -472,6 +510,22 @@ def work_page() -> str:
           </div>
         </div>
 
+        <div id="shipmentObject" class="current-object">
+          <div class="object-head">
+            <div>
+              <div class="object-kicker">Текущая отгрузка</div>
+              <div id="shipmentCode" class="object-code">-</div>
+            </div>
+            <button id="clearShipmentBtn" class="text-button" type="button">Сменить заявку</button>
+          </div>
+          <div class="facts">
+            <div class="fact"><b>Статус</b><span id="shipmentStatus">-</span></div>
+            <div class="fact"><b>Получатель</b><span id="shipmentCustomerFact">-</span></div>
+            <div class="fact"><b>Направление</b><span id="shipmentDestinationFact">-</span></div>
+            <div class="fact"><b>Погружено</b><span id="shipmentProgress">0 / 0</span></div>
+          </div>
+        </div>
+
         <div id="completion" class="completion">
           <strong id="completionTitle">Операция завершена</strong>
           <div id="completionText"></div>
@@ -483,6 +537,9 @@ def work_page() -> str:
           <button id="closePalletBtn" class="primary-action" type="button" hidden>Завершить формирование</button>
           <button id="toPlacementBtn" class="primary-action" type="button" hidden>Перейти к размещению</button>
           <button id="nextPalletBtn" class="primary-action" type="button" hidden>Разместить следующую палету</button>
+          <button id="toExpeditionBtn" class="primary-action" type="button" hidden>Передать в экспедицию</button>
+          <button id="closeShipmentBtn" class="primary-action" type="button" hidden>Завершить отгрузку</button>
+          <button id="newShipmentBtn" class="primary-action" type="button" hidden>Следующая отгрузка</button>
         </div>
       </div>
 
@@ -503,7 +560,7 @@ def work_page() -> str:
     const $ = (id) => document.getElementById(id);
     const requestedOperation = new URLSearchParams(window.location.search).get("operation");
     const state = {
-      operation: ["place", "move"].includes(requestedOperation) ? requestedOperation : "build",
+      operation: ["place", "move", "ship"].includes(requestedOperation) ? requestedOperation : "build",
       activePalletUid: localStorage.getItem("wms.work.activePalletUid") || "",
       pallet: null,
       boxes: [],
@@ -513,6 +570,10 @@ def work_page() -> str:
       openPallets: [],
       waitingPallets: [],
       availablePallets: [],
+      shipments: [],
+      activeShipmentUid: localStorage.getItem("wms.work.activeShipmentUid") || "",
+      shipment: null,
+      shipmentPallets: [],
       warehouseCode: localStorage.getItem("wms.work.warehouse") || "",
       completedPlacement: null,
       completedMove: null,
@@ -529,6 +590,21 @@ def work_page() -> str:
       shipped: "Отгружена",
       blocked: "Заблокирована",
       quarantine: "Карантин",
+    };
+
+    const shipmentStatusLabels = {
+      draft: "Черновик",
+      reserved: "Палеты зарезервированы",
+      expedition: "В экспедиции",
+      loading: "Идёт погрузка",
+      completed: "Завершена",
+      cancelled: "Отменена",
+    };
+
+    const shipmentPalletStatusLabels = {
+      reserved: "В резерве",
+      expedition: "Ожидает погрузки",
+      loaded: "Погружена",
     };
 
     function escapeHtml(value) {
@@ -563,6 +639,17 @@ def work_page() -> str:
         ["must be closed", "Сначала завершите формирование палеты"],
         ["already in this location", "Палета уже находится в этой ячейке"],
         ["between warehouses without a transfer", "Для перемещения между складами нужен документ"],
+        ["shipment not found", "Заявка на отгрузку не найдена"],
+        ["shipment cannot accept pallets", "В эту заявку больше нельзя добавлять палеты"],
+        ["only available pallet can be reserved", "Палета недоступна для резервирования"],
+        ["pallet already belongs to a shipment", "Палета уже включена в другую отгрузку"],
+        ["shipment pallets must belong to one warehouse", "Все палеты заявки должны находиться на одном складе"],
+        ["only reserved shipment can be moved to expedition", "Сначала добавьте палеты в заявку"],
+        ["shipment has no reserved pallets", "В заявке нет палет"],
+        ["shipment must be in expedition or loading status", "Сначала передайте заявку в экспедицию"],
+        ["pallet does not belong to this shipment", "Палета не входит в выбранную заявку"],
+        ["pallet already loaded", "Палета уже погружена"],
+        ["all shipment pallets must be loaded before close", "Сначала погрузите все палеты заявки"],
       ];
       const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
       return found ? found[1] : text;
@@ -597,6 +684,12 @@ def work_page() -> str:
       });
     }
 
+    function setStepCount(count) {
+      const steps = document.querySelector(".steps");
+      steps.classList.toggle("four", count === 4);
+      document.querySelector('[data-step="4"]').hidden = count !== 4;
+    }
+
     function batchLabel(batchId) {
       const batch = state.batches.find((item) => item.id === batchId);
       return batch?.batch_number || "-";
@@ -623,10 +716,27 @@ def work_page() -> str:
       return Boolean(warehouse && location && location.warehouse_id === warehouse.id);
     }
 
+    function warehouseCodeForPallet(pallet) {
+      const location = state.locations.find((item) => item.id === pallet?.current_location_id);
+      const warehouse = state.warehouses.find((item) => item.id === location?.warehouse_id);
+      return warehouse?.code || "";
+    }
+
+    function activeShipmentWarehouseCode() {
+      const firstPallet = state.shipmentPallets[0]?.pallet;
+      return warehouseCodeForPallet(firstPallet);
+    }
+
     function persistActivePallet(uid) {
       state.activePalletUid = uid || "";
       if (state.activePalletUid) localStorage.setItem("wms.work.activePalletUid", state.activePalletUid);
       else localStorage.removeItem("wms.work.activePalletUid");
+    }
+
+    function persistActiveShipment(uid) {
+      state.activeShipmentUid = uid || "";
+      if (state.activeShipmentUid) localStorage.setItem("wms.work.activeShipmentUid", state.activeShipmentUid);
+      else localStorage.removeItem("wms.work.activeShipmentUid");
     }
 
     function clearCompletion() {
@@ -643,6 +753,15 @@ def work_page() -> str:
       render();
       setNotice(message, "warn");
       focusScan();
+    }
+
+    async function clearActiveShipment(message = "Выбор заявки сброшен") {
+      persistActiveShipment("");
+      state.shipment = null;
+      state.shipmentPallets = [];
+      clearCompletion();
+      render();
+      setNotice(message, "warn");
     }
 
     async function loadActivePallet() {
@@ -666,22 +785,46 @@ def work_page() -> str:
       }
     }
 
+    async function loadActiveShipment() {
+      if (!state.activeShipmentUid) {
+        state.shipment = null;
+        state.shipmentPallets = [];
+        return;
+      }
+      try {
+        const [shipment, pallets] = await Promise.all([
+          api(`/api/shipments/${encodeURIComponent(state.activeShipmentUid)}`),
+          api(`/api/shipments/${encodeURIComponent(state.activeShipmentUid)}/pallets`),
+        ]);
+        state.shipment = shipment;
+        state.shipmentPallets = pallets;
+      } catch (error) {
+        persistActiveShipment("");
+        state.shipment = null;
+        state.shipmentPallets = [];
+        setNotice(error.message, "err");
+      }
+    }
+
     async function refreshQueues() {
-      const [rows, availableRows] = await Promise.all([
+      const [rows, availableRows, shipments] = await Promise.all([
         api("/api/pallets?status=open&status=waiting_placement&limit=200"),
         api(`/api/pallets?status=available&warehouse_code=${encodeURIComponent(state.warehouseCode)}&limit=200`),
+        api("/api/shipments?status=draft&status=reserved&status=expedition&status=loading&limit=100"),
       ]);
       state.openPallets = rows.filter((item) => item.status === "open");
       state.waitingPallets = rows.filter((item) => item.status === "waiting_placement");
       state.availablePallets = availableRows;
+      state.shipments = shipments;
       $("openCount").textContent = state.openPallets.length;
       $("waitingCount").textContent = state.waitingPallets.length;
       $("availableCount").textContent = state.availablePallets.length;
+      $("shipmentCount").textContent = state.shipments.length;
       renderQueue();
     }
 
     function renderCurrentPallet() {
-      const visible = Boolean(state.pallet);
+      const visible = Boolean(state.pallet) && state.operation !== "ship";
       $("currentObject").classList.toggle("visible", visible);
       if (!visible) return;
       $("palletCode").textContent = state.pallet.pallet_uid;
@@ -691,7 +834,21 @@ def work_page() -> str:
       $("palletLocation").textContent = locationCode(state.pallet.current_location_id);
     }
 
+    function renderCurrentShipment() {
+      const visible = state.operation === "ship" && Boolean(state.shipment);
+      $("shipmentObject").classList.toggle("visible", visible);
+      if (!visible) return;
+      $("shipmentCode").textContent = state.shipment.shipment_uid;
+      $("shipmentStatus").textContent = shipmentStatusLabels[state.shipment.status] || state.shipment.status;
+      $("shipmentCustomerFact").textContent = state.shipment.customer_name;
+      $("shipmentDestinationFact").textContent = state.shipment.destination;
+      $("shipmentProgress").textContent = `${state.shipment.loaded_count} / ${state.shipment.pallet_count}`;
+    }
+
     function renderQueue() {
+      if (state.operation === "ship") {
+        return renderShipmentQueue();
+      }
       const queueConfig = state.operation === "build"
         ? {
             rows: state.openPallets,
@@ -729,6 +886,62 @@ def work_page() -> str:
       });
     }
 
+    function renderShipmentQueue() {
+      if (!state.shipment || state.shipment.status === "completed") {
+        $("queueTitle").textContent = "Отгрузки в работе";
+        $("queueSubtitle").textContent = "Продолжите существующую заявку или создайте новую";
+        $("queueList").innerHTML = state.shipments.map((shipment) => `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(shipment.shipment_uid)}</div>
+              <div class="queue-meta">${escapeHtml(shipment.customer_name)} · ${escapeHtml(shipmentStatusLabels[shipment.status] || shipment.status)} · ${shipment.loaded_count}/${shipment.pallet_count}</div>
+            </div>
+            <button class="text-button" type="button" data-shipment="${escapeHtml(shipment.shipment_uid)}">Продолжить</button>
+          </div>
+        `).join("") || '<div class="empty-row">Незавершённых отгрузок нет</div>';
+        document.querySelectorAll("[data-shipment]").forEach((button) => {
+          button.addEventListener("click", () => selectShipment(button.dataset.shipment).catch(showError));
+        });
+        return;
+      }
+
+      if (["draft", "reserved"].includes(state.shipment.status)) {
+        $("queueTitle").textContent = `Доступные палеты склада ${state.warehouseCode}`;
+        $("queueSubtitle").textContent = "Добавляйте палеты сканером или кнопкой";
+        $("queueList").innerHTML = state.availablePallets.map((pallet) => `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(pallet.pallet_uid)}</div>
+              <div class="queue-meta">${pallet.box_count} кор. · ${escapeHtml(batchLabel(pallet.batch_id))} · ${escapeHtml(pallet.current_location_code || "-")}</div>
+            </div>
+            <button class="text-button" type="button" data-reserve-pallet="${escapeHtml(pallet.pallet_uid)}">В заявку</button>
+          </div>
+        `).join("") || '<div class="empty-row">На складе нет доступных палет</div>';
+        document.querySelectorAll("[data-reserve-pallet]").forEach((button) => {
+          button.addEventListener("click", () => reserveShipmentPallet(button.dataset.reservePallet).catch(showError));
+        });
+        return;
+      }
+
+      $("queueTitle").textContent = "Палеты заявки";
+      $("queueSubtitle").textContent = "Погрузка подтверждается сканированием каждой палеты";
+      $("queueList").innerHTML = state.shipmentPallets.map((row) => {
+        const pallet = row.pallet;
+        const canLoad = row.shipment_pallet_status === "expedition";
+        return `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(pallet.pallet_uid)}</div>
+              <div class="queue-meta">${pallet.box_count} кор. · ${escapeHtml(shipmentPalletStatusLabels[row.shipment_pallet_status] || row.shipment_pallet_status)}</div>
+            </div>
+            ${canLoad ? `<button class="text-button" type="button" data-load-pallet="${escapeHtml(pallet.pallet_uid)}">Погрузить</button>` : '<span class="queue-count">Готово</span>'}
+          </div>`;
+      }).join("") || '<div class="empty-row">В заявке нет палет</div>';
+      document.querySelectorAll("[data-load-pallet]").forEach((button) => {
+        button.addEventListener("click", () => loadShipmentPallet(button.dataset.loadPallet).catch(showError));
+      });
+    }
+
     function showCompletion(title, text, code) {
       $("completionTitle").textContent = title;
       $("completionText").textContent = text;
@@ -737,6 +950,7 @@ def work_page() -> str:
     }
 
     function renderBuild() {
+      setStepCount(3);
       $("operationTitle").textContent = "Формирование палеты";
       $("operationDescription").textContent = "Соберите коробки на палету и завершите формирование.";
       $("stepOneLabel").textContent = "Палета";
@@ -788,6 +1002,7 @@ def work_page() -> str:
     }
 
     function renderPlace() {
+      setStepCount(3);
       $("operationTitle").textContent = "Размещение палеты";
       $("operationDescription").textContent = `Разместите закрытую палету на складе ${state.warehouseCode || "-"}.`;
       $("stepOneLabel").textContent = "Палета";
@@ -836,6 +1051,7 @@ def work_page() -> str:
     }
 
     function renderMove() {
+      setStepCount(3);
       $("operationTitle").textContent = "Перемещение палеты";
       $("operationDescription").textContent = `Переместите палету в другую ячейку склада ${state.warehouseCode || "-"}.`;
       $("stepOneLabel").textContent = "Палета";
@@ -883,7 +1099,72 @@ def work_page() -> str:
       setNotice(`Палета недоступна для перемещения на складе ${state.warehouseCode}.`, "warn");
     }
 
+    function renderShipment() {
+      setStepCount(4);
+      $("operationTitle").textContent = "Отгрузка";
+      $("operationDescription").textContent = "Соберите заявку, передайте палеты в экспедицию и подтвердите погрузку.";
+      $("stepOneLabel").textContent = "Заявка";
+      $("stepTwoLabel").textContent = "Резерв";
+      $("stepThreeLabel").textContent = "Экспедиция";
+      $("stepFourLabel").textContent = "Погрузка";
+      $("newPalletBtn").hidden = true;
+      $("closePalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("nextPalletBtn").hidden = true;
+      $("toExpeditionBtn").hidden = true;
+      $("closeShipmentBtn").hidden = true;
+      $("newShipmentBtn").hidden = true;
+      $("shipmentCreate").classList.remove("visible");
+      $("scanArea").hidden = false;
+      $("workScan").disabled = false;
+      clearCompletion();
+
+      if (!state.shipment) {
+        setSteps(1);
+        $("scanArea").hidden = true;
+        $("shipmentCreate").classList.add("visible");
+        return;
+      }
+
+      if (["draft", "reserved"].includes(state.shipment.status)) {
+        setSteps(2, [1]);
+        $("nextAction").textContent = "Сканируйте палеты в заявку";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = `Доступны размещённые палеты склада ${state.warehouseCode}`;
+        $("toExpeditionBtn").hidden = state.shipment.pallet_count === 0;
+        return;
+      }
+
+      if (["expedition", "loading"].includes(state.shipment.status)) {
+        setSteps(4, [1, 2, 3]);
+        $("nextAction").textContent = "Сканируйте палеты при погрузке";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = `Погружено ${state.shipment.loaded_count} из ${state.shipment.pallet_count}`;
+        $("closeShipmentBtn").hidden = !(
+          state.shipment.status === "loading"
+          && state.shipment.pallet_count > 0
+          && state.shipment.loaded_count === state.shipment.pallet_count
+        );
+        return;
+      }
+
+      setSteps(4, [1, 2, 3, 4]);
+      $("scanArea").hidden = true;
+      $("newShipmentBtn").hidden = false;
+      showCompletion(
+        "Отгрузка завершена",
+        `Погружено ${state.shipment.pallet_count} пал. Ячейки освобождены.`,
+        state.shipment.shipment_uid,
+      );
+    }
+
     function render() {
+      if (state.operation !== "ship") {
+        $("shipmentCreate").classList.remove("visible");
+        $("toExpeditionBtn").hidden = true;
+        $("closeShipmentBtn").hidden = true;
+        $("newShipmentBtn").hidden = true;
+      }
       document.querySelectorAll("[data-operation]").forEach((button) => {
         button.classList.toggle("active", button.dataset.operation === state.operation);
       });
@@ -893,10 +1174,12 @@ def work_page() -> str:
         operationNav.scrollLeft = activeOperation.offsetLeft - (operationNav.clientWidth - activeOperation.offsetWidth) / 2;
       }
       renderCurrentPallet();
+      renderCurrentShipment();
       renderQueue();
       if (state.operation === "build") renderBuild();
       else if (state.operation === "place") renderPlace();
-      else renderMove();
+      else if (state.operation === "move") renderMove();
+      else renderShipment();
     }
 
     async function selectPallet(uid) {
@@ -916,6 +1199,94 @@ def work_page() -> str:
       render();
       setNotice(`Палета выбрана: ${uid}`, "ok");
       focusScan();
+    }
+
+    async function selectShipment(uid) {
+      clearCompletion();
+      persistActiveShipment(uid);
+      await loadActiveShipment();
+      if (!state.shipment) return render();
+      const shipmentWarehouseCode = activeShipmentWarehouseCode();
+      if (shipmentWarehouseCode && shipmentWarehouseCode !== state.warehouseCode) {
+        state.warehouseCode = shipmentWarehouseCode;
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+      }
+      await refreshQueues();
+      render();
+      setNotice(`Выбрана отгрузка ${uid}`, "ok");
+      focusScan();
+    }
+
+    async function createShipment() {
+      const shipment = await post("/api/shipments", {
+        actor: actor(),
+        customer_name: $("shipmentCustomer").value.trim() || "Демо-клиент",
+        destination: $("shipmentDestination").value.trim() || "Тестовая точка",
+      });
+      persistActiveShipment(shipment.shipment_uid);
+      await loadActiveShipment();
+      await refreshQueues();
+      render();
+      setNotice(`Создана заявка ${shipment.shipment_uid}. Добавьте палеты.`, "ok");
+      focusScan();
+    }
+
+    async function reserveShipmentPallet(palletUid) {
+      if (!state.shipment) throw new Error("Сначала создайте или выберите заявку");
+      const pallet = await api(`/api/pallets/${encodeURIComponent(palletUid)}`);
+      if (pallet.status !== "available") throw new Error("Палета недоступна для резервирования");
+      if (!palletBelongsToSelectedWarehouse(pallet)) {
+        throw new Error(`Палета находится не на складе ${state.warehouseCode}`);
+      }
+      const shipmentWarehouseCode = activeShipmentWarehouseCode();
+      if (shipmentWarehouseCode && shipmentWarehouseCode !== state.warehouseCode) {
+        throw new Error(`Палеты заявки относятся к складу ${shipmentWarehouseCode}`);
+      }
+      await post(
+        `/api/shipments/${encodeURIComponent(state.shipment.shipment_uid)}/pallets/${encodeURIComponent(palletUid)}`,
+        { actor: actor() },
+      );
+      await loadActiveShipment();
+      await refreshQueues();
+      render();
+      setNotice(`Палета добавлена в заявку: ${palletUid}`, "ok");
+      focusScan();
+    }
+
+    async function moveShipmentToExpedition() {
+      if (!state.shipment) throw new Error("Сначала выберите заявку");
+      await post(`/api/shipments/${encodeURIComponent(state.shipment.shipment_uid)}/expedition`, { actor: actor() });
+      await loadActiveShipment();
+      await refreshQueues();
+      render();
+      setNotice("Палеты переданы в экспедицию. Начинайте контроль погрузки.", "ok");
+      focusScan();
+    }
+
+    async function loadShipmentPallet(palletUid) {
+      if (!state.shipment) throw new Error("Сначала выберите заявку");
+      await post(
+        `/api/shipments/${encodeURIComponent(state.shipment.shipment_uid)}/load/${encodeURIComponent(palletUid)}`,
+        { actor: actor() },
+      );
+      await loadActiveShipment();
+      await refreshQueues();
+      render();
+      setNotice(`Погрузка подтверждена: ${palletUid}`, "ok");
+      focusScan();
+    }
+
+    async function closeActiveShipment() {
+      if (!state.shipment) throw new Error("Сначала выберите заявку");
+      await post(`/api/shipments/${encodeURIComponent(state.shipment.shipment_uid)}/close`, {
+        actor: actor(),
+        reason: "Погрузка завершена на складе",
+      });
+      await loadActiveShipment();
+      await refreshQueues();
+      render();
+      setNotice("Отгрузка завершена. Складские ячейки освобождены.", "ok");
     }
 
     async function createPallet() {
@@ -1012,6 +1383,14 @@ def work_page() -> str:
       const isPallet = value.startsWith(state.prefixes.pallet);
       const isBox = value.startsWith(state.prefixes.box);
 
+      if (state.operation === "ship") {
+        if (!state.shipment) throw new Error("Сначала создайте или выберите заявку");
+        if (!isPallet) throw new Error("Сейчас ожидается код палеты");
+        if (["draft", "reserved"].includes(state.shipment.status)) return reserveShipmentPallet(value);
+        if (["expedition", "loading"].includes(state.shipment.status)) return loadShipmentPallet(value);
+        throw new Error("Эта отгрузка уже завершена");
+      }
+
       if (state.operation === "build") {
         if (!state.pallet) {
           if (!isPallet) throw new Error("Сначала отсканируйте палету или откройте новую");
@@ -1039,13 +1418,19 @@ def work_page() -> str:
     async function switchOperation(operation, keepPallet = false) {
       state.operation = operation;
       clearCompletion();
+      if (operation === "ship") {
+        persistActivePallet("");
+        state.pallet = null;
+        state.boxes = [];
+        await loadActiveShipment();
+      }
       if (!keepPallet) {
         const compatible = state.pallet && (
           operation === "build"
             ? ["open", "waiting_placement"].includes(state.pallet.status)
             : operation === "place"
               ? state.pallet.status === "waiting_placement"
-              : state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)
+              : operation === "move" && state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)
         );
         if (!compatible) {
           persistActivePallet("");
@@ -1060,7 +1445,13 @@ def work_page() -> str:
           ? "Выберите палету или откройте новую"
           : operation === "place"
             ? "Отсканируйте палету, ожидающую размещения"
-            : "Отсканируйте размещённую палету",
+            : operation === "move"
+              ? "Отсканируйте размещённую палету"
+              : state.shipment
+                ? state.shipment.status === "completed"
+                  ? "Отгрузка завершена. Складские ячейки освобождены"
+                  : "Продолжайте текущий этап отгрузки"
+                : "Создайте новую заявку или выберите отгрузку в работе",
       );
       focusScan();
     }
@@ -1089,13 +1480,19 @@ def work_page() -> str:
       $("workWarehouse").value = state.warehouseCode;
       $("workActor").value = localStorage.getItem("wms.work.actor") || "Кладовщик";
 
-      await loadActivePallet();
+      await Promise.all([loadActivePallet(), loadActiveShipment()]);
+      const shipmentWarehouseCode = activeShipmentWarehouseCode();
+      if (state.operation === "ship" && shipmentWarehouseCode && shipmentWarehouseCode !== state.warehouseCode) {
+        state.warehouseCode = shipmentWarehouseCode;
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+      }
       const activeIsCompatible = state.pallet && (
         state.operation === "build"
           ? ["open", "waiting_placement"].includes(state.pallet.status)
           : state.operation === "place"
             ? state.pallet.status === "waiting_placement"
-            : state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)
+            : state.operation === "move" && state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)
       );
       if (state.pallet && !activeIsCompatible) {
         persistActivePallet("");
@@ -1109,7 +1506,13 @@ def work_page() -> str:
           ? "Выберите палету или откройте новую"
           : state.operation === "place"
             ? "Отсканируйте палету, ожидающую размещения"
-            : "Отсканируйте размещённую палету",
+            : state.operation === "move"
+              ? "Отсканируйте размещённую палету"
+              : state.shipment
+                ? state.shipment.status === "completed"
+                  ? "Отгрузка завершена. Складские ячейки освобождены"
+                  : "Продолжайте текущий этап отгрузки"
+                : "Создайте новую заявку или выберите отгрузку в работе",
       );
       focusScan();
     }
@@ -1132,6 +1535,9 @@ def work_page() -> str:
         persistActivePallet("");
         state.pallet = null;
         state.boxes = [];
+        persistActiveShipment("");
+        state.shipment = null;
+        state.shipmentPallets = [];
         clearCompletion();
         await refreshQueues();
         render();
@@ -1151,6 +1557,11 @@ def work_page() -> str:
       setNotice("Отсканируйте следующую палету");
       focusScan();
     });
+    $("createShipmentBtn").addEventListener("click", () => createShipment().catch(showError));
+    $("clearShipmentBtn").addEventListener("click", () => clearActiveShipment().catch(showError));
+    $("toExpeditionBtn").addEventListener("click", () => moveShipmentToExpedition().catch(showError));
+    $("closeShipmentBtn").addEventListener("click", () => closeActiveShipment().catch(showError));
+    $("newShipmentBtn").addEventListener("click", () => clearActiveShipment("Создайте следующую заявку или выберите отгрузку в работе").catch(showError));
 
     initialize().catch(showError);
   </script>

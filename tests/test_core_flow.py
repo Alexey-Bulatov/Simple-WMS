@@ -278,6 +278,41 @@ def test_shipment_flow_reserve_expedition_load_close(db):
     assert box.status == BoxStatus.SHIPPED
 
 
+def test_shipment_cannot_mix_pallets_from_different_warehouses(db):
+    _, batch, _, first_location = create_fixture_data(db)
+    second_warehouse = create_warehouse(db, WarehouseCreate(code="WH02", name="Учебный склад"))
+    second_zone = create_zone(
+        db,
+        ZoneCreate(warehouse_id=second_warehouse.id, code="FR01", name="Хранение", kind=LocationKind.STORAGE),
+    )
+    second_location = create_location(
+        db,
+        LocationCreate(
+            warehouse_id=second_warehouse.id,
+            zone_id=second_zone.id,
+            code="WH02-FR01-P01",
+            kind=LocationKind.STORAGE,
+        ),
+    )
+    first_box, second_box = generate_boxes(db, batch_id=batch.id, quantity=2)
+    pallets = []
+    for box, location in ((first_box, first_location), (second_box, second_location)):
+        accept_box(db, box_uid=box.box_uid)
+        pallet = open_pallet(db)
+        add_box_to_pallet(db, pallet_uid=pallet.pallet_uid, box_uid=box.box_uid)
+        close_pallet(db, pallet_uid=pallet.pallet_uid)
+        place_pallet(db, pallet_uid=pallet.pallet_uid, location_code=location.code)
+        pallets.append(pallet)
+
+    shipment = create_shipment(db, ShipmentCreate(customer_name="Клиент", destination="Точка"))
+    reserve_pallet_for_shipment(db, shipment_uid=shipment.shipment_uid, pallet_uid=pallets[0].pallet_uid)
+
+    with pytest.raises(HTTPException) as error:
+        reserve_pallet_for_shipment(db, shipment_uid=shipment.shipment_uid, pallet_uid=pallets[1].pallet_uid)
+
+    assert "one warehouse" in error.value.detail
+
+
 def test_interwarehouse_transfer_dispatch_receive_and_place(db):
     _, batch, _, source_location = create_fixture_data(db)
     destination = create_warehouse(db, WarehouseCreate(code="WH02", name="Учебный склад"))
@@ -906,11 +941,16 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
     assert 'data-operation="build"' in workplace
     assert 'data-operation="place"' in workplace
     assert 'data-operation="move"' in workplace
+    assert 'data-operation="ship"' in workplace
     assert 'href="/tech"' in workplace
     assert 'post("/api/pallets"' in workplace
     assert '/boxes/${encodeURIComponent(boxUid)}' in workplace
     assert '/place`' in workplace
     assert '/move`' in workplace
+    assert 'post("/api/shipments"' in workplace
+    assert '/expedition`' in workplace
+    assert '/load/${encodeURIComponent(palletUid)}`' in workplace
+    assert '/close`' in workplace
 
     technical = tech_page()
     assert "Все функции системы" in technical

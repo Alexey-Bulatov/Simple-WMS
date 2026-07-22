@@ -743,9 +743,26 @@ def reserve_pallet_for_shipment(
         raise not_found("pallet")
     if pallet.status != PalletStatus.AVAILABLE:
         raise bad_request(f"only available pallet can be reserved, got {pallet.status}")
+    if pallet.current_location_id is None:
+        raise bad_request("available pallet must have a current location")
     already_reserved = db.scalar(select(ShipmentPallet.id).where(ShipmentPallet.pallet_id == pallet.id))
     if already_reserved:
         raise bad_request("pallet already belongs to a shipment")
+    first_shipment_pallet = db.scalar(
+        select(Pallet)
+        .join(ShipmentPallet, ShipmentPallet.pallet_id == Pallet.id)
+        .where(ShipmentPallet.shipment_id == shipment.id)
+        .limit(1)
+    )
+    if first_shipment_pallet is not None:
+        first_location = db.get(Location, first_shipment_pallet.current_location_id)
+        pallet_location = db.get(Location, pallet.current_location_id)
+        if (
+            first_location is None
+            or pallet_location is None
+            or first_location.warehouse_id != pallet_location.warehouse_id
+        ):
+            raise bad_request("shipment pallets must belong to one warehouse")
 
     before = {"pallet_status": pallet.status, "shipment_status": shipment.status}
     pallet.status = PalletStatus.RESERVED
