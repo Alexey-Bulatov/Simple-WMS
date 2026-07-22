@@ -851,6 +851,31 @@ def test_scan_page_has_warehouse_switch_and_map_link():
     assert "function switchWarehouse" in page
 
 
+def test_workplace_is_default_and_keeps_technical_mode_available():
+    from app.web import root
+    from app.work_web import tech_page, work_page
+
+    response = root()
+    assert response.status_code in {302, 307}
+    assert response.headers["location"] == "/work"
+
+    workplace = work_page()
+    assert 'id="workWarehouse"' in workplace
+    assert 'id="workActor"' in workplace
+    assert 'data-operation="build"' in workplace
+    assert 'data-operation="place"' in workplace
+    assert 'href="/tech"' in workplace
+    assert 'post("/api/pallets"' in workplace
+    assert '/boxes/${encodeURIComponent(boxUid)}' in workplace
+    assert '/place`' in workplace
+
+    technical = tech_page()
+    assert "Все функции системы" in technical
+    assert 'href="/work"' in technical
+    assert 'href="/scan"' in technical
+    assert 'href="/catalog"' in technical
+
+
 def test_pages_use_one_stable_navigation_header():
     from app.map_web import map_page
     from app.transfer_web import transfers_page
@@ -868,11 +893,12 @@ def test_pages_use_one_stable_navigation_header():
     }
     expected_links = [
         "/scan",
-        "/terminal",
-        "/map",
         "/transfers",
         "/shipments",
         "/inventory",
+        "/work",
+        "/terminal",
+        "/map",
         "/catalog",
         "/cards",
         "/docs",

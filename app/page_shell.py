@@ -28,6 +28,7 @@ HEADER_CSS = """
       letter-spacing: 0;
       white-space: nowrap;
     }
+    .app-header h1 a { color: #fff; text-decoration: none; }
     .app-nav {
       min-width: 0;
       display: flex;
@@ -97,14 +98,15 @@ HEADER_CSS = """
 
 PRIMARY_LINKS = (
     ("scan", "/scan", "Склад"),
-    ("terminal", "/terminal", "ТСД"),
-    ("map", "/map", "Карта"),
     ("transfers", "/transfers", "Перемещения"),
     ("shipments", "/shipments", "Отгрузки"),
     ("inventory", "/inventory", "Инвентаризация"),
 )
 
 MORE_LINKS = (
+    ("work", "/work", "Рабочее место"),
+    ("terminal", "/terminal", "Эмулятор ТСД"),
+    ("map", "/map", "Карта склада"),
     ("catalog", "/catalog", "Справочники"),
     ("cards", "/cards", "Карточки"),
     ("docs", "/docs", "Документация API"),
@@ -122,7 +124,7 @@ def render_header(active: str, desktop_only: bool = False) -> str:
     more_active = " active" if active in {link[0] for link in MORE_LINKS} else ""
     desktop_class = " desktop-header" if desktop_only else ""
     return f"""  <header class="app-header{desktop_class}" data-page="{active}">
-    <h1>Складской пилот</h1>
+    <h1><a href="/tech">WMS · техрежим</a></h1>
     <nav class="app-nav" aria-label="Основные разделы">
 {primary}
       <details class="app-nav-more{more_active}">

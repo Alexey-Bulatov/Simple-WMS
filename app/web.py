@@ -8,7 +8,7 @@ router = APIRouter()
 
 @router.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
-    return RedirectResponse(url="/scan")
+    return RedirectResponse(url="/work")
 
 
 @router.get("/terminal", response_class=HTMLResponse, include_in_schema=False)

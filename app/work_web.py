@@ -1,0 +1,1082 @@
+from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
+
+
+router = APIRouter()
+
+
+@router.get("/work", response_class=HTMLResponse, include_in_schema=False)
+def work_page() -> str:
+    return """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Рабочее место WMS</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef2f3;
+      --surface: #fff;
+      --surface-soft: #f7f9fa;
+      --line: #d5dde1;
+      --line-strong: #aebbc2;
+      --text: #142129;
+      --muted: #65727a;
+      --accent: #087a70;
+      --accent-dark: #075f58;
+      --accent-soft: #e7f6f3;
+      --ok: #087443;
+      --ok-soft: #eaf8ef;
+      --warn: #9a5b0a;
+      --warn-soft: #fff6e5;
+      --danger: #b42318;
+      --danger-soft: #fff0ee;
+      --header: #111a20;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+      outline: 3px solid #f4b740;
+      outline-offset: 2px;
+    }
+    .work-header {
+      min-height: 62px;
+      padding: 9px 20px;
+      display: grid;
+      grid-template-columns: auto minmax(420px, 760px) auto;
+      align-items: center;
+      gap: 22px;
+      color: #fff;
+      background: var(--header);
+    }
+    .brand {
+      color: #fff;
+      font-size: 18px;
+      font-weight: 850;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .context {
+      display: grid;
+      grid-template-columns: minmax(230px, 1fr) minmax(180px, .7fr);
+      gap: 10px;
+    }
+    .context-field { min-width: 0; }
+    .context label {
+      display: block;
+      margin-bottom: 2px;
+      color: #aebcc4;
+      font-size: 10px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+    .context select, .context input {
+      width: 100%;
+      height: 36px;
+      min-width: 0;
+      padding: 5px 9px;
+      border: 1px solid #40505a;
+      border-radius: 5px;
+      background: #202c34;
+      color: #fff;
+    }
+    .tech-link {
+      min-height: 38px;
+      padding: 8px 11px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #52616a;
+      border-radius: 5px;
+      color: #d9e4e8;
+      font-size: 13px;
+      font-weight: 750;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .work-layout {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .operation-nav {
+      position: sticky;
+      top: 18px;
+      display: grid;
+      gap: 6px;
+    }
+    .nav-title {
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+    .operation-button {
+      width: 100%;
+      min-height: 56px;
+      padding: 9px 11px;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .operation-button:hover { background: #e2e8ea; }
+    .operation-button.active {
+      border-color: #a9d9d2;
+      background: var(--accent-soft);
+      color: var(--accent-dark);
+    }
+    .operation-number {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .operation-button strong { font-size: 14px; }
+    .queue-count {
+      min-width: 26px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: #dde5e8;
+      color: #3b4a52;
+      font-size: 11px;
+      font-weight: 850;
+      text-align: center;
+    }
+    .operation-button.active .queue-count { background: #c8eae5; color: var(--accent-dark); }
+    .nav-separator { height: 1px; margin: 10px 0; background: var(--line); }
+    .quiet-link {
+      padding: 8px 11px;
+      color: #41515a;
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .workspace {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+    }
+    .workflow-head {
+      padding: 20px 22px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin-bottom: 3px;
+      color: var(--accent-dark);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    h1, h2, p { margin-top: 0; }
+    h1 { margin-bottom: 5px; font-size: 24px; letter-spacing: 0; }
+    h2 { margin-bottom: 0; font-size: 16px; letter-spacing: 0; }
+    .workflow-description { margin-bottom: 0; color: var(--muted); }
+    .steps {
+      margin: 17px 0 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      list-style: none;
+    }
+    .step {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .step::after {
+      content: "";
+      height: 2px;
+      margin-inline: 8px;
+      grid-column: 3;
+      background: var(--line);
+    }
+    .step:last-child::after { display: none; }
+    .step-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--line-strong);
+      border-radius: 50%;
+      background: var(--surface);
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .step.active { color: var(--text); }
+    .step.active .step-mark { border-color: var(--accent); color: #fff; background: var(--accent); }
+    .step.done .step-mark { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+    .step.done::after { background: #7fc7a1; }
+    .workflow-body { padding: 20px 22px; display: grid; gap: 16px; }
+    .notice {
+      min-height: 46px;
+      padding: 11px 13px;
+      border-left: 4px solid #4d93c4;
+      border-radius: 4px;
+      background: #eef7fc;
+      font-weight: 750;
+    }
+    .notice.ok { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+    .notice.warn { border-color: #d89725; color: var(--warn); background: var(--warn-soft); }
+    .notice.err { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+    .scan-area {
+      padding: 16px;
+      border: 2px solid var(--accent);
+      border-radius: 7px;
+      background: #fbfefd;
+    }
+    .next-action {
+      margin-bottom: 9px;
+      display: block;
+      color: var(--accent-dark);
+      font-size: 16px;
+      font-weight: 850;
+    }
+    .scan-input {
+      width: 100%;
+      height: 64px;
+      padding: 10px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 5px;
+      background: #fff;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .scan-input:disabled { background: #edf1f2; color: var(--muted); }
+    .scan-hint { margin-top: 7px; color: var(--muted); font-size: 12px; }
+    .current-object {
+      display: none;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .current-object.visible { display: block; }
+    .object-head {
+      padding: 12px 0;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .object-kicker { color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
+    .object-code {
+      margin-top: 2px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 18px;
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+    .text-button {
+      min-height: 34px;
+      padding: 6px 9px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+      color: #40515a;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .facts {
+      padding: 0 0 14px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--line);
+    }
+    .fact { min-width: 0; padding: 10px; background: var(--surface-soft); }
+    .fact b { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .fact span { display: block; margin-top: 3px; font-weight: 850; overflow-wrap: anywhere; }
+    .action-row { display: flex; flex-wrap: wrap; gap: 9px; }
+    .primary-action, .secondary-action {
+      min-height: 46px;
+      padding: 9px 16px;
+      border-radius: 5px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+    .primary-action { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+    .primary-action:hover { background: var(--accent-dark); }
+    .secondary-action { border: 1px solid var(--accent); background: #fff; color: var(--accent-dark); }
+    button[hidden] { display: none; }
+    button:disabled { cursor: not-allowed; border-color: var(--line); background: #e7ecee; color: #89969d; }
+    .queue-section { border-top: 1px solid var(--line); }
+    .queue-head {
+      padding: 14px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--surface-soft);
+    }
+    .queue-subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .queue-list { max-height: 290px; overflow-y: auto; }
+    .queue-row {
+      min-height: 62px;
+      padding: 10px 22px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .queue-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 850; overflow-wrap: anywhere; }
+    .queue-meta { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .empty-row { padding: 18px 22px; border-top: 1px solid var(--line); color: var(--muted); }
+    .completion {
+      display: none;
+      padding: 18px;
+      border: 1px solid #a7dbbe;
+      border-radius: 6px;
+      background: var(--ok-soft);
+    }
+    .completion.visible { display: block; }
+    .completion strong { display: block; color: var(--ok); font-size: 17px; }
+    .completion-code { margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 850; }
+    @media (max-width: 900px) {
+      .work-header { grid-template-columns: 1fr auto; gap: 10px; padding: 9px 12px; }
+      .context { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; width: 100%; }
+      .work-layout { padding: 12px; grid-template-columns: 1fr; }
+      .operation-nav { position: static; grid-template-columns: 1fr 1fr; }
+      .nav-title, .nav-separator, .quiet-link { display: none; }
+    }
+    @media (max-width: 620px) {
+      .work-header { grid-template-columns: 1fr auto; }
+      .brand { font-size: 16px; }
+      .tech-link { width: 38px; overflow: hidden; color: transparent; position: relative; }
+      .tech-link::after { content: "..."; position: absolute; color: #d9e4e8; font-size: 18px; }
+      .context { grid-template-columns: 1fr; }
+      .work-layout { padding: 8px; gap: 8px; }
+      .operation-button { min-height: 52px; grid-template-columns: 24px 1fr auto; padding: 7px; }
+      .operation-number { width: 24px; height: 24px; }
+      .workflow-head, .workflow-body { padding: 16px 13px; }
+      h1 { font-size: 21px; }
+      .steps { gap: 4px; }
+      .step { grid-template-columns: 25px 1fr; gap: 5px; }
+      .step-mark { width: 25px; height: 25px; }
+      .step::after { display: none; }
+      .scan-input { height: 58px; font-size: 19px; }
+      .facts { grid-template-columns: 1fr 1fr; }
+      .action-row > * { width: 100%; }
+      .queue-head, .queue-row { padding-inline: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="work-header">
+    <a class="brand" href="/work">WMS Pilot</a>
+    <div class="context">
+      <div class="context-field">
+        <label for="workWarehouse">Склад</label>
+        <select id="workWarehouse" aria-label="Текущий склад"></select>
+      </div>
+      <div class="context-field">
+        <label for="workActor">Оператор</label>
+        <input id="workActor" aria-label="Оператор" autocomplete="off" value="Кладовщик">
+      </div>
+    </div>
+    <a class="tech-link" href="/tech">Технический режим</a>
+  </header>
+
+  <main class="work-layout">
+    <nav class="operation-nav" aria-label="Складские операции">
+      <div class="nav-title">Операции</div>
+      <button class="operation-button active" type="button" data-operation="build">
+        <span class="operation-number">1</span>
+        <strong>Формирование палеты</strong>
+        <span id="openCount" class="queue-count">0</span>
+      </button>
+      <button class="operation-button" type="button" data-operation="place">
+        <span class="operation-number">2</span>
+        <strong>Размещение палеты</strong>
+        <span id="waitingCount" class="queue-count">0</span>
+      </button>
+      <div class="nav-separator"></div>
+      <a class="quiet-link" href="/cards">Поиск объекта</a>
+      <a class="quiet-link" href="/tech">Все функции</a>
+    </nav>
+
+    <section class="workspace" aria-live="polite">
+      <div class="workflow-head">
+        <div class="eyebrow">Текущая операция</div>
+        <h1 id="operationTitle">Формирование палеты</h1>
+        <p id="operationDescription" class="workflow-description">Соберите коробки на палету и завершите формирование.</p>
+        <ol class="steps" aria-label="Этапы операции">
+          <li class="step active" data-step="1"><span class="step-mark">1</span><span id="stepOneLabel">Палета</span></li>
+          <li class="step" data-step="2"><span class="step-mark">2</span><span id="stepTwoLabel">Коробки</span></li>
+          <li class="step" data-step="3"><span class="step-mark">3</span><span id="stepThreeLabel">Завершение</span></li>
+        </ol>
+      </div>
+
+      <div class="workflow-body">
+        <div id="notice" class="notice">Загрузка рабочего места...</div>
+
+        <div id="scanArea" class="scan-area">
+          <label id="nextAction" class="next-action" for="workScan">Отсканируйте палету</label>
+          <input id="workScan" class="scan-input" autocomplete="off" autofocus placeholder="Код палеты">
+          <div id="scanHint" class="scan-hint">После сканирования нажмите Enter</div>
+        </div>
+
+        <div id="currentObject" class="current-object">
+          <div class="object-head">
+            <div>
+              <div class="object-kicker">Текущая палета</div>
+              <div id="palletCode" class="object-code">-</div>
+            </div>
+            <button id="clearPalletBtn" class="text-button" type="button">Сменить палету</button>
+          </div>
+          <div class="facts">
+            <div class="fact"><b>Статус</b><span id="palletStatus">-</span></div>
+            <div class="fact"><b>Коробок</b><span id="palletBoxCount">0</span></div>
+            <div class="fact"><b>Партия</b><span id="palletBatch">-</span></div>
+            <div class="fact"><b>Ячейка</b><span id="palletLocation">-</span></div>
+          </div>
+        </div>
+
+        <div id="completion" class="completion">
+          <strong id="completionTitle">Операция завершена</strong>
+          <div id="completionText"></div>
+          <div id="completionCode" class="completion-code"></div>
+        </div>
+
+        <div class="action-row">
+          <button id="newPalletBtn" class="primary-action" type="button">Открыть новую палету</button>
+          <button id="closePalletBtn" class="primary-action" type="button" hidden>Завершить формирование</button>
+          <button id="toPlacementBtn" class="primary-action" type="button" hidden>Перейти к размещению</button>
+          <button id="nextPalletBtn" class="primary-action" type="button" hidden>Разместить следующую палету</button>
+        </div>
+      </div>
+
+      <div class="queue-section">
+        <div class="queue-head">
+          <div>
+            <h2 id="queueTitle">Открытые палеты</h2>
+            <div id="queueSubtitle" class="queue-subtitle">Можно продолжить ранее начатую работу</div>
+          </div>
+          <button id="refreshQueueBtn" class="text-button" type="button">Обновить</button>
+        </div>
+        <div id="queueList" class="queue-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      operation: new URLSearchParams(window.location.search).get("operation") === "place" ? "place" : "build",
+      activePalletUid: localStorage.getItem("wms.work.activePalletUid") || "",
+      pallet: null,
+      boxes: [],
+      warehouses: [],
+      locations: [],
+      batches: [],
+      openPallets: [],
+      waitingPallets: [],
+      warehouseCode: localStorage.getItem("wms.work.warehouse") || "",
+      completedPlacement: null,
+      prefixes: { pallet: "PLT-", box: "BOX-" },
+    };
+
+    const statusLabels = {
+      open: "Открыта",
+      waiting_placement: "Ожидает размещения",
+      available: "Размещена",
+      reserved: "В резерве",
+      expedition: "В экспедиции",
+      loaded: "Погружена",
+      shipped: "Отгружена",
+      blocked: "Заблокирована",
+      quarantine: "Карантин",
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function actor() {
+      return $("workActor").value.trim() || "Кладовщик";
+    }
+
+    function focusScan() {
+      if (!$("workScan").disabled) setTimeout(() => $("workScan").focus(), 30);
+    }
+
+    function humanError(message) {
+      const text = String(message || "Не удалось выполнить операцию");
+      const mappings = [
+        ["pallet not found", "Палета не найдена"],
+        ["box not found", "Коробка не найдена"],
+        ["location not found", "Ячейка не найдена"],
+        ["already belongs", "Коробка уже находится на палете"],
+        ["different batch", "На палете уже находится другая партия"],
+        ["different product", "На палете уже находится другой товар"],
+        ["location is occupied", "Ячейка занята"],
+        ["cannot be accepted", "Коробка уже была принята"],
+        ["must be closed", "Сначала завершите формирование палеты"],
+      ];
+      const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
+      return found ? found[1] : text;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+      if (!response.ok) throw new Error(humanError(data?.detail || response.statusText));
+      return data;
+    }
+
+    function post(path, body = {}) {
+      return api(path, { method: "POST", body: JSON.stringify(body) });
+    }
+
+    function setNotice(message, kind = "") {
+      $("notice").className = `notice ${kind}`;
+      $("notice").textContent = message;
+    }
+
+    function setSteps(activeStep, completedSteps = []) {
+      document.querySelectorAll(".step").forEach((step) => {
+        const number = Number(step.dataset.step);
+        step.classList.toggle("active", number === activeStep);
+        step.classList.toggle("done", completedSteps.includes(number));
+      });
+    }
+
+    function batchLabel(batchId) {
+      const batch = state.batches.find((item) => item.id === batchId);
+      return batch?.batch_number || "-";
+    }
+
+    function locationCode(locationId) {
+      const location = state.locations.find((item) => item.id === locationId);
+      return location?.code || "-";
+    }
+
+    function selectedWarehouse() {
+      return state.warehouses.find((item) => item.code === state.warehouseCode);
+    }
+
+    function storageLocations() {
+      const warehouse = selectedWarehouse();
+      if (!warehouse) return [];
+      return state.locations.filter((item) => item.warehouse_id === warehouse.id && item.kind === "storage");
+    }
+
+    function persistActivePallet(uid) {
+      state.activePalletUid = uid || "";
+      if (state.activePalletUid) localStorage.setItem("wms.work.activePalletUid", state.activePalletUid);
+      else localStorage.removeItem("wms.work.activePalletUid");
+    }
+
+    function clearCompletion() {
+      state.completedPlacement = null;
+      $("completion").classList.remove("visible");
+    }
+
+    async function clearActivePallet(message = "Выбор палеты сброшен") {
+      persistActivePallet("");
+      state.pallet = null;
+      state.boxes = [];
+      clearCompletion();
+      render();
+      setNotice(message, "warn");
+      focusScan();
+    }
+
+    async function loadActivePallet() {
+      if (!state.activePalletUid) {
+        state.pallet = null;
+        state.boxes = [];
+        return;
+      }
+      try {
+        const [pallet, boxes] = await Promise.all([
+          api(`/api/pallets/${encodeURIComponent(state.activePalletUid)}`),
+          api(`/api/pallets/${encodeURIComponent(state.activePalletUid)}/boxes`),
+        ]);
+        state.pallet = pallet;
+        state.boxes = boxes;
+      } catch (error) {
+        persistActivePallet("");
+        state.pallet = null;
+        state.boxes = [];
+        setNotice(error.message, "err");
+      }
+    }
+
+    async function refreshQueues() {
+      const rows = await api("/api/pallets?status=open&status=waiting_placement&limit=200");
+      state.openPallets = rows.filter((item) => item.status === "open");
+      state.waitingPallets = rows.filter((item) => item.status === "waiting_placement");
+      $("openCount").textContent = state.openPallets.length;
+      $("waitingCount").textContent = state.waitingPallets.length;
+      renderQueue();
+    }
+
+    function renderCurrentPallet() {
+      const visible = Boolean(state.pallet);
+      $("currentObject").classList.toggle("visible", visible);
+      if (!visible) return;
+      $("palletCode").textContent = state.pallet.pallet_uid;
+      $("palletStatus").textContent = statusLabels[state.pallet.status] || state.pallet.status;
+      $("palletBoxCount").textContent = state.boxes.length;
+      $("palletBatch").textContent = batchLabel(state.pallet.batch_id);
+      $("palletLocation").textContent = locationCode(state.pallet.current_location_id);
+    }
+
+    function renderQueue() {
+      const rows = state.operation === "build" ? state.openPallets : state.waitingPallets;
+      $("queueTitle").textContent = state.operation === "build" ? "Открытые палеты" : "Ожидают размещения";
+      $("queueSubtitle").textContent = state.operation === "build"
+        ? "Можно продолжить ранее начатую работу"
+        : "Выберите палету или отсканируйте её код";
+      $("queueList").innerHTML = rows.map((pallet) => `
+        <div class="queue-row">
+          <div>
+            <div class="queue-code">${escapeHtml(pallet.pallet_uid)}</div>
+            <div class="queue-meta">${pallet.box_count} кор. · ${escapeHtml(batchLabel(pallet.batch_id))}</div>
+          </div>
+          <button class="text-button" type="button" data-pallet="${escapeHtml(pallet.pallet_uid)}">Выбрать</button>
+        </div>
+      `).join("") || `<div class="empty-row">${state.operation === "build" ? "Открытых палет нет" : "Все палеты размещены"}</div>`;
+      document.querySelectorAll("[data-pallet]").forEach((button) => {
+        button.addEventListener("click", () => selectPallet(button.dataset.pallet).catch(showError));
+      });
+    }
+
+    function showCompletion(title, text, code) {
+      $("completionTitle").textContent = title;
+      $("completionText").textContent = text;
+      $("completionCode").textContent = code;
+      $("completion").classList.add("visible");
+    }
+
+    function renderBuild() {
+      $("operationTitle").textContent = "Формирование палеты";
+      $("operationDescription").textContent = "Соберите коробки на палету и завершите формирование.";
+      $("stepOneLabel").textContent = "Палета";
+      $("stepTwoLabel").textContent = "Коробки";
+      $("stepThreeLabel").textContent = "Завершение";
+      $("nextPalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("newPalletBtn").hidden = Boolean(state.pallet);
+      $("closePalletBtn").hidden = true;
+      $("scanArea").hidden = false;
+      $("workScan").disabled = false;
+      clearCompletion();
+
+      if (!state.pallet) {
+        setSteps(1);
+        $("nextAction").textContent = "Отсканируйте палету или откройте новую";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = "Для продолжения можно выбрать палету из списка ниже";
+        return;
+      }
+
+      if (state.pallet.status === "open") {
+        setSteps(2, [1]);
+        $("nextAction").textContent = "Сканируйте коробки";
+        $("workScan").placeholder = "Код коробки";
+        $("scanHint").textContent = state.boxes.length
+          ? `На палете ${state.boxes.length} кор. После последней коробки завершите формирование.`
+          : "Первая коробка задаст товар и партию палеты";
+        $("closePalletBtn").hidden = state.boxes.length === 0;
+        return;
+      }
+
+      if (state.pallet.status === "waiting_placement") {
+        setSteps(3, [1, 2]);
+        $("scanArea").hidden = true;
+        $("toPlacementBtn").hidden = false;
+        showCompletion(
+          "Формирование завершено",
+          `Палета содержит ${state.boxes.length} кор. и готова к размещению.`,
+          state.pallet.pallet_uid,
+        );
+        return;
+      }
+
+      setSteps(1);
+      $("newPalletBtn").hidden = false;
+      $("scanArea").hidden = true;
+      setNotice("Эта палета недоступна для формирования. Выберите открытую палету.", "warn");
+    }
+
+    function renderPlace() {
+      $("operationTitle").textContent = "Размещение палеты";
+      $("operationDescription").textContent = `Разместите закрытую палету на складе ${state.warehouseCode || "-"}.`;
+      $("stepOneLabel").textContent = "Палета";
+      $("stepTwoLabel").textContent = "Ячейка";
+      $("stepThreeLabel").textContent = "Готово";
+      $("newPalletBtn").hidden = true;
+      $("closePalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("nextPalletBtn").hidden = true;
+      $("scanArea").hidden = false;
+      $("workScan").disabled = false;
+
+      if (state.completedPlacement) {
+        setSteps(3, [1, 2, 3]);
+        $("scanArea").hidden = true;
+        $("nextPalletBtn").hidden = false;
+        showCompletion(
+          "Палета размещена",
+          `Ячейка ${state.completedPlacement.locationCode}.`,
+          state.completedPlacement.palletUid,
+        );
+        return;
+      }
+
+      clearCompletion();
+      if (!state.pallet) {
+        setSteps(1);
+        $("nextAction").textContent = "Отсканируйте палету";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = "Нужна палета со статусом «Ожидает размещения»";
+        return;
+      }
+
+      if (state.pallet.status === "waiting_placement") {
+        setSteps(2, [1]);
+        $("nextAction").textContent = "Отсканируйте ячейку";
+        $("workScan").placeholder = "Код ячейки";
+        $("scanHint").textContent = `Будет использован склад ${state.warehouseCode}`;
+        return;
+      }
+
+      setSteps(1);
+      $("scanArea").hidden = true;
+      setNotice("Палета уже размещена или недоступна для размещения.", "warn");
+    }
+
+    function render() {
+      document.querySelectorAll("[data-operation]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.operation === state.operation);
+      });
+      renderCurrentPallet();
+      renderQueue();
+      if (state.operation === "build") renderBuild();
+      else renderPlace();
+    }
+
+    async function selectPallet(uid) {
+      clearCompletion();
+      persistActivePallet(uid);
+      await loadActivePallet();
+      if (!state.pallet) return render();
+      const allowed = state.operation === "build"
+        ? ["open", "waiting_placement"].includes(state.pallet.status)
+        : state.pallet.status === "waiting_placement";
+      if (!allowed) {
+        await clearActivePallet("Палета не подходит для выбранной операции");
+        return;
+      }
+      render();
+      setNotice(`Палета выбрана: ${uid}`, "ok");
+      focusScan();
+    }
+
+    async function createPallet() {
+      const pallet = await post("/api/pallets", { actor: actor() });
+      persistActivePallet(pallet.pallet_uid);
+      await loadActivePallet();
+      await refreshQueues();
+      render();
+      setNotice(`Открыта палета ${pallet.pallet_uid}. Сканируйте коробки.`, "ok");
+      focusScan();
+    }
+
+    async function addBox(boxUid) {
+      if (!state.pallet || state.pallet.status !== "open") {
+        throw new Error("Сначала откройте или выберите палету");
+      }
+      try {
+        await post(`/api/boxes/${encodeURIComponent(boxUid)}/accept`, { actor: actor() });
+      } catch (error) {
+        if (!String(error.message).includes("уже была принята")) throw error;
+      }
+      await post(
+        `/api/pallets/${encodeURIComponent(state.pallet.pallet_uid)}/boxes/${encodeURIComponent(boxUid)}`,
+        { actor: actor() },
+      );
+      await loadActivePallet();
+      await refreshQueues();
+      render();
+      setNotice(`Коробка добавлена: ${boxUid}`, "ok");
+    }
+
+    async function closePallet() {
+      if (!state.pallet) throw new Error("Сначала выберите палету");
+      await post(`/api/pallets/${encodeURIComponent(state.pallet.pallet_uid)}/close`, {
+        actor: actor(),
+        reason: "Рабочее место WMS",
+      });
+      await loadActivePallet();
+      await refreshQueues();
+      render();
+      setNotice("Формирование завершено. Палета ожидает размещения.", "ok");
+    }
+
+    async function placePallet(locationCodeValue) {
+      if (!state.pallet || state.pallet.status !== "waiting_placement") {
+        throw new Error("Сначала отсканируйте палету для размещения");
+      }
+      const location = storageLocations().find((item) => item.code === locationCodeValue);
+      if (!location) throw new Error(`Ячейка ${locationCodeValue} не относится к складу ${state.warehouseCode}`);
+      const palletUid = state.pallet.pallet_uid;
+      await post(`/api/pallets/${encodeURIComponent(palletUid)}/place`, {
+        actor: actor(),
+        reason: "Рабочее место WMS",
+        location_code: locationCodeValue,
+      });
+      state.completedPlacement = { palletUid, locationCode: locationCodeValue };
+      persistActivePallet("");
+      state.pallet = null;
+      state.boxes = [];
+      await refreshQueues();
+      render();
+      setNotice(`Палета размещена в ячейке ${locationCodeValue}`, "ok");
+    }
+
+    async function handleScan(rawValue) {
+      const value = rawValue.trim();
+      if (!value) return;
+      const isPallet = value.startsWith(state.prefixes.pallet);
+      const isBox = value.startsWith(state.prefixes.box);
+
+      if (state.operation === "build") {
+        if (!state.pallet) {
+          if (!isPallet) throw new Error("Сначала отсканируйте палету или откройте новую");
+          return selectPallet(value);
+        }
+        if (isPallet) return selectPallet(value);
+        if (!isBox) throw new Error("Сейчас ожидается код коробки");
+        return addBox(value);
+      }
+
+      if (!state.pallet) {
+        if (!isPallet) throw new Error("Сначала отсканируйте палету");
+        return selectPallet(value);
+      }
+      if (isPallet) return selectPallet(value);
+      if (isBox) throw new Error("Сейчас ожидается код ячейки");
+      return placePallet(value);
+    }
+
+    function showError(error) {
+      setNotice(humanError(error.message), "err");
+      focusScan();
+    }
+
+    async function switchOperation(operation, keepPallet = false) {
+      state.operation = operation;
+      clearCompletion();
+      if (!keepPallet) {
+        const compatible = state.pallet && (
+          operation === "build"
+            ? ["open", "waiting_placement"].includes(state.pallet.status)
+            : state.pallet.status === "waiting_placement"
+        );
+        if (!compatible) {
+          persistActivePallet("");
+          state.pallet = null;
+          state.boxes = [];
+        }
+      }
+      history.replaceState(null, "", `/work?operation=${operation}`);
+      render();
+      setNotice(
+        operation === "build"
+          ? "Выберите палету или откройте новую"
+          : "Отсканируйте палету, ожидающую размещения",
+      );
+      focusScan();
+    }
+
+    async function initialize() {
+      const [constants, warehouses, locations, batches] = await Promise.all([
+        api("/api/meta/constants"),
+        api("/api/warehouses"),
+        api("/api/locations"),
+        api("/api/batches"),
+      ]);
+      state.prefixes.pallet = `${constants.pallet_code_prefix}-`;
+      state.prefixes.box = `${constants.box_code_prefix}-`;
+      state.warehouses = warehouses;
+      state.locations = locations;
+      state.batches = batches;
+
+      $("workWarehouse").innerHTML = warehouses.map((warehouse) =>
+        `<option value="${escapeHtml(warehouse.code)}">${escapeHtml(warehouse.code)} — ${escapeHtml(warehouse.name)}</option>`,
+      ).join("");
+      if (!warehouses.some((item) => item.code === state.warehouseCode)) {
+        state.warehouseCode = warehouses.some((item) => item.code === constants.default_warehouse_code)
+          ? constants.default_warehouse_code
+          : warehouses[0]?.code || "";
+      }
+      $("workWarehouse").value = state.warehouseCode;
+      $("workActor").value = localStorage.getItem("wms.work.actor") || "Кладовщик";
+
+      await loadActivePallet();
+      const activeIsCompatible = state.pallet && (
+        state.operation === "build"
+          ? ["open", "waiting_placement"].includes(state.pallet.status)
+          : state.pallet.status === "waiting_placement"
+      );
+      if (state.pallet && !activeIsCompatible) {
+        persistActivePallet("");
+        state.pallet = null;
+        state.boxes = [];
+      }
+      await refreshQueues();
+      render();
+      setNotice(
+        state.operation === "build"
+          ? "Выберите палету или откройте новую"
+          : "Отсканируйте палету, ожидающую размещения",
+      );
+      focusScan();
+    }
+
+    document.querySelectorAll("[data-operation]").forEach((button) => {
+      button.addEventListener("click", () => switchOperation(button.dataset.operation).catch(showError));
+    });
+    $("workScan").addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const value = event.currentTarget.value;
+      event.currentTarget.value = "";
+      try { await handleScan(value); } catch (error) { showError(error); } finally { focusScan(); }
+    });
+    $("workWarehouse").addEventListener("change", (event) => {
+      state.warehouseCode = event.currentTarget.value;
+      localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+      clearCompletion();
+      render();
+      setNotice(`Выбран склад: ${state.warehouseCode}`, "ok");
+      focusScan();
+    });
+    $("workActor").addEventListener("change", () => localStorage.setItem("wms.work.actor", actor()));
+    $("newPalletBtn").addEventListener("click", () => createPallet().catch(showError));
+    $("closePalletBtn").addEventListener("click", () => closePallet().catch(showError));
+    $("clearPalletBtn").addEventListener("click", () => clearActivePallet().catch(showError));
+    $("refreshQueueBtn").addEventListener("click", () => refreshQueues().then(render).then(focusScan).catch(showError));
+    $("toPlacementBtn").addEventListener("click", () => switchOperation("place", true).catch(showError));
+    $("nextPalletBtn").addEventListener("click", () => {
+      clearCompletion();
+      render();
+      setNotice("Отсканируйте следующую палету");
+      focusScan();
+    });
+
+    initialize().catch(showError);
+  </script>
+</body>
+</html>"""
+
+
+@router.get("/tech", response_class=HTMLResponse, include_in_schema=False)
+def tech_page() -> str:
+    return """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Технический режим WMS</title>
+  <style>
+    :root { --bg: #eef2f3; --panel: #fff; --line: #d5dde1; --text: #142129; --muted: #65727a; --accent: #087a70; --dark: #111a20; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { min-height: 58px; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #fff; background: var(--dark); }
+    header strong { font-size: 17px; }
+    header a { min-height: 36px; padding: 7px 11px; display: inline-flex; align-items: center; border: 1px solid #52616a; border-radius: 5px; color: #e5edef; font-weight: 750; text-decoration: none; }
+    main { width: min(980px, 100%); margin: 0 auto; padding: 26px 18px; }
+    h1 { margin: 0; font-size: 26px; letter-spacing: 0; }
+    .lead { margin: 7px 0 26px; color: var(--muted); }
+    .groups { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    section { min-width: 0; }
+    h2 { margin: 0 0 10px; padding-bottom: 9px; border-bottom: 2px solid var(--line); font-size: 16px; letter-spacing: 0; }
+    .links { display: grid; }
+    .links a { padding: 11px 4px; border-bottom: 1px solid var(--line); color: #175f59; font-weight: 750; text-decoration: none; }
+    .links a:hover { color: var(--accent); background: #f6faf9; }
+    .links span { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    @media (max-width: 760px) { .groups { grid-template-columns: 1fr; gap: 26px; } main { padding: 20px 13px; } }
+  </style>
+</head>
+<body>
+  <header><strong>WMS · технический режим</strong><a href="/work">Рабочее место</a></header>
+  <main>
+    <h1>Все функции системы</h1>
+    <p class="lead">Полные экраны пилота, справочники и средства проверки.</p>
+    <div class="groups">
+      <section>
+        <h2>Операции</h2>
+        <div class="links">
+          <a href="/scan">Склад<span>Палеты, коробки, размещение и служебные действия</span></a>
+          <a href="/transfers">Перемещения<span>Между складами</span></a>
+          <a href="/shipments">Отгрузки<span>Заявки, резерв и погрузка</span></a>
+          <a href="/inventory">Инвентаризация<span>Обходы и расхождения</span></a>
+          <a href="/terminal">Эмулятор ТСД<span>Компактные рабочие сценарии</span></a>
+        </div>
+      </section>
+      <section>
+        <h2>Контроль</h2>
+        <div class="links">
+          <a href="/cards">Карточки объектов<span>Палеты, коробки и ячейки</span></a>
+          <a href="/map">Карта склада<span>Состояние и редактор схемы</span></a>
+        </div>
+      </section>
+      <section>
+        <h2>Управление</h2>
+        <div class="links">
+          <a href="/catalog">Справочники<span>Демо-данные, импорт и этикетки</span></a>
+          <a href="/docs">Документация API<span>Контракты backend</span></a>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>"""
