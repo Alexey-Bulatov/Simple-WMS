@@ -378,7 +378,7 @@ def work_page() -> str:
     .shipment-create.visible { display: grid; gap: 12px; }
     .shipment-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .shipment-fields label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
-    .shipment-fields input { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
+    .shipment-fields input, .shipment-fields select { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
     .progress-track { height: 10px; margin: 0 0 14px; overflow: hidden; border-radius: 5px; background: #dde5e8; }
     .progress-fill { width: 0; height: 100%; background: var(--accent); transition: width .2s ease; }
     .problem-box { display: none; padding: 13px 0 0; border-top: 1px solid var(--line); }
@@ -392,7 +392,7 @@ def work_page() -> str:
       .work-header { grid-template-columns: 1fr auto; gap: 10px; padding: 9px 12px; }
       .context { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; width: 100%; }
       .work-layout { padding: 12px; grid-template-columns: 1fr; }
-      .operation-nav { position: static; grid-template-columns: repeat(5, 1fr); }
+      .operation-nav { position: static; grid-template-columns: repeat(6, 1fr); }
       .nav-title, .nav-separator, .quiet-link { display: none; }
     }
     @media (max-width: 620px) {
@@ -470,6 +470,11 @@ def work_page() -> str:
         <strong>Инвентаризация</strong>
         <span id="inventoryCount" class="queue-count">0</span>
       </button>
+      <button class="operation-button" type="button" data-operation="transfer">
+        <span class="operation-number">6</span>
+        <strong>Между складами</strong>
+        <span id="transferCount" class="queue-count">0</span>
+      </button>
       <div class="nav-separator"></div>
       <a class="quiet-link" href="/cards">Поиск объекта</a>
       <a class="quiet-link" href="/tech">Все функции</a>
@@ -508,6 +513,21 @@ def work_page() -> str:
         <div id="inventoryStart" class="shipment-create">
           <strong id="inventoryStartTitle">Начать обход склада</strong>
           <button id="startInventoryBtn" class="primary-action" type="button">Начать инвентаризацию</button>
+        </div>
+
+        <div id="transferCreate" class="shipment-create">
+          <strong>Новое межскладское перемещение</strong>
+          <div class="shipment-fields">
+            <div>
+              <label for="transferDestination">Склад назначения</label>
+              <select id="transferDestination"></select>
+            </div>
+            <div>
+              <label for="transferVehicle">Автомобиль</label>
+              <input id="transferVehicle" autocomplete="off" placeholder="Например, А000АА 77">
+            </div>
+          </div>
+          <button id="createTransferBtn" class="primary-action" type="button">Создать перемещение</button>
         </div>
 
         <div id="scanArea" class="scan-area">
@@ -567,6 +587,22 @@ def work_page() -> str:
           </div>
         </div>
 
+        <div id="transferObject" class="current-object">
+          <div class="object-head">
+            <div>
+              <div class="object-kicker">Текущее перемещение</div>
+              <div id="transferCode" class="object-code">-</div>
+            </div>
+            <button id="clearTransferBtn" class="text-button" type="button">Сменить документ</button>
+          </div>
+          <div class="facts">
+            <div class="fact"><b>Маршрут</b><span id="transferRoute">-</span></div>
+            <div class="fact"><b>Статус</b><span id="transferStatus">-</span></div>
+            <div class="fact"><b>Погружено</b><span id="transferLoaded">0 / 0</span></div>
+            <div class="fact"><b>Принято</b><span id="transferReceived">0 / 0</span></div>
+          </div>
+        </div>
+
         <div id="inventoryProblems" class="problem-box">
           <div class="problem-head">
             <h2>Расхождения</h2>
@@ -592,6 +628,10 @@ def work_page() -> str:
           <button id="emptyLocationBtn" class="secondary-action" type="button" hidden>Пусто</button>
           <button id="completeInventoryBtn" class="primary-action" type="button" hidden>Завершить инвентаризацию</button>
           <button id="newInventoryBtn" class="primary-action" type="button" hidden>Следующая инвентаризация</button>
+          <button id="transferExpeditionBtn" class="primary-action" type="button" hidden>Передать в экспедицию</button>
+          <button id="dispatchTransferBtn" class="primary-action" type="button" hidden>Отправить в путь</button>
+          <button id="placeTransferBtn" class="primary-action" type="button" hidden>Разместить принятые палеты</button>
+          <button id="newTransferBtn" class="primary-action" type="button" hidden>Следующее перемещение</button>
         </div>
       </div>
 
@@ -612,7 +652,7 @@ def work_page() -> str:
     const $ = (id) => document.getElementById(id);
     const requestedOperation = new URLSearchParams(window.location.search).get("operation");
     const state = {
-      operation: ["place", "move", "ship", "inventory"].includes(requestedOperation) ? requestedOperation : "build",
+      operation: ["place", "move", "ship", "inventory", "transfer"].includes(requestedOperation) ? requestedOperation : "build",
       activePalletUid: localStorage.getItem("wms.work.activePalletUid") || "",
       pallet: null,
       boxes: [],
@@ -631,6 +671,10 @@ def work_page() -> str:
       inventory: null,
       inventoryProgress: null,
       inventoryLines: [],
+      transfers: [],
+      activeTransferUid: localStorage.getItem("wms.work.activeTransferUid") || "",
+      transfer: null,
+      transferPallets: [],
       warehouseCode: localStorage.getItem("wms.work.warehouse") || "",
       completedPlacement: null,
       completedMove: null,
@@ -677,6 +721,25 @@ def work_page() -> str:
       wrong_location: "Чужая ячейка",
     };
 
+    const transferStatusLabels = {
+      draft: "Черновик",
+      reserved: "Палеты зарезервированы",
+      expedition: "В экспедиции",
+      loading: "Идёт погрузка",
+      in_transit: "В пути",
+      receiving: "Идёт приёмка",
+      completed: "Завершено",
+      cancelled: "Отменено",
+    };
+
+    const transferPalletStatusLabels = {
+      reserved: "В резерве",
+      expedition: "Ожидает погрузки",
+      loaded: "Погружена",
+      in_transit: "В пути",
+      received: "Принята",
+    };
+
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -700,7 +763,7 @@ def work_page() -> str:
         ["pallet not found", "Палета не найдена"],
         ["box not found", "Коробка не найдена"],
         ["location not found", "Ячейка не найдена"],
-        ["already belongs", "Коробка уже находится на палете"],
+        ["box already belongs to a pallet", "Коробка уже находится на палете"],
         ["different batch", "На палете уже находится другая партия"],
         ["different product", "На палете уже находится другой товар"],
         ["location is occupied", "Ячейка занята"],
@@ -730,6 +793,20 @@ def work_page() -> str:
         ["inventory has unchecked locations", "Сначала проверьте все ячейки склада"],
         ["inventory discrepancy is already resolved", "Расхождение уже обработано"],
         ["inventory discrepancy line not found", "Расхождение не найдено"],
+        ["transfer not found", "Перемещение не найдено"],
+        ["source and destination warehouses must be different", "Склад назначения должен отличаться от склада отправления"],
+        ["transfer cannot accept pallets", "В этот документ больше нельзя добавлять палеты"],
+        ["pallet is not located at the source warehouse", "Палета находится не на складе отправления"],
+        ["pallet already belongs to an active transfer", "Палета уже включена в другое перемещение"],
+        ["pallet already belongs to this transfer", "Палета уже включена в это перемещение"],
+        ["only reserved transfer can be moved to expedition", "Сначала добавьте палеты в документ"],
+        ["transfer has no reserved pallets", "В перемещении нет палет"],
+        ["transfer must be in expedition or loading status", "Сначала передайте палеты в экспедицию"],
+        ["pallet does not belong to this transfer", "Палета не входит в выбранное перемещение"],
+        ["all transfer pallets must be loaded before dispatch", "Сначала погрузите все палеты"],
+        ["transfer must be in transit or receiving status", "Перемещение ещё не отправлено"],
+        ["pallet was not sent in this transfer", "Палета не отправлялась по этому документу"],
+        ["pallet already received", "Палета уже принята"],
       ];
       const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
       return found ? found[1] : text;
@@ -815,6 +892,13 @@ def work_page() -> str:
       );
     }
 
+    function transfersForSelectedWarehouse() {
+      return state.transfers.filter((transfer) =>
+        transfer.source_warehouse_code === state.warehouseCode
+        || transfer.destination_warehouse_code === state.warehouseCode,
+      );
+    }
+
     function persistActivePallet(uid) {
       state.activePalletUid = uid || "";
       if (state.activePalletUid) localStorage.setItem("wms.work.activePalletUid", state.activePalletUid);
@@ -831,6 +915,12 @@ def work_page() -> str:
       state.activeInventoryUid = uid || "";
       if (state.activeInventoryUid) localStorage.setItem("wms.work.activeInventoryUid", state.activeInventoryUid);
       else localStorage.removeItem("wms.work.activeInventoryUid");
+    }
+
+    function persistActiveTransfer(uid) {
+      state.activeTransferUid = uid || "";
+      if (state.activeTransferUid) localStorage.setItem("wms.work.activeTransferUid", state.activeTransferUid);
+      else localStorage.removeItem("wms.work.activeTransferUid");
     }
 
     function clearCompletion() {
@@ -863,6 +953,15 @@ def work_page() -> str:
       state.inventory = null;
       state.inventoryProgress = null;
       state.inventoryLines = [];
+      clearCompletion();
+      render();
+      setNotice(message, "warn");
+    }
+
+    async function clearActiveTransfer(message = "Выбор перемещения сброшен") {
+      persistActiveTransfer("");
+      state.transfer = null;
+      state.transferPallets = [];
       clearCompletion();
       render();
       setNotice(message, "warn");
@@ -935,34 +1034,58 @@ def work_page() -> str:
       }
     }
 
+    async function loadActiveTransfer() {
+      if (!state.activeTransferUid) {
+        state.transfer = null;
+        state.transferPallets = [];
+        return;
+      }
+      try {
+        const [transfer, pallets] = await Promise.all([
+          api(`/api/transfers/${encodeURIComponent(state.activeTransferUid)}`),
+          api(`/api/transfers/${encodeURIComponent(state.activeTransferUid)}/pallets`),
+        ]);
+        state.transfer = transfer;
+        state.transferPallets = pallets;
+      } catch (error) {
+        persistActiveTransfer("");
+        state.transfer = null;
+        state.transferPallets = [];
+        setNotice(error.message, "err");
+      }
+    }
+
     async function refreshQueues() {
-      const [rows, availableRows, shipments, inventories] = await Promise.all([
+      const [rows, availableRows, shipments, inventories, transfers] = await Promise.all([
         api("/api/pallets?status=open&status=waiting_placement&limit=200"),
         api(`/api/pallets?status=available&warehouse_code=${encodeURIComponent(state.warehouseCode)}&limit=200`),
         api("/api/shipments?status=draft&status=reserved&status=expedition&status=loading&limit=100"),
         api("/api/inventories?limit=100"),
+        api("/api/transfers?status=draft&status=reserved&status=expedition&status=loading&status=in_transit&status=receiving&limit=100"),
       ]);
       state.openPallets = rows.filter((item) => item.status === "open");
       state.waitingPallets = rows.filter((item) => item.status === "waiting_placement");
       state.availablePallets = availableRows;
       state.shipments = shipments;
       state.inventories = inventories;
+      state.transfers = transfers;
       $("openCount").textContent = state.openPallets.length;
       $("waitingCount").textContent = state.waitingPallets.length;
       $("availableCount").textContent = state.availablePallets.length;
       $("shipmentCount").textContent = state.shipments.length;
       $("inventoryCount").textContent = openInventoriesForSelectedWarehouse().length;
+      $("transferCount").textContent = transfersForSelectedWarehouse().length;
       renderQueue();
     }
 
     async function refreshWorkplace() {
-      await Promise.all([loadActivePallet(), loadActiveShipment(), loadActiveInventory()]);
+      await Promise.all([loadActivePallet(), loadActiveShipment(), loadActiveInventory(), loadActiveTransfer()]);
       await refreshQueues();
       render();
     }
 
     function renderCurrentPallet() {
-      const visible = Boolean(state.pallet) && state.operation !== "ship";
+      const visible = Boolean(state.pallet) && ["build", "place", "move"].includes(state.operation);
       $("currentObject").classList.toggle("visible", visible);
       if (!visible) return;
       $("palletCode").textContent = state.pallet.pallet_uid;
@@ -994,6 +1117,17 @@ def work_page() -> str:
       $("inventoryChecked").textContent = progress ? `${progress.checked_locations} / ${progress.total_locations}` : "0 / 0";
       $("inventoryProblemsCount").textContent = progress?.problem_lines.length || 0;
       $("inventoryProgressFill").style.width = `${progress?.progress_percent || 0}%`;
+    }
+
+    function renderCurrentTransfer() {
+      const visible = state.operation === "transfer" && Boolean(state.transfer);
+      $("transferObject").classList.toggle("visible", visible);
+      if (!visible) return;
+      $("transferCode").textContent = state.transfer.transfer_uid;
+      $("transferRoute").textContent = `${state.transfer.source_warehouse_code} → ${state.transfer.destination_warehouse_code}`;
+      $("transferStatus").textContent = transferStatusLabels[state.transfer.status] || state.transfer.status;
+      $("transferLoaded").textContent = `${state.transfer.loaded_count} / ${state.transfer.pallet_count}`;
+      $("transferReceived").textContent = `${state.transfer.received_count} / ${state.transfer.pallet_count}`;
     }
 
     function inventoryResolution(status) {
@@ -1030,6 +1164,9 @@ def work_page() -> str:
     function renderQueue() {
       if (state.operation === "inventory") {
         return renderInventoryQueue();
+      }
+      if (state.operation === "transfer") {
+        return renderTransferQueue();
       }
       if (state.operation === "ship") {
         return renderShipmentQueue();
@@ -1174,6 +1311,72 @@ def work_page() -> str:
       }).join("") || '<div class="empty-row">В заявке нет палет</div>';
       document.querySelectorAll("[data-load-pallet]").forEach((button) => {
         button.addEventListener("click", () => loadShipmentPallet(button.dataset.loadPallet).catch(showError));
+      });
+    }
+
+    function renderTransferQueue() {
+      if (!state.transfer || state.transfer.status === "completed") {
+        const rows = transfersForSelectedWarehouse();
+        $("queueTitle").textContent = "Межскладские перемещения в работе";
+        $("queueSubtitle").textContent = "Продолжите документ отправления или приёмки";
+        $("queueList").innerHTML = rows.map((transfer) => `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(transfer.transfer_uid)}</div>
+              <div class="queue-meta">${escapeHtml(transfer.source_warehouse_code)} → ${escapeHtml(transfer.destination_warehouse_code)} · ${escapeHtml(transferStatusLabels[transfer.status] || transfer.status)} · ${transfer.pallet_count} пал.</div>
+            </div>
+            <button class="text-button" type="button" data-transfer="${escapeHtml(transfer.transfer_uid)}">Продолжить</button>
+          </div>
+        `).join("") || '<div class="empty-row">Незавершённых перемещений нет</div>';
+        document.querySelectorAll("[data-transfer]").forEach((button) => {
+          button.addEventListener("click", () => selectTransfer(button.dataset.transfer).catch(showError));
+        });
+        return;
+      }
+
+      if (["draft", "reserved"].includes(state.transfer.status)) {
+        $("queueTitle").textContent = `Доступные палеты склада ${state.transfer.source_warehouse_code}`;
+        $("queueSubtitle").textContent = "Добавляйте палеты сканером или кнопкой";
+        $("queueList").innerHTML = state.availablePallets.map((pallet) => `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(pallet.pallet_uid)}</div>
+              <div class="queue-meta">${pallet.box_count} кор. · ${escapeHtml(batchLabel(pallet.batch_id))} · ${escapeHtml(pallet.current_location_code || "-")}</div>
+            </div>
+            <button class="text-button" type="button" data-reserve-transfer-pallet="${escapeHtml(pallet.pallet_uid)}">В документ</button>
+          </div>
+        `).join("") || '<div class="empty-row">На складе отправления нет доступных палет</div>';
+        document.querySelectorAll("[data-reserve-transfer-pallet]").forEach((button) => {
+          button.addEventListener("click", () => reserveTransferPallet(button.dataset.reserveTransferPallet).catch(showError));
+        });
+        return;
+      }
+
+      const receiving = ["in_transit", "receiving"].includes(state.transfer.status);
+      $("queueTitle").textContent = receiving ? "Палеты к приёмке" : "Палеты перемещения";
+      $("queueSubtitle").textContent = receiving
+        ? "Подтвердите приёмку сканированием каждой палеты"
+        : "Погрузка подтверждается сканированием каждой палеты";
+      $("queueList").innerHTML = state.transferPallets.map((row) => {
+        const canLoad = ["expedition", "loading"].includes(state.transfer.status)
+          && row.transfer_pallet_status === "expedition";
+        const canReceive = receiving && row.transfer_pallet_status === "in_transit";
+        return `
+          <div class="queue-row">
+            <div>
+              <div class="queue-code">${escapeHtml(row.pallet.pallet_uid)}</div>
+              <div class="queue-meta">${row.pallet.box_count} кор. · ${escapeHtml(transferPalletStatusLabels[row.transfer_pallet_status] || row.transfer_pallet_status)}</div>
+            </div>
+            ${canLoad ? `<button class="text-button" type="button" data-load-transfer-pallet="${escapeHtml(row.pallet.pallet_uid)}">Погрузить</button>` : ""}
+            ${canReceive ? `<button class="text-button" type="button" data-receive-transfer-pallet="${escapeHtml(row.pallet.pallet_uid)}">Принять</button>` : ""}
+            ${!canLoad && !canReceive ? '<span class="queue-count">Готово</span>' : ""}
+          </div>`;
+      }).join("") || '<div class="empty-row">В документе нет палет</div>';
+      document.querySelectorAll("[data-load-transfer-pallet]").forEach((button) => {
+        button.addEventListener("click", () => loadTransferPallet(button.dataset.loadTransferPallet).catch(showError));
+      });
+      document.querySelectorAll("[data-receive-transfer-pallet]").forEach((button) => {
+        button.addEventListener("click", () => receiveTransferPallet(button.dataset.receiveTransferPallet).catch(showError));
       });
     }
 
@@ -1468,6 +1671,81 @@ def work_page() -> str:
         : "Завершить инвентаризацию";
     }
 
+    function renderTransfer() {
+      setStepCount(4);
+      $("operationTitle").textContent = "Межскладское перемещение";
+      $("operationDescription").textContent = "Отправьте палеты с одного склада и примите их на другом.";
+      $("stepOneLabel").textContent = "Документ";
+      $("stepTwoLabel").textContent = "Подбор";
+      $("stepThreeLabel").textContent = "Отправка";
+      $("stepFourLabel").textContent = "Приёмка";
+      $("newPalletBtn").hidden = true;
+      $("closePalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("nextPalletBtn").hidden = true;
+      $("toExpeditionBtn").hidden = true;
+      $("closeShipmentBtn").hidden = true;
+      $("newShipmentBtn").hidden = true;
+      $("emptyLocationBtn").hidden = true;
+      $("completeInventoryBtn").hidden = true;
+      $("newInventoryBtn").hidden = true;
+      $("transferExpeditionBtn").hidden = true;
+      $("dispatchTransferBtn").hidden = true;
+      $("placeTransferBtn").hidden = true;
+      $("newTransferBtn").hidden = true;
+      $("transferCreate").classList.remove("visible");
+      $("scanArea").hidden = false;
+      $("workScan").disabled = false;
+      clearCompletion();
+
+      if (!state.transfer) {
+        setSteps(1);
+        $("scanArea").hidden = true;
+        $("transferCreate").classList.add("visible");
+        return;
+      }
+
+      if (["draft", "reserved"].includes(state.transfer.status)) {
+        setSteps(2, [1]);
+        $("nextAction").textContent = "Сканируйте палеты в документ";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = `Маршрут ${state.transfer.source_warehouse_code} → ${state.transfer.destination_warehouse_code}`;
+        $("transferExpeditionBtn").hidden = state.transfer.pallet_count === 0;
+        return;
+      }
+
+      if (["expedition", "loading"].includes(state.transfer.status)) {
+        setSteps(3, [1, 2]);
+        $("nextAction").textContent = "Сканируйте палеты при погрузке";
+        $("workScan").placeholder = "Код палеты";
+        $("scanHint").textContent = `Погружено ${state.transfer.loaded_count} из ${state.transfer.pallet_count}`;
+        $("dispatchTransferBtn").hidden = !(
+          state.transfer.status === "loading"
+          && state.transfer.pallet_count > 0
+          && state.transfer.loaded_count === state.transfer.pallet_count
+        );
+        return;
+      }
+
+      if (["in_transit", "receiving"].includes(state.transfer.status)) {
+        setSteps(4, [1, 2, 3]);
+        $("nextAction").textContent = `Приёмка на складе ${state.transfer.destination_warehouse_code}`;
+        $("workScan").placeholder = "Код принятой палеты";
+        $("scanHint").textContent = `Принято ${state.transfer.received_count} из ${state.transfer.pallet_count}`;
+        return;
+      }
+
+      setSteps(4, [1, 2, 3, 4]);
+      $("scanArea").hidden = true;
+      $("placeTransferBtn").hidden = state.transfer.received_count === 0;
+      $("newTransferBtn").hidden = false;
+      showCompletion(
+        "Перемещение завершено",
+        `Принято ${state.transfer.received_count} пал. Они ожидают размещения на складе ${state.transfer.destination_warehouse_code}.`,
+        state.transfer.transfer_uid,
+      );
+    }
+
     function render() {
       if (state.operation !== "ship") {
         $("shipmentCreate").classList.remove("visible");
@@ -1482,6 +1760,13 @@ def work_page() -> str:
         $("newInventoryBtn").hidden = true;
         $("inventoryProblems").classList.remove("visible");
       }
+      if (state.operation !== "transfer") {
+        $("transferCreate").classList.remove("visible");
+        $("transferExpeditionBtn").hidden = true;
+        $("dispatchTransferBtn").hidden = true;
+        $("placeTransferBtn").hidden = true;
+        $("newTransferBtn").hidden = true;
+      }
       document.querySelectorAll("[data-operation]").forEach((button) => {
         button.classList.toggle("active", button.dataset.operation === state.operation);
       });
@@ -1493,13 +1778,15 @@ def work_page() -> str:
       renderCurrentPallet();
       renderCurrentShipment();
       renderCurrentInventory();
+      renderCurrentTransfer();
       renderInventoryProblems();
       renderQueue();
       if (state.operation === "build") renderBuild();
       else if (state.operation === "place") renderPlace();
       else if (state.operation === "move") renderMove();
       else if (state.operation === "ship") renderShipment();
-      else renderInventory();
+      else if (state.operation === "inventory") renderInventory();
+      else renderTransfer();
     }
 
     async function selectPallet(uid) {
@@ -1607,6 +1894,144 @@ def work_page() -> str:
       await refreshQueues();
       render();
       setNotice("Отгрузка завершена. Складские ячейки освобождены.", "ok");
+    }
+
+    function transferWorkWarehouse(transfer) {
+      return ["in_transit", "receiving", "completed"].includes(transfer.status)
+        ? transfer.destination_warehouse_code
+        : transfer.source_warehouse_code;
+    }
+
+    function updateTransferDestinations() {
+      const destinations = state.warehouses.filter((warehouse) => warehouse.code !== state.warehouseCode);
+      const previous = $("transferDestination").value;
+      $("transferDestination").innerHTML = destinations.map((warehouse) =>
+        `<option value="${escapeHtml(warehouse.code)}">${escapeHtml(warehouse.code)} — ${escapeHtml(warehouse.name)}</option>`,
+      ).join("");
+      if (destinations.some((item) => item.code === previous)) $("transferDestination").value = previous;
+    }
+
+    async function selectTransfer(uid) {
+      clearCompletion();
+      persistActiveTransfer(uid);
+      await loadActiveTransfer();
+      if (!state.transfer) return render();
+      const workWarehouse = transferWorkWarehouse(state.transfer);
+      if (workWarehouse && workWarehouse !== state.warehouseCode) {
+        state.warehouseCode = workWarehouse;
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+        updateTransferDestinations();
+      }
+      await refreshQueues();
+      render();
+      setNotice(`Выбрано перемещение ${uid}`, "ok");
+      focusScan();
+    }
+
+    async function createTransfer() {
+      const destination = $("transferDestination").value;
+      if (!destination) throw new Error("Добавьте второй склад для межскладского перемещения");
+      const transfer = await post("/api/transfers", {
+        actor: actor(),
+        source_warehouse_code: state.warehouseCode,
+        destination_warehouse_code: destination,
+        vehicle_number: $("transferVehicle").value.trim() || null,
+      });
+      persistActiveTransfer(transfer.transfer_uid);
+      await loadActiveTransfer();
+      await refreshQueues();
+      render();
+      setNotice(`Создано перемещение ${transfer.transfer_uid}. Добавьте палеты.`, "ok");
+      focusScan();
+    }
+
+    async function reserveTransferPallet(palletUid) {
+      if (!state.transfer) throw new Error("Сначала создайте или выберите перемещение");
+      await post(
+        `/api/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/pallets/${encodeURIComponent(palletUid)}`,
+        { actor: actor() },
+      );
+      await loadActiveTransfer();
+      await refreshQueues();
+      render();
+      setNotice(`Палета добавлена в перемещение: ${palletUid}`, "ok");
+      focusScan();
+    }
+
+    async function moveTransferToExpedition() {
+      if (!state.transfer) throw new Error("Сначала выберите перемещение");
+      await post(`/api/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/expedition`, { actor: actor() });
+      await loadActiveTransfer();
+      await refreshQueues();
+      render();
+      setNotice("Палеты переданы в экспедицию, исходные ячейки освобождены.", "ok");
+      focusScan();
+    }
+
+    async function loadTransferPallet(palletUid) {
+      if (!state.transfer) throw new Error("Сначала выберите перемещение");
+      await post(
+        `/api/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/load/${encodeURIComponent(palletUid)}`,
+        { actor: actor() },
+      );
+      await loadActiveTransfer();
+      await refreshQueues();
+      render();
+      setNotice(`Погрузка подтверждена: ${palletUid}`, "ok");
+      focusScan();
+    }
+
+    async function dispatchActiveTransfer() {
+      if (!state.transfer) throw new Error("Сначала выберите перемещение");
+      await post(`/api/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/dispatch`, {
+        actor: actor(),
+        reason: "Межскладская отправка из рабочего места WMS",
+      });
+      await loadActiveTransfer();
+      const destination = state.transfer.destination_warehouse_code;
+      state.warehouseCode = destination;
+      localStorage.setItem("wms.work.warehouse", destination);
+      $("workWarehouse").value = destination;
+      updateTransferDestinations();
+      await refreshQueues();
+      render();
+      setNotice(`Машина отправлена. Продолжите приёмку на складе ${destination}.`, "ok");
+      focusScan();
+    }
+
+    async function receiveTransferPallet(palletUid) {
+      if (!state.transfer) throw new Error("Сначала выберите перемещение");
+      await post(
+        `/api/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/receive/${encodeURIComponent(palletUid)}`,
+        { actor: actor() },
+      );
+      await loadActiveTransfer();
+      await refreshQueues();
+      render();
+      const complete = state.transfer.status === "completed";
+      setNotice(
+        complete ? "Все палеты приняты. Перемещение завершено." : `Палета принята: ${palletUid}`,
+        "ok",
+      );
+      focusScan();
+    }
+
+    async function placeReceivedTransferPallets() {
+      if (!state.transfer || state.transfer.status !== "completed") throw new Error("Сначала завершите приёмку");
+      const destination = state.transfer.destination_warehouse_code;
+      const firstWaiting = state.transferPallets.find((row) => row.pallet.status === "waiting_placement")?.pallet;
+      state.warehouseCode = destination;
+      localStorage.setItem("wms.work.warehouse", destination);
+      $("workWarehouse").value = destination;
+      updateTransferDestinations();
+      if (firstWaiting) {
+        persistActivePallet(firstWaiting.pallet_uid);
+        await loadActivePallet();
+      }
+      await refreshQueues();
+      await switchOperation("place", true);
+      setNotice(`Разместите принятые палеты на складе ${destination}.`, "ok");
     }
 
     async function selectInventory(uid) {
@@ -1837,6 +2262,15 @@ def work_page() -> str:
         throw new Error("Эта отгрузка уже завершена");
       }
 
+      if (state.operation === "transfer") {
+        if (!state.transfer) throw new Error("Сначала создайте или выберите перемещение");
+        if (!isPallet) throw new Error("Сейчас ожидается код палеты");
+        if (["draft", "reserved"].includes(state.transfer.status)) return reserveTransferPallet(value);
+        if (["expedition", "loading"].includes(state.transfer.status)) return loadTransferPallet(value);
+        if (["in_transit", "receiving"].includes(state.transfer.status)) return receiveTransferPallet(value);
+        throw new Error("Это перемещение уже завершено");
+      }
+
       if (state.operation === "build") {
         if (!state.pallet) {
           if (!isPallet) throw new Error("Сначала отсканируйте палету или откройте новую");
@@ -1871,6 +2305,12 @@ def work_page() -> str:
           ? "Отгрузка завершена. Складские ячейки освобождены"
           : "Продолжайте текущий этап отгрузки";
       }
+      if (state.operation === "transfer") {
+        if (!state.transfer) return "Создайте новое перемещение или выберите документ в работе";
+        if (state.transfer.status === "completed") return "Перемещение завершено. Палеты ожидают размещения";
+        if (["in_transit", "receiving"].includes(state.transfer.status)) return "Продолжайте приёмку на складе назначения";
+        return "Продолжайте текущий этап межскладского перемещения";
+      }
       if (!state.inventory) return "Начните новую инвентаризацию или продолжите открытый обход";
       if (state.inventory.status === "completed") return "Инвентаризация завершена";
       if (state.inventory.current_location_code) return "Сканируйте палету или нажмите «Пусто»";
@@ -1892,6 +2332,22 @@ def work_page() -> str:
         state.pallet = null;
         state.boxes = [];
         await loadActiveInventory();
+      }
+      if (operation === "transfer") {
+        persistActivePallet("");
+        state.pallet = null;
+        state.boxes = [];
+        await loadActiveTransfer();
+        if (state.transfer) {
+          const workWarehouse = transferWorkWarehouse(state.transfer);
+          if (workWarehouse !== state.warehouseCode) {
+            state.warehouseCode = workWarehouse;
+            localStorage.setItem("wms.work.warehouse", workWarehouse);
+            $("workWarehouse").value = workWarehouse;
+            updateTransferDestinations();
+            await refreshQueues();
+          }
+        }
       }
       if (!keepPallet) {
         const compatible = state.pallet && (
@@ -1935,9 +2391,10 @@ def work_page() -> str:
           : warehouses[0]?.code || "";
       }
       $("workWarehouse").value = state.warehouseCode;
+      updateTransferDestinations();
       $("workActor").value = localStorage.getItem("wms.work.actor") || "Кладовщик";
 
-      await Promise.all([loadActivePallet(), loadActiveShipment(), loadActiveInventory()]);
+      await Promise.all([loadActivePallet(), loadActiveShipment(), loadActiveInventory(), loadActiveTransfer()]);
       const shipmentWarehouseCode = activeShipmentWarehouseCode();
       if (state.operation === "ship" && shipmentWarehouseCode && shipmentWarehouseCode !== state.warehouseCode) {
         state.warehouseCode = shipmentWarehouseCode;
@@ -1952,6 +2409,12 @@ def work_page() -> str:
         state.warehouseCode = state.inventory.warehouse_code;
         localStorage.setItem("wms.work.warehouse", state.warehouseCode);
         $("workWarehouse").value = state.warehouseCode;
+      }
+      if (state.operation === "transfer" && state.transfer) {
+        state.warehouseCode = transferWorkWarehouse(state.transfer);
+        localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+        updateTransferDestinations();
       }
       const activeIsCompatible = state.pallet && (
         state.operation === "build"
@@ -1996,6 +2459,10 @@ def work_page() -> str:
         state.inventory = null;
         state.inventoryProgress = null;
         state.inventoryLines = [];
+        persistActiveTransfer("");
+        state.transfer = null;
+        state.transferPallets = [];
+        updateTransferDestinations();
         clearCompletion();
         await refreshQueues();
         render();
@@ -2025,6 +2492,12 @@ def work_page() -> str:
     $("emptyLocationBtn").addEventListener("click", () => confirmEmptyInventoryLocation().catch(showError));
     $("completeInventoryBtn").addEventListener("click", () => completeActiveInventory().catch(showError));
     $("newInventoryBtn").addEventListener("click", () => clearActiveInventory("Начните следующую инвентаризацию или выберите открытый обход").catch(showError));
+    $("createTransferBtn").addEventListener("click", () => createTransfer().catch(showError));
+    $("clearTransferBtn").addEventListener("click", () => clearActiveTransfer().catch(showError));
+    $("transferExpeditionBtn").addEventListener("click", () => moveTransferToExpedition().catch(showError));
+    $("dispatchTransferBtn").addEventListener("click", () => dispatchActiveTransfer().catch(showError));
+    $("placeTransferBtn").addEventListener("click", () => placeReceivedTransferPallets().catch(showError));
+    $("newTransferBtn").addEventListener("click", () => clearActiveTransfer("Создайте следующее перемещение или выберите документ в работе").catch(showError));
 
     initialize().catch(showError);
   </script>

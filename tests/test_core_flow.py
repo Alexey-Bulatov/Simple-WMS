@@ -943,6 +943,7 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
     assert 'data-operation="move"' in workplace
     assert 'data-operation="ship"' in workplace
     assert 'data-operation="inventory"' in workplace
+    assert 'data-operation="transfer"' in workplace
     assert 'href="/tech"' in workplace
     assert 'post("/api/pallets"' in workplace
     assert '/boxes/${encodeURIComponent(boxUid)}' in workplace
@@ -956,6 +957,12 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
     assert '/scan-location`' in workplace
     assert '/confirm-location`' in workplace
     assert '/complete`' in workplace
+    assert 'post("/api/transfers"' in workplace
+    assert '/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/expedition`' in workplace
+    assert '/load/${encodeURIComponent(palletUid)}`' in workplace
+    assert '/dispatch`' in workplace
+    assert '/receive/${encodeURIComponent(palletUid)}`' in workplace
+    assert 'id="placeTransferBtn"' in workplace
 
     technical = tech_page()
     assert "Все функции системы" in technical
