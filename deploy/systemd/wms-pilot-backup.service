@@ -1,0 +1,15 @@
+[Unit]
+Description=WMS Pilot PostgreSQL backup
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=codex-audit
+WorkingDirectory=/opt/wms-pilot
+EnvironmentFile=/opt/wms-pilot/.env
+Environment=WMS_BACKUP_DIR=/var/backups/wms-pilot
+Environment=WMS_BACKUP_RETENTION_DAYS=14
+ExecStart=/opt/wms-pilot/.venv/bin/python -m scripts.backup_database
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
