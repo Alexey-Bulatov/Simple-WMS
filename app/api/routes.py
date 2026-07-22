@@ -8,6 +8,8 @@ from app.core.constants import (
     INVENTORY_CODE_PREFIX,
     PALLET_CODE_PREFIX,
     SHIPMENT_CODE_PREFIX,
+    TASK_CODE_PREFIX,
+    TRANSFER_CODE_PREFIX,
 )
 from app.db.session import get_db
 from app.labels import LabelItem, build_labels_pdf
@@ -28,6 +30,7 @@ from app.models.entities import (
     Warehouse,
     WarehouseTransfer,
     WarehouseTransferPallet,
+    WarehouseTask,
     Zone,
 )
 from app.schemas import (
@@ -65,6 +68,10 @@ from app.schemas import (
     TransferCreate,
     TransferPalletRead,
     TransferRead,
+    TaskActionRequest,
+    TaskCreate,
+    TaskRead,
+    TaskSyncRequest,
     UserCreate,
     UserRead,
     WarehouseCreate,
@@ -115,7 +122,7 @@ from app.services import (
     inventory_line_resolution_event,
     resolved_inventory_line_ids,
 )
-from app.models.enums import InventoryLineStatus, LocationKind, PalletStatus
+from app.models.enums import InventoryLineStatus, LocationKind, PalletStatus, TaskStatus
 from app.warehouse_map import (
     create_map_label,
     create_map_location,
@@ -136,6 +143,7 @@ from app.transfers import (
     reserve_pallet_for_transfer,
     transfer_links,
 )
+from app.tasks import complete_task, create_task, start_task, sync_tasks, task_payload
 
 router = APIRouter(prefix="/api")
 
@@ -198,6 +206,8 @@ def api_constants() -> dict:
         "pallet_code_prefix": PALLET_CODE_PREFIX,
         "shipment_code_prefix": SHIPMENT_CODE_PREFIX,
         "inventory_code_prefix": INVENTORY_CODE_PREFIX,
+        "transfer_code_prefix": TRANSFER_CODE_PREFIX,
+        "task_code_prefix": TASK_CODE_PREFIX,
         "default_warehouse_code": DEFAULT_WAREHOUSE_CODE,
     }
 
@@ -1380,6 +1390,72 @@ def api_transfer_events(
             .limit(limit)
         )
     )
+
+
+@router.post("/tasks", response_model=TaskRead)
+def api_create_task(payload: TaskCreate, db: Session = Depends(get_db)) -> dict:
+    return task_payload(db, create_task(db, payload))
+
+
+@router.get("/tasks", response_model=list[TaskRead])
+def api_list_tasks(
+    warehouse_code: str | None = Query(default=None),
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    stmt = select(WarehouseTask).order_by(WarehouseTask.created_at).limit(limit)
+    if warehouse_code:
+        warehouse = db.scalar(select(Warehouse).where(Warehouse.code == warehouse_code))
+        if warehouse is None:
+            raise not_found("warehouse")
+        stmt = stmt.where(WarehouseTask.warehouse_id == warehouse.id)
+    if status_filter:
+        stmt = stmt.where(WarehouseTask.status.in_(status_filter))
+    priority_order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+    status_order = {"in_progress": 0, "new": 1, "completed": 2, "cancelled": 3}
+    tasks = list(db.scalars(stmt))
+    tasks.sort(
+        key=lambda task: (
+            status_order.get(str(task.status), 9),
+            priority_order.get(str(task.priority), 9),
+            task.created_at,
+        )
+    )
+    return [task_payload(db, task) for task in tasks]
+
+
+@router.post("/tasks/sync", response_model=list[TaskRead])
+def api_sync_tasks(payload: TaskSyncRequest, db: Session = Depends(get_db)) -> list[dict]:
+    tasks = sync_tasks(db, warehouse_code=payload.warehouse_code, actor=payload.actor)
+    priority_order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+    status_order = {TaskStatus.IN_PROGRESS: 0, TaskStatus.NEW: 1}
+    tasks.sort(
+        key=lambda task: (
+            status_order.get(task.status, 9),
+            priority_order.get(str(task.priority), 9),
+            task.created_at,
+        )
+    )
+    return [task_payload(db, task) for task in tasks]
+
+
+@router.post("/tasks/{task_uid}/start", response_model=TaskRead)
+def api_start_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return task_payload(db, start_task(db, task_uid=task_uid, actor=payload.actor))
+
+
+@router.post("/tasks/{task_uid}/complete", response_model=TaskRead)
+def api_complete_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return task_payload(db, complete_task(db, task_uid=task_uid, actor=payload.actor))
 
 
 @router.post("/inventories", response_model=InventoryRead)

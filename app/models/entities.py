@@ -14,6 +14,9 @@ from app.models.enums import (
     PalletStatus,
     ShipmentStatus,
     TransferStatus,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
     UserRole,
 )
 
@@ -265,6 +268,26 @@ class InventoryLine(Base):
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     inventory: Mapped[InventorySession] = relationship(back_populates="lines")
+
+
+class WarehouseTask(Base):
+    __tablename__ = "warehouse_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    task_type: Mapped[TaskType] = mapped_column(Enum(TaskType), index=True)
+    status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.NEW, index=True)
+    priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), default=TaskPriority.NORMAL, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    object_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    object_uid: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    assigned_to: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class OperationEvent(Base):

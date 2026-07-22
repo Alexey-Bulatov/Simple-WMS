@@ -73,6 +73,29 @@ class InventoryLineStatus(StrEnum):
     WRONG_LOCATION = "wrong_location"
 
 
+class TaskType(StrEnum):
+    BUILD = "build"
+    PLACE = "place"
+    MOVE = "move"
+    SHIP = "ship"
+    INVENTORY = "inventory"
+    TRANSFER = "transfer"
+
+
+class TaskStatus(StrEnum):
+    NEW = "new"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class TaskPriority(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    URGENT = "urgent"
+
+
 class LocationKind(StrEnum):
     RECEIVING = "receiving"
     STORAGE = "storage"

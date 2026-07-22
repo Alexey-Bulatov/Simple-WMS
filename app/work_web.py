@@ -379,6 +379,8 @@ def work_page() -> str:
     .shipment-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .shipment-fields label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
     .shipment-fields input, .shipment-fields select { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
+    .shipment-create > div > label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
+    .shipment-create > div > input { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; }
     .progress-track { height: 10px; margin: 0 0 14px; overflow: hidden; border-radius: 5px; background: #dde5e8; }
     .progress-fill { width: 0; height: 100%; background: var(--accent); transition: width .2s ease; }
     .problem-box { display: none; padding: 13px 0 0; border-top: 1px solid var(--line); }
@@ -388,11 +390,17 @@ def work_page() -> str:
     .problem-row { padding: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; background: var(--surface-soft); }
     .problem-status { color: var(--danger); font-size: 12px; font-weight: 850; }
     .queue-divider { padding: 9px 22px; border-top: 1px solid var(--line); background: #eaf0f2; color: #46565e; font-size: 11px; font-weight: 900; text-transform: uppercase; }
+    .task-priority { min-width: 74px; padding: 4px 7px; border-radius: 4px; font-size: 11px; font-weight: 900; text-align: center; }
+    .task-priority.low { color: #52616a; background: #e8edef; }
+    .task-priority.normal { color: #175f59; background: var(--accent-soft); }
+    .task-priority.high { color: var(--warn); background: var(--warn-soft); }
+    .task-priority.urgent { color: var(--danger); background: var(--danger-soft); }
+    .task-actions { display: flex; align-items: center; gap: 7px; }
     @media (max-width: 900px) {
       .work-header { grid-template-columns: 1fr auto; gap: 10px; padding: 9px 12px; }
       .context { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; width: 100%; }
       .work-layout { padding: 12px; grid-template-columns: 1fr; }
-      .operation-nav { position: static; grid-template-columns: repeat(6, 1fr); }
+      .operation-nav { position: static; grid-template-columns: repeat(7, 1fr); }
       .nav-title, .nav-separator, .quiet-link { display: none; }
     }
     @media (max-width: 620px) {
@@ -421,6 +429,7 @@ def work_page() -> str:
       .action-row > * { width: 100%; }
       .problem-row { grid-template-columns: 1fr; }
       .problem-row .text-button { width: 100%; }
+      .task-actions { align-items: stretch; flex-direction: column; }
       .queue-head, .queue-row { padding-inline: 13px; }
       .queue-divider { padding-inline: 13px; }
     }
@@ -445,33 +454,38 @@ def work_page() -> str:
   <main class="work-layout">
     <nav class="operation-nav" aria-label="Складские операции">
       <div class="nav-title">Операции</div>
-      <button class="operation-button active" type="button" data-operation="build">
+      <button class="operation-button active" type="button" data-operation="tasks">
         <span class="operation-number">1</span>
+        <strong>Задания</strong>
+        <span id="taskCount" class="queue-count">0</span>
+      </button>
+      <button class="operation-button" type="button" data-operation="build">
+        <span class="operation-number">2</span>
         <strong>Формирование палеты</strong>
         <span id="openCount" class="queue-count">0</span>
       </button>
       <button class="operation-button" type="button" data-operation="place">
-        <span class="operation-number">2</span>
+        <span class="operation-number">3</span>
         <strong>Размещение палеты</strong>
         <span id="waitingCount" class="queue-count">0</span>
       </button>
       <button class="operation-button" type="button" data-operation="move">
-        <span class="operation-number">3</span>
+        <span class="operation-number">4</span>
         <strong>Перемещение палеты</strong>
         <span id="availableCount" class="queue-count">0</span>
       </button>
       <button class="operation-button" type="button" data-operation="ship">
-        <span class="operation-number">4</span>
+        <span class="operation-number">5</span>
         <strong>Отгрузка</strong>
         <span id="shipmentCount" class="queue-count">0</span>
       </button>
       <button class="operation-button" type="button" data-operation="inventory">
-        <span class="operation-number">5</span>
+        <span class="operation-number">6</span>
         <strong>Инвентаризация</strong>
         <span id="inventoryCount" class="queue-count">0</span>
       </button>
       <button class="operation-button" type="button" data-operation="transfer">
-        <span class="operation-number">6</span>
+        <span class="operation-number">7</span>
         <strong>Между складами</strong>
         <span id="transferCount" class="queue-count">0</span>
       </button>
@@ -528,6 +542,53 @@ def work_page() -> str:
             </div>
           </div>
           <button id="createTransferBtn" class="primary-action" type="button">Создать перемещение</button>
+        </div>
+
+        <div id="taskCreate" class="shipment-create">
+          <strong>Новое задание</strong>
+          <div class="shipment-fields">
+            <div>
+              <label for="taskType">Операция</label>
+              <select id="taskType">
+                <option value="build">Формирование палеты</option>
+                <option value="place">Размещение палеты</option>
+                <option value="move">Перемещение палеты</option>
+                <option value="ship">Отгрузка</option>
+                <option value="inventory">Инвентаризация</option>
+                <option value="transfer">Между складами</option>
+              </select>
+            </div>
+            <div>
+              <label for="taskPriority">Приоритет</label>
+              <select id="taskPriority">
+                <option value="normal">Обычный</option>
+                <option value="high">Высокий</option>
+                <option value="urgent">Срочный</option>
+                <option value="low">Низкий</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label for="taskObjectUid">Код объекта</label>
+            <input id="taskObjectUid" autocomplete="off" placeholder="Палета или документ">
+          </div>
+          <button id="createTaskBtn" class="primary-action" type="button">Добавить в очередь</button>
+        </div>
+
+        <div id="taskOverview" class="current-object">
+          <div class="object-head">
+            <div>
+              <div class="object-kicker">Очередь склада</div>
+              <div id="taskWarehouse" class="object-code">-</div>
+            </div>
+            <button id="toggleTaskCreateBtn" class="text-button" type="button">Новое задание</button>
+          </div>
+          <div class="facts">
+            <div class="fact"><b>Всего</b><span id="taskTotal">0</span></div>
+            <div class="fact"><b>Новые</b><span id="taskNew">0</span></div>
+            <div class="fact"><b>В работе</b><span id="taskInProgress">0</span></div>
+            <div class="fact"><b>Срочные</b><span id="taskUrgent">0</span></div>
+          </div>
         </div>
 
         <div id="scanArea" class="scan-area">
@@ -652,7 +713,7 @@ def work_page() -> str:
     const $ = (id) => document.getElementById(id);
     const requestedOperation = new URLSearchParams(window.location.search).get("operation");
     const state = {
-      operation: ["place", "move", "ship", "inventory", "transfer"].includes(requestedOperation) ? requestedOperation : "build",
+      operation: ["tasks", "build", "place", "move", "ship", "inventory", "transfer"].includes(requestedOperation) ? requestedOperation : "tasks",
       activePalletUid: localStorage.getItem("wms.work.activePalletUid") || "",
       pallet: null,
       boxes: [],
@@ -675,6 +736,8 @@ def work_page() -> str:
       activeTransferUid: localStorage.getItem("wms.work.activeTransferUid") || "",
       transfer: null,
       transferPallets: [],
+      tasks: [],
+      taskCreateVisible: false,
       warehouseCode: localStorage.getItem("wms.work.warehouse") || "",
       completedPlacement: null,
       completedMove: null,
@@ -738,6 +801,29 @@ def work_page() -> str:
       loaded: "Погружена",
       in_transit: "В пути",
       received: "Принята",
+    };
+
+    const taskTypeLabels = {
+      build: "Формирование палеты",
+      place: "Размещение палеты",
+      move: "Перемещение палеты",
+      ship: "Отгрузка",
+      inventory: "Инвентаризация",
+      transfer: "Между складами",
+    };
+
+    const taskStatusLabels = {
+      new: "Новое",
+      in_progress: "В работе",
+      completed: "Выполнено",
+      cancelled: "Отменено",
+    };
+
+    const taskPriorityLabels = {
+      low: "Низкий",
+      normal: "Обычный",
+      high: "Высокий",
+      urgent: "Срочный",
     };
 
     function escapeHtml(value) {
@@ -807,6 +893,9 @@ def work_page() -> str:
         ["transfer must be in transit or receiving status", "Перемещение ещё не отправлено"],
         ["pallet was not sent in this transfer", "Палета не отправлялась по этому документу"],
         ["pallet already received", "Палета уже принята"],
+        ["task not found", "Задание не найдено"],
+        ["task cannot be started", "Это задание уже закрыто"],
+        ["cancelled task cannot be completed", "Отменённое задание нельзя завершить"],
       ];
       const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
       return found ? found[1] : text;
@@ -1056,12 +1145,13 @@ def work_page() -> str:
     }
 
     async function refreshQueues() {
-      const [rows, availableRows, shipments, inventories, transfers] = await Promise.all([
+      const [rows, availableRows, shipments, inventories, transfers, tasks] = await Promise.all([
         api("/api/pallets?status=open&status=waiting_placement&limit=200"),
         api(`/api/pallets?status=available&warehouse_code=${encodeURIComponent(state.warehouseCode)}&limit=200`),
         api("/api/shipments?status=draft&status=reserved&status=expedition&status=loading&limit=100"),
         api("/api/inventories?limit=100"),
         api("/api/transfers?status=draft&status=reserved&status=expedition&status=loading&status=in_transit&status=receiving&limit=100"),
+        post("/api/tasks/sync", { warehouse_code: state.warehouseCode, actor: actor() }),
       ]);
       state.openPallets = rows.filter((item) => item.status === "open");
       state.waitingPallets = rows.filter((item) => item.status === "waiting_placement");
@@ -1069,12 +1159,14 @@ def work_page() -> str:
       state.shipments = shipments;
       state.inventories = inventories;
       state.transfers = transfers;
+      state.tasks = tasks;
       $("openCount").textContent = state.openPallets.length;
       $("waitingCount").textContent = state.waitingPallets.length;
       $("availableCount").textContent = state.availablePallets.length;
       $("shipmentCount").textContent = state.shipments.length;
       $("inventoryCount").textContent = openInventoriesForSelectedWarehouse().length;
       $("transferCount").textContent = transfersForSelectedWarehouse().length;
+      $("taskCount").textContent = state.tasks.length;
       renderQueue();
     }
 
@@ -1130,6 +1222,17 @@ def work_page() -> str:
       $("transferReceived").textContent = `${state.transfer.received_count} / ${state.transfer.pallet_count}`;
     }
 
+    function renderTaskOverview() {
+      const visible = state.operation === "tasks";
+      $("taskOverview").classList.toggle("visible", visible);
+      if (!visible) return;
+      $("taskWarehouse").textContent = state.warehouseCode || "-";
+      $("taskTotal").textContent = state.tasks.length;
+      $("taskNew").textContent = state.tasks.filter((task) => task.status === "new").length;
+      $("taskInProgress").textContent = state.tasks.filter((task) => task.status === "in_progress").length;
+      $("taskUrgent").textContent = state.tasks.filter((task) => task.priority === "urgent").length;
+    }
+
     function inventoryResolution(status) {
       if (status === "missing") return { endpoint: "confirm-missing", label: "Подтвердить недостачу" };
       if (status === "extra") return { endpoint: "place-found", label: "Разместить по факту" };
@@ -1162,6 +1265,9 @@ def work_page() -> str:
     }
 
     function renderQueue() {
+      if (state.operation === "tasks") {
+        return renderTaskQueue();
+      }
       if (state.operation === "inventory") {
         return renderInventoryQueue();
       }
@@ -1255,6 +1361,30 @@ def work_page() -> str:
       $("queueList").innerHTML = locationRows + palletRows;
       document.querySelectorAll("[data-inventory-location]").forEach((button) => {
         button.addEventListener("click", () => scanInventoryLocation(button.dataset.inventoryLocation).catch(showError));
+      });
+    }
+
+    function renderTaskQueue() {
+      $("queueTitle").textContent = `Задания склада ${state.warehouseCode}`;
+      $("queueSubtitle").textContent = "Сначала задания в работе, затем новые по приоритету";
+      $("queueList").innerHTML = state.tasks.map((task) => `
+        <div class="queue-row">
+          <div>
+            <div class="queue-code">${escapeHtml(task.title)}</div>
+            <div class="queue-meta">${escapeHtml(taskTypeLabels[task.task_type] || task.task_type)} · ${escapeHtml(task.object_uid || "Без объекта")} · ${escapeHtml(taskStatusLabels[task.status] || task.status)}${task.assigned_to ? ` · ${escapeHtml(task.assigned_to)}` : ""}</div>
+          </div>
+          <div class="task-actions">
+            <span class="task-priority ${escapeHtml(task.priority)}">${escapeHtml(taskPriorityLabels[task.priority] || task.priority)}</span>
+            <button class="text-button" type="button" data-start-task="${escapeHtml(task.task_uid)}">${task.status === "in_progress" ? "Продолжить" : "Начать"}</button>
+            ${task.status === "in_progress" ? `<button class="text-button" type="button" data-complete-task="${escapeHtml(task.task_uid)}">Выполнено</button>` : ""}
+          </div>
+        </div>
+      `).join("") || '<div class="empty-row">Очередь пуста</div>';
+      document.querySelectorAll("[data-start-task]").forEach((button) => {
+        button.addEventListener("click", () => beginTask(button.dataset.startTask).catch(showError));
+      });
+      document.querySelectorAll("[data-complete-task]").forEach((button) => {
+        button.addEventListener("click", () => finishTask(button.dataset.completeTask).catch(showError));
       });
     }
 
@@ -1746,6 +1876,35 @@ def work_page() -> str:
       );
     }
 
+    function renderTasks() {
+      setStepCount(3);
+      $("operationTitle").textContent = "Задания";
+      $("operationDescription").textContent = "Работы склада в порядке исполнения и приоритета.";
+      $("stepOneLabel").textContent = "Очередь";
+      $("stepTwoLabel").textContent = "Выполнение";
+      $("stepThreeLabel").textContent = "Готово";
+      const hasInProgress = state.tasks.some((task) => task.status === "in_progress");
+      setSteps(hasInProgress ? 2 : 1, hasInProgress ? [1] : []);
+      $("scanArea").hidden = true;
+      $("workScan").disabled = true;
+      $("newPalletBtn").hidden = true;
+      $("closePalletBtn").hidden = true;
+      $("toPlacementBtn").hidden = true;
+      $("nextPalletBtn").hidden = true;
+      $("toExpeditionBtn").hidden = true;
+      $("closeShipmentBtn").hidden = true;
+      $("newShipmentBtn").hidden = true;
+      $("emptyLocationBtn").hidden = true;
+      $("completeInventoryBtn").hidden = true;
+      $("newInventoryBtn").hidden = true;
+      $("transferExpeditionBtn").hidden = true;
+      $("dispatchTransferBtn").hidden = true;
+      $("placeTransferBtn").hidden = true;
+      $("newTransferBtn").hidden = true;
+      $("taskCreate").classList.toggle("visible", state.taskCreateVisible);
+      clearCompletion();
+    }
+
     function render() {
       if (state.operation !== "ship") {
         $("shipmentCreate").classList.remove("visible");
@@ -1767,6 +1926,10 @@ def work_page() -> str:
         $("placeTransferBtn").hidden = true;
         $("newTransferBtn").hidden = true;
       }
+      if (state.operation !== "tasks") {
+        state.taskCreateVisible = false;
+        $("taskCreate").classList.remove("visible");
+      }
       document.querySelectorAll("[data-operation]").forEach((button) => {
         button.classList.toggle("active", button.dataset.operation === state.operation);
       });
@@ -1779,9 +1942,11 @@ def work_page() -> str:
       renderCurrentShipment();
       renderCurrentInventory();
       renderCurrentTransfer();
+      renderTaskOverview();
       renderInventoryProblems();
       renderQueue();
-      if (state.operation === "build") renderBuild();
+      if (state.operation === "tasks") renderTasks();
+      else if (state.operation === "build") renderBuild();
       else if (state.operation === "place") renderPlace();
       else if (state.operation === "move") renderMove();
       else if (state.operation === "ship") renderShipment();
@@ -1894,6 +2059,57 @@ def work_page() -> str:
       await refreshQueues();
       render();
       setNotice("Отгрузка завершена. Складские ячейки освобождены.", "ok");
+    }
+
+    async function createManualTask() {
+      const task = await post("/api/tasks", {
+        warehouse_code: state.warehouseCode,
+        task_type: $("taskType").value,
+        priority: $("taskPriority").value,
+        object_uid: $("taskObjectUid").value.trim().toUpperCase() || null,
+        actor: actor(),
+      });
+      state.taskCreateVisible = false;
+      $("taskObjectUid").value = "";
+      await refreshQueues();
+      render();
+      setNotice(`Задание добавлено: ${task.task_uid}`, "ok");
+    }
+
+    async function beginTask(taskUid) {
+      let task = state.tasks.find((item) => item.task_uid === taskUid);
+      if (!task) throw new Error("Задание не найдено");
+      task = await post(`/api/tasks/${encodeURIComponent(taskUid)}/start`, { actor: actor() });
+      state.warehouseCode = task.warehouse_code;
+      localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+      $("workWarehouse").value = state.warehouseCode;
+      updateTransferDestinations();
+
+      if (["build", "place", "move"].includes(task.task_type)) {
+        persistActivePallet(task.object_uid || "");
+        await loadActivePallet();
+      } else if (task.task_type === "ship") {
+        persistActiveShipment(task.object_uid || "");
+        await loadActiveShipment();
+      } else if (task.task_type === "inventory") {
+        persistActiveInventory(task.object_uid || "");
+        await loadActiveInventory();
+      } else if (task.task_type === "transfer") {
+        persistActiveTransfer(task.object_uid || "");
+        await loadActiveTransfer();
+      }
+
+      await refreshQueues();
+      await switchOperation(task.task_type, ["build", "place", "move"].includes(task.task_type));
+      setNotice(`${task.title}. Задание назначено: ${actor()}.`, "ok");
+      focusScan();
+    }
+
+    async function finishTask(taskUid) {
+      await post(`/api/tasks/${encodeURIComponent(taskUid)}/complete`, { actor: actor() });
+      await refreshQueues();
+      render();
+      setNotice("Задание отмечено выполненным.", "ok");
     }
 
     function transferWorkWarehouse(transfer) {
@@ -2296,6 +2512,11 @@ def work_page() -> str:
     }
 
     function defaultOperationNotice() {
+      if (state.operation === "tasks") {
+        const inProgress = state.tasks.filter((task) => task.status === "in_progress").length;
+        if (inProgress) return `Заданий в работе: ${inProgress}`;
+        return state.tasks.length ? "Выберите следующее задание" : "Очередь пуста";
+      }
       if (state.operation === "build") return "Выберите палету или откройте новую";
       if (state.operation === "place") return "Отсканируйте палету, ожидающую размещения";
       if (state.operation === "move") return "Отсканируйте размещённую палету";
@@ -2498,6 +2719,11 @@ def work_page() -> str:
     $("dispatchTransferBtn").addEventListener("click", () => dispatchActiveTransfer().catch(showError));
     $("placeTransferBtn").addEventListener("click", () => placeReceivedTransferPallets().catch(showError));
     $("newTransferBtn").addEventListener("click", () => clearActiveTransfer("Создайте следующее перемещение или выберите документ в работе").catch(showError));
+    $("toggleTaskCreateBtn").addEventListener("click", () => {
+      state.taskCreateVisible = !state.taskCreateVisible;
+      render();
+    });
+    $("createTaskBtn").addEventListener("click", () => createManualTask().catch(showError));
 
     initialize().catch(showError);
   </script>

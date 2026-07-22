@@ -12,6 +12,9 @@ from app.models.enums import (
     PalletStatus,
     ShipmentStatus,
     TransferStatus,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
     UserRole,
 )
 
@@ -410,3 +413,43 @@ class InventoryProgressRead(BaseModel):
     unchecked_locations_list: list[InventoryProgressLocationRead]
     unchecked_pallets: list[PalletSummaryRead]
     problem_lines: list[InventoryLineRead]
+
+
+class TaskCreate(BaseModel):
+    warehouse_code: str = Field(min_length=1, max_length=32)
+    task_type: TaskType
+    priority: TaskPriority = TaskPriority.NORMAL
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    object_type: str | None = Field(default=None, max_length=40)
+    object_uid: str | None = Field(default=None, max_length=120)
+    actor: str = "system"
+
+
+class TaskActionRequest(BaseModel):
+    actor: str = "system"
+
+
+class TaskSyncRequest(BaseModel):
+    warehouse_code: str = Field(min_length=1, max_length=32)
+    actor: str = "system"
+
+
+class TaskRead(BaseModel):
+    id: int
+    task_uid: str
+    warehouse_id: int
+    warehouse_code: str
+    warehouse_name: str
+    task_type: TaskType
+    status: TaskStatus
+    priority: TaskPriority
+    title: str
+    description: str | None
+    object_type: str | None
+    object_uid: str | None
+    assigned_to: str | None
+    created_by: str
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None

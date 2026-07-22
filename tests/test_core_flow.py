@@ -47,6 +47,9 @@ from app.models.enums import (
     LocationKind,
     PalletStatus,
     ShipmentStatus,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
     TransferStatus,
 )
 from app.models.entities import InventoryLine
@@ -60,6 +63,8 @@ from app.transfers import (
     receive_transfer_pallet,
     reserve_pallet_for_transfer,
 )
+from app.tasks import complete_task, create_task, start_task, sync_tasks
+from app.schemas import TaskCreate
 from app.warehouse_map import create_map_row, ensure_demo_maps, reset_sandbox_map, update_map_item
 
 
@@ -133,6 +138,53 @@ def test_box_pallet_location_flow(db):
 
     assert placed.current_location_id == location.id
     assert placed.status == "available"
+
+
+def test_task_lifecycle(db):
+    create_fixture_data(db)
+    task = create_task(
+        db,
+        TaskCreate(
+            warehouse_code="WH01",
+            task_type=TaskType.MOVE,
+            priority=TaskPriority.HIGH,
+            title="Переместить тестовую палету",
+            actor="dispatcher",
+        ),
+    )
+
+    started = start_task(db, task_uid=task.task_uid, actor="Кладовщик")
+    started_status = started.status
+    assigned_to = started.assigned_to
+    completed = complete_task(db, task_uid=task.task_uid, actor="Кладовщик")
+
+    assert started_status == TaskStatus.IN_PROGRESS
+    assert assigned_to == "Кладовщик"
+    assert completed.status == TaskStatus.COMPLETED
+    assert completed.completed_at is not None
+
+
+def test_task_sync_creates_and_completes_operational_tasks(db):
+    _, batch, _, _ = create_fixture_data(db)
+    box = generate_boxes(db, batch_id=batch.id, quantity=1)[0]
+    accept_box(db, box_uid=box.box_uid, actor="tester")
+    pallet = open_pallet(db, actor="tester")
+    add_box_to_pallet(db, pallet_uid=pallet.pallet_uid, box_uid=box.box_uid, actor="tester")
+
+    first_sync = sync_tasks(db, warehouse_code="WH01", actor="dispatcher")
+    second_sync = sync_tasks(db, warehouse_code="WH01", actor="dispatcher")
+    build_tasks = [task for task in second_sync if task.task_type == TaskType.BUILD]
+    assert len(build_tasks) == 1
+    assert build_tasks[0].object_uid == pallet.pallet_uid
+    assert len(first_sync) == len(second_sync)
+
+    start_task(db, task_uid=build_tasks[0].task_uid, actor="Кладовщик")
+    close_pallet(db, pallet_uid=pallet.pallet_uid, actor="Кладовщик")
+    active = sync_tasks(db, warehouse_code="WH01", actor="dispatcher")
+    db.refresh(build_tasks[0])
+
+    assert build_tasks[0].status == TaskStatus.COMPLETED
+    assert any(task.task_type == TaskType.PLACE and task.object_uid == pallet.pallet_uid for task in active)
 
 
 def test_cannot_accept_box_twice(db):
@@ -938,6 +990,7 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
     workplace = work_page()
     assert 'id="workWarehouse"' in workplace
     assert 'id="workActor"' in workplace
+    assert 'data-operation="tasks"' in workplace
     assert 'data-operation="build"' in workplace
     assert 'data-operation="place"' in workplace
     assert 'data-operation="move"' in workplace
@@ -963,6 +1016,10 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
     assert '/dispatch`' in workplace
     assert '/receive/${encodeURIComponent(palletUid)}`' in workplace
     assert 'id="placeTransferBtn"' in workplace
+    assert 'post("/api/tasks/sync"' in workplace
+    assert '/tasks/${encodeURIComponent(taskUid)}/start`' in workplace
+    assert '/tasks/${encodeURIComponent(taskUid)}/complete`' in workplace
+    assert 'id="taskPriority"' in workplace
 
     technical = tech_page()
     assert "Все функции системы" in technical
