@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import (
@@ -1412,6 +1412,8 @@ def api_create_task(payload: TaskCreate, db: Session = Depends(get_db)) -> dict:
 def api_list_tasks(
     warehouse_code: str | None = Query(default=None),
     status_filter: list[str] | None = Query(default=None, alias="status"),
+    assigned_to: str | None = Query(default=None, max_length=80),
+    include_unassigned: bool = False,
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -1423,6 +1425,11 @@ def api_list_tasks(
         stmt = stmt.where(WarehouseTask.warehouse_id == warehouse.id)
     if status_filter:
         stmt = stmt.where(WarehouseTask.status.in_(status_filter))
+    if assigned_to:
+        assignment_filter = WarehouseTask.assigned_to == assigned_to
+        if include_unassigned:
+            assignment_filter = or_(assignment_filter, WarehouseTask.assigned_to.is_(None))
+        stmt = stmt.where(assignment_filter)
     priority_order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
     status_order = {"in_progress": 0, "new": 1, "completed": 2, "cancelled": 3}
     tasks = list(db.scalars(stmt))

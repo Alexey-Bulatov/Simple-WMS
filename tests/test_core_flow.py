@@ -214,6 +214,63 @@ def test_task_assignment_cancel_and_reopen(db):
     assert reopened.completed_at is None
 
 
+def test_task_api_filters_operator_queue_with_unassigned_tasks(db):
+    from fastapi.testclient import TestClient
+
+    from app.api import routes as api_routes
+    from app.db.session import get_db
+    from app.main import app
+
+    create_fixture_data(db)
+    mine = create_task(
+        db,
+        TaskCreate(
+            warehouse_code="WH01",
+            task_type=TaskType.INVENTORY,
+            assigned_to="Иванов",
+            actor="Диспетчер",
+        ),
+    )
+    free = create_task(
+        db,
+        TaskCreate(
+            warehouse_code="WH01",
+            task_type=TaskType.MOVE,
+            actor="Диспетчер",
+        ),
+    )
+    create_task(
+        db,
+        TaskCreate(
+            warehouse_code="WH01",
+            task_type=TaskType.SHIP,
+            assigned_to="Петров",
+            actor="Диспетчер",
+        ),
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[api_routes.get_db] = override_db
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/tasks",
+            params={
+                "warehouse_code": "WH01",
+                "status": "new",
+                "assigned_to": "Иванов",
+                "include_unassigned": "true",
+            },
+        )
+        assert response.status_code == 200
+        assert {task["task_uid"] for task in response.json()} == {mine.task_uid, free.task_uid}
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_cannot_accept_box_twice(db):
     _, batch, _, _ = create_fixture_data(db)
     box = generate_boxes(db, batch_id=batch.id, quantity=1)[0]
@@ -988,10 +1045,19 @@ def test_terminal_page_contains_compact_workflows():
     page = terminal_page()
 
     assert "Эмулятор экрана ТСД" in page
+    assert 'id="modeTasks" class="active"' in page
+    assert 'id="tasksView" class="view active"' in page
+    assert 'id="taskActor"' in page
+    assert 'id="taskWarehouse"' in page
+    assert 'id="taskList"' in page
     assert 'id="warehouseView"' in page
     assert 'id="inventoryView"' in page
     assert 'id="transferView"' in page
     assert 'id="shippingView"' in page
+    assert 'post("/api/tasks/sync"' in page
+    assert 'query.set("include_unassigned", "true")' in page
+    assert '/start`' in page
+    assert ".app-header.desktop-header { display: none; }" in page
     assert 'class="device"' in page
 
 

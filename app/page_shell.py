@@ -93,6 +93,9 @@ HEADER_CSS = """
       .app-nav-more { position: static; }
       .app-nav-more-menu { position: fixed; top: 50px; right: 8px; }
     }
+    @media (max-width: 620px) {
+      .app-header.desktop-header { display: none; }
+    }
 """
 
 

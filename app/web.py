@@ -55,7 +55,7 @@ def terminal_page() -> str:
     .app-head strong { display: block; font-size: 17px; }
     .app-head span { display: block; margin-top: 1px; color: #d4fff9; font-size: 11px; }
     .operator { max-width: 130px; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 800; }
-    .mode-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); background: #fff; }
+    .mode-tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-bottom: 1px solid var(--line); background: #fff; }
     .mode-tabs button { min-height: 46px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: #fff; color: #43515c; font-size: 12px; font-weight: 850; }
     .mode-tabs button:last-child { border-right: 0; }
     .mode-tabs button.active { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 -3px 0 var(--accent); }
@@ -92,6 +92,14 @@ def terminal_page() -> str:
     .list { display: grid; gap: 6px; }
     .list-item { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
     .list-item strong { display: block; overflow-wrap: anywhere; }
+    .task-item { border-left: 5px solid #96a2aa; }
+    .task-item.normal { border-left-color: var(--accent); }
+    .task-item.high { border-left-color: #d89725; }
+    .task-item.urgent { border-left-color: var(--danger); }
+    .task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .task-title { margin: 4px 0 2px; font-weight: 900; overflow-wrap: anywhere; }
+    .task-code { font: 800 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    .task-item button { margin-top: 7px; }
     .meta { color: var(--muted); font-size: 11px; }
     .hidden { display: none !important; }
     .footer-note { padding: 4px 0 2px; color: var(--muted); text-align: center; font-size: 10px; }
@@ -124,17 +132,42 @@ def terminal_page() -> str:
       <div class="device-bar"><span id="clock">--:--</span><span>WMS · Wi-Fi · 87%</span></div>
       <div class="app">
         <div class="app-head">
-          <div><strong id="screenTitle">Склад</strong><span id="screenSubtitle">Формирование палеты</span></div>
+          <div><strong id="screenTitle">Задания</strong><span id="screenSubtitle">Моя очередь</span></div>
           <div id="operatorLabel" class="operator">tsd-demo</div>
         </div>
         <div class="mode-tabs">
-          <button id="modeWarehouse" class="active" type="button">Склад</button>
+          <button id="modeTasks" class="active" type="button">Задания</button>
+          <button id="modeWarehouse" type="button">Склад</button>
           <button id="modeInventory" type="button">Инвент.</button>
           <button id="modeTransfer" type="button">Перем.</button>
           <button id="modeShipping" type="button">Погрузка</button>
         </div>
 
-        <div id="warehouseView" class="view active">
+        <div id="tasksView" class="view active">
+          <div class="stack">
+            <div class="row">
+              <div>
+                <label for="taskActor">Оператор</label>
+                <input id="taskActor" list="taskUserOptions" autocomplete="off" value="tsd-demo">
+                <datalist id="taskUserOptions"></datalist>
+              </div>
+              <div>
+                <label for="taskWarehouse">Склад</label>
+                <select id="taskWarehouse"><option value="">Склад</option></select>
+              </div>
+            </div>
+            <div class="facts">
+              <div class="fact"><b>Мои</b><span id="taskMineCount">0</span></div>
+              <div class="fact"><b>Свободные</b><span id="taskFreeCount">0</span></div>
+              <div class="fact"><b>В работе</b><span id="taskProgressCount">0</span></div>
+            </div>
+            <div id="taskStatus" class="status">Загрузка очереди</div>
+            <button id="refreshTasks" class="secondary" type="button">Обновить очередь</button>
+            <div id="taskList" class="list"></div>
+          </div>
+        </div>
+
+        <div id="warehouseView" class="view">
           <div class="stack">
             <div class="segmented">
               <button id="buildMode" class="active" type="button">Формирование</button>
@@ -272,9 +305,11 @@ def terminal_page() -> str:
 
   <script>
     const state = {
-      mode: "warehouse",
+      mode: "tasks",
       warehouseMode: "build",
-      actor: "tsd-demo",
+      actor: localStorage.getItem("wms.terminal.actor") || "tsd-demo",
+      taskWarehouseCode: localStorage.getItem("wms.terminal.warehouse") || "",
+      tasks: [],
       activePalletUid: "",
       activeInventoryUid: "",
       activeShipmentUid: "",
@@ -284,6 +319,7 @@ def terminal_page() -> str:
       prefixes: { box: "BOX-", pallet: "PLT-" },
       currentInventoryLocation: "",
     };
+    let taskActorRefreshTimer;
     const $ = (id) => document.getElementById(id);
     const palletLabels = {
       open: "Открыта", waiting_placement: "Ждёт размещения", available: "Доступна",
@@ -300,6 +336,16 @@ def terminal_page() -> str:
       loading: "Погрузка", in_transit: "В пути", receiving: "Приёмка",
       completed: "Завершено", cancelled: "Отменено",
     };
+    const taskTypeLabels = {
+      build: "Формирование", place: "Размещение", move: "Перемещение",
+      ship: "Отгрузка", inventory: "Инвентаризация", transfer: "Между складами",
+    };
+    const taskPriorityLabels = { low: "Низкий", normal: "Обычный", high: "Высокий", urgent: "Срочный" };
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) =>
+        ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]
+      );
+    }
     function label(map, value) { return map[value] || value || "-"; }
     function setStatus(id, message, kind = "") {
       const element = $(id);
@@ -317,6 +363,7 @@ def terminal_page() -> str:
       return api(path, { method: "POST", body: JSON.stringify(body) });
     }
     function focusCurrent() {
+      if (state.mode === "tasks") return;
       const id = state.mode === "warehouse" ? "warehouseScan"
         : state.mode === "inventory" ? "inventoryScan"
         : state.mode === "transfer" ? "transferScan"
@@ -332,14 +379,16 @@ def terminal_page() -> str:
     }
     function setMode(mode) {
       state.mode = mode;
-      ["warehouse", "inventory", "transfer", "shipping"].forEach((name) => {
+      ["tasks", "warehouse", "inventory", "transfer", "shipping"].forEach((name) => {
         $(`${name}View`).classList.toggle("active", name === mode);
       });
+      $("modeTasks").classList.toggle("active", mode === "tasks");
       $("modeWarehouse").classList.toggle("active", mode === "warehouse");
       $("modeInventory").classList.toggle("active", mode === "inventory");
       $("modeTransfer").classList.toggle("active", mode === "transfer");
       $("modeShipping").classList.toggle("active", mode === "shipping");
       const titles = {
+        tasks: ["Задания", "Моя очередь"],
         warehouse: ["Склад", state.warehouseMode === "build" ? "Формирование палеты" : "Размещение палеты"],
         inventory: ["Инвентаризация", "Обход склада"],
         transfer: ["Перемещение", "Погрузка и приёмка"],
@@ -361,8 +410,8 @@ def terminal_page() -> str:
       return state.batches.find((batch) => batch.id === batchId)?.batch_number || "-";
     }
     async function loadBaseData() {
-      const [constants, locations, batches, warehouses] = await Promise.all([
-        api("/api/meta/constants"), api("/api/locations"), api("/api/batches"), api("/api/warehouses"),
+      const [constants, locations, batches, warehouses, users] = await Promise.all([
+        api("/api/meta/constants"), api("/api/locations"), api("/api/batches"), api("/api/warehouses"), api("/api/users"),
       ]);
       state.prefixes.box = `${constants.box_code_prefix}-`;
       state.prefixes.pallet = `${constants.pallet_code_prefix}-`;
@@ -371,6 +420,94 @@ def terminal_page() -> str:
       $("warehouseSelect").innerHTML = warehouses.map((warehouse) =>
         `<option value="${warehouse.code}">${warehouse.code}</option>`
       ).join("") || `<option value="">Нет складов</option>`;
+      $("taskWarehouse").innerHTML = warehouses.map((warehouse) =>
+        `<option value="${escapeHtml(warehouse.code)}">${escapeHtml(warehouse.code)}</option>`
+      ).join("") || `<option value="">Нет складов</option>`;
+      if (!warehouses.some((warehouse) => warehouse.code === state.taskWarehouseCode)) {
+        state.taskWarehouseCode = warehouses[0]?.code || "";
+      }
+      $("taskWarehouse").value = state.taskWarehouseCode;
+      $("taskActor").value = state.actor;
+      $("operatorLabel").textContent = state.actor;
+      $("taskUserOptions").innerHTML = users.filter((user) => user.is_active).map((user) =>
+        `<option value="${escapeHtml(user.full_name)}">${escapeHtml(user.username)}</option>`
+      ).join("");
+    }
+
+    function showTaskError(error) {
+      setStatus("taskStatus", error.message || String(error), "err");
+    }
+    function renderTasks() {
+      const mine = state.tasks.filter((task) => task.assigned_to === state.actor);
+      const free = state.tasks.filter((task) => !task.assigned_to);
+      $("taskMineCount").textContent = mine.length;
+      $("taskFreeCount").textContent = free.length;
+      $("taskProgressCount").textContent = state.tasks.filter((task) => task.status === "in_progress").length;
+      $("taskList").innerHTML = state.tasks.map((task) => {
+        const ownership = task.assigned_to ? task.assigned_to : "Свободно";
+        const action = task.status === "in_progress" ? "Продолжить" : task.assigned_to ? "Начать" : "Взять";
+        return `<div class="list-item task-item ${escapeHtml(task.priority)}">
+          <div class="task-head">
+            <span class="task-code">${escapeHtml(task.object_uid || task.task_uid)}</span>
+            <span class="badge">${escapeHtml(taskPriorityLabels[task.priority] || task.priority)}</span>
+          </div>
+          <div class="task-title">${escapeHtml(task.title)}</div>
+          <div class="meta">${escapeHtml(taskTypeLabels[task.task_type] || task.task_type)} · ${escapeHtml(ownership)}</div>
+          <button type="button" data-start-task="${escapeHtml(task.task_uid)}">${action}</button>
+        </div>`;
+      }).join("") || `<div class="list-item">Активных заданий нет</div>`;
+      document.querySelectorAll("[data-start-task]").forEach((button) => {
+        button.addEventListener("click", () => beginTask(button.dataset.startTask).catch(showTaskError));
+      });
+    }
+    async function refreshTasks(sync = true) {
+      if (!state.taskWarehouseCode) {
+        state.tasks = [];
+        renderTasks();
+        setStatus("taskStatus", "Выберите склад", "warn");
+        return;
+      }
+      if (sync) {
+        await post("/api/tasks/sync", { warehouse_code: state.taskWarehouseCode, actor: state.actor });
+      }
+      const query = new URLSearchParams();
+      query.set("warehouse_code", state.taskWarehouseCode);
+      query.append("status", "new");
+      query.append("status", "in_progress");
+      query.set("assigned_to", state.actor);
+      query.set("include_unassigned", "true");
+      query.set("limit", "200");
+      state.tasks = await api(`/api/tasks?${query.toString()}`);
+      renderTasks();
+      setStatus("taskStatus", `В очереди: ${state.tasks.length}`, state.tasks.length ? "ok" : "");
+    }
+    async function routeTask(task) {
+      if (["build", "place", "move"].includes(task.task_type)) {
+        state.activePalletUid = task.object_uid || "";
+        await Promise.all([refreshPalletChoices(), refreshActivePallet()]);
+        setWarehouseMode(task.task_type === "build" ? "build" : "place");
+        setMode("warehouse");
+      } else if (task.task_type === "ship") {
+        state.activeShipmentUid = task.object_uid || "";
+        await refreshShipments();
+        setMode("shipping");
+      } else if (task.task_type === "inventory") {
+        state.activeInventoryUid = task.object_uid || "";
+        await refreshInventories();
+        setMode("inventory");
+      } else if (task.task_type === "transfer") {
+        state.activeTransferUid = task.object_uid || "";
+        await refreshTransfers();
+        setMode("transfer");
+      }
+    }
+    async function beginTask(taskUid) {
+      let task = state.tasks.find((item) => item.task_uid === taskUid);
+      if (!task) throw new Error("Задание не найдено");
+      if (task.status === "new") {
+        task = await post(`/api/tasks/${encodeURIComponent(taskUid)}/start`, { actor: state.actor });
+      }
+      await routeTask(task);
     }
 
     async function refreshPalletChoices() {
@@ -676,6 +813,10 @@ def terminal_page() -> str:
         handler(code).catch((error) => showError(statusId, error)).finally(focusCurrent);
       });
     }
+    $("modeTasks").addEventListener("click", () => {
+      setMode("tasks");
+      refreshTasks(true).catch(showTaskError);
+    });
     $("modeWarehouse").addEventListener("click", () => setMode("warehouse"));
     $("modeInventory").addEventListener("click", () => setMode("inventory"));
     $("modeTransfer").addEventListener("click", () => setMode("transfer"));
@@ -708,6 +849,27 @@ def terminal_page() -> str:
     $("transferExpedition").addEventListener("click", () => moveTransferToExpedition().catch((error) => showError("transferStatus", error)));
     $("refreshTransfer").addEventListener("click", () => refreshTransfers().catch((error) => showError("transferStatus", error)));
     $("dispatchTransfer").addEventListener("click", () => dispatchActiveTransfer().catch((error) => showError("transferStatus", error)));
+    function applyTaskActor(input) {
+      state.actor = input.value.trim() || "tsd-demo";
+      $("operatorLabel").textContent = state.actor;
+      localStorage.setItem("wms.terminal.actor", state.actor);
+      refreshTasks(true).catch(showTaskError);
+    }
+    $("taskActor").addEventListener("input", (event) => {
+      const input = event.currentTarget;
+      clearTimeout(taskActorRefreshTimer);
+      taskActorRefreshTimer = setTimeout(() => applyTaskActor(input), 300);
+    });
+    $("taskActor").addEventListener("change", (event) => {
+      clearTimeout(taskActorRefreshTimer);
+      applyTaskActor(event.currentTarget);
+    });
+    $("taskWarehouse").addEventListener("change", (event) => {
+      state.taskWarehouseCode = event.currentTarget.value;
+      localStorage.setItem("wms.terminal.warehouse", state.taskWarehouseCode);
+      refreshTasks(true).catch(showTaskError);
+    });
+    $("refreshTasks").addEventListener("click", () => refreshTasks(true).catch(showTaskError));
     bindScan("warehouseScan", handleWarehouseScan, "warehouseStatus");
     bindScan("inventoryScan", handleInventoryScan, "inventoryStatus");
     bindScan("transferScan", handleTransferScan, "transferStatus");
@@ -715,10 +877,9 @@ def terminal_page() -> str:
     updateClock();
     setInterval(updateClock, 30000);
     loadBaseData()
-      .then(() => Promise.all([refreshPalletChoices(), refreshInventories(true), refreshTransfers(true), refreshShipments(true)]))
+      .then(() => Promise.all([refreshTasks(true), refreshPalletChoices(), refreshInventories(true), refreshTransfers(true), refreshShipments(true)]))
       .then(refreshActivePallet)
-      .then(focusCurrent)
-      .catch((error) => showError("warehouseStatus", error));
+      .catch(showTaskError);
   </script>
 </body>
 </html>"""
