@@ -101,6 +101,7 @@ def create_task(db: Session, payload: TaskCreate, *, commit: bool = True) -> War
         description=(payload.description or "").strip() or None,
         object_type=object_type,
         object_uid=object_uid,
+        assigned_to=(payload.assigned_to or "").strip() or None,
         created_by=payload.actor,
     )
     db.add(task)
@@ -116,6 +117,7 @@ def create_task(db: Session, payload: TaskCreate, *, commit: bool = True) -> War
             "task_type": task.task_type,
             "priority": task.priority,
             "object_uid": task.object_uid,
+            "assigned_to": task.assigned_to,
         },
     )
     if commit:
@@ -128,6 +130,8 @@ def start_task(db: Session, *, task_uid: str, actor: str) -> WarehouseTask:
     task = get_task(db, task_uid)
     if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
         raise bad_request(f"task cannot be started from status {task.status}")
+    if task.assigned_to and task.assigned_to != actor:
+        raise bad_request("task is assigned to another operator")
     before = {"status": task.status, "assigned_to": task.assigned_to}
     task.status = TaskStatus.IN_PROGRESS
     task.assigned_to = actor
@@ -135,6 +139,71 @@ def start_task(db: Session, *, task_uid: str, actor: str) -> WarehouseTask:
     create_event(
         db,
         operation="task_started",
+        object_type="task",
+        object_uid=task.task_uid,
+        actor=actor,
+        before=before,
+        after={"status": task.status, "assigned_to": task.assigned_to},
+    )
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def assign_task(db: Session, *, task_uid: str, assigned_to: str | None, actor: str) -> WarehouseTask:
+    task = get_task(db, task_uid)
+    if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        raise bad_request(f"task cannot be assigned from status {task.status}")
+    before = {"assigned_to": task.assigned_to, "status": task.status}
+    task.assigned_to = (assigned_to or "").strip() or None
+    create_event(
+        db,
+        operation="task_assigned" if task.assigned_to else "task_unassigned",
+        object_type="task",
+        object_uid=task.task_uid,
+        actor=actor,
+        before=before,
+        after={"assigned_to": task.assigned_to, "status": task.status},
+    )
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def cancel_task(db: Session, *, task_uid: str, actor: str) -> WarehouseTask:
+    task = get_task(db, task_uid)
+    if task.status == TaskStatus.COMPLETED:
+        raise bad_request("completed task cannot be cancelled")
+    if task.status == TaskStatus.CANCELLED:
+        return task
+    before = {"status": task.status, "assigned_to": task.assigned_to}
+    task.status = TaskStatus.CANCELLED
+    task.completed_at = utcnow()
+    create_event(
+        db,
+        operation="task_cancelled",
+        object_type="task",
+        object_uid=task.task_uid,
+        actor=actor,
+        before=before,
+        after={"status": task.status, "assigned_to": task.assigned_to},
+    )
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def reopen_task(db: Session, *, task_uid: str, actor: str) -> WarehouseTask:
+    task = get_task(db, task_uid)
+    if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        raise bad_request("only closed task can be reopened")
+    before = {"status": task.status, "assigned_to": task.assigned_to}
+    task.status = TaskStatus.NEW
+    task.started_at = None
+    task.completed_at = None
+    create_event(
+        db,
+        operation="task_reopened",
         object_type="task",
         object_uid=task.task_uid,
         actor=actor,

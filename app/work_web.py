@@ -895,6 +895,7 @@ def work_page() -> str:
         ["pallet already received", "Палета уже принята"],
         ["task not found", "Задание не найдено"],
         ["task cannot be started", "Это задание уже закрыто"],
+        ["task is assigned to another operator", "Задание назначено другому сотруднику"],
         ["cancelled task cannot be completed", "Отменённое задание нельзя завершить"],
       ];
       const found = mappings.find(([needle]) => text.toLowerCase().includes(needle));
@@ -1159,7 +1160,7 @@ def work_page() -> str:
       state.shipments = shipments;
       state.inventories = inventories;
       state.transfers = transfers;
-      state.tasks = tasks;
+      state.tasks = tasks.filter((task) => !task.assigned_to || task.assigned_to === actor());
       $("openCount").textContent = state.openPallets.length;
       $("waitingCount").textContent = state.waitingPallets.length;
       $("availableCount").textContent = state.availablePallets.length;
@@ -2691,7 +2692,10 @@ def work_page() -> str:
         focusScan();
       }).catch(showError);
     });
-    $("workActor").addEventListener("change", () => localStorage.setItem("wms.work.actor", actor()));
+    $("workActor").addEventListener("change", () => {
+      localStorage.setItem("wms.work.actor", actor());
+      refreshQueues().then(render).catch(showError);
+    });
     $("newPalletBtn").addEventListener("click", () => createPallet().catch(showError));
     $("closePalletBtn").addEventListener("click", () => closePallet().catch(showError));
     $("clearPalletBtn").addEventListener("click", () => clearActivePallet().catch(showError));
@@ -2785,6 +2789,7 @@ def tech_page() -> str:
       <section>
         <h2>Управление</h2>
         <div class="links">
+          <a href="/tasks">Диспетчер заданий<span>Очередь, назначения и контроль выполнения</span></a>
           <a href="/catalog">Справочники<span>Демо-данные, импорт и этикетки</span></a>
           <a href="/docs">Документация API<span>Контракты backend</span></a>
         </div>

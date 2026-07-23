@@ -104,6 +104,7 @@ PRIMARY_LINKS = (
 )
 
 MORE_LINKS = (
+    ("tasks", "/tasks", "Диспетчер заданий"),
     ("work", "/work", "Рабочее место"),
     ("terminal", "/terminal", "Эмулятор ТСД"),
     ("map", "/map", "Карта склада"),

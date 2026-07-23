@@ -69,6 +69,7 @@ from app.schemas import (
     TransferPalletRead,
     TransferRead,
     TaskActionRequest,
+    TaskAssignRequest,
     TaskCreate,
     TaskRead,
     TaskSyncRequest,
@@ -143,7 +144,17 @@ from app.transfers import (
     reserve_pallet_for_transfer,
     transfer_links,
 )
-from app.tasks import complete_task, create_task, start_task, sync_tasks, task_payload
+from app.tasks import (
+    assign_task,
+    cancel_task,
+    complete_task,
+    create_task,
+    get_task,
+    reopen_task,
+    start_task,
+    sync_tasks,
+    task_payload,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -1449,6 +1460,21 @@ def api_start_task(
     return task_payload(db, start_task(db, task_uid=task_uid, actor=payload.actor))
 
 
+@router.post("/tasks/{task_uid}/assign", response_model=TaskRead)
+def api_assign_task(
+    task_uid: str,
+    payload: TaskAssignRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    task = assign_task(
+        db,
+        task_uid=task_uid,
+        assigned_to=payload.assigned_to,
+        actor=payload.actor,
+    )
+    return task_payload(db, task)
+
+
 @router.post("/tasks/{task_uid}/complete", response_model=TaskRead)
 def api_complete_task(
     task_uid: str,
@@ -1456,6 +1482,41 @@ def api_complete_task(
     db: Session = Depends(get_db),
 ) -> dict:
     return task_payload(db, complete_task(db, task_uid=task_uid, actor=payload.actor))
+
+
+@router.post("/tasks/{task_uid}/cancel", response_model=TaskRead)
+def api_cancel_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return task_payload(db, cancel_task(db, task_uid=task_uid, actor=payload.actor))
+
+
+@router.post("/tasks/{task_uid}/reopen", response_model=TaskRead)
+def api_reopen_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return task_payload(db, reopen_task(db, task_uid=task_uid, actor=payload.actor))
+
+
+@router.get("/tasks/{task_uid}/events", response_model=list[EventRead])
+def api_task_events(
+    task_uid: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[OperationEvent]:
+    get_task(db, task_uid)
+    return list(
+        db.scalars(
+            select(OperationEvent)
+            .where(OperationEvent.object_type == "task", OperationEvent.object_uid == task_uid)
+            .order_by(OperationEvent.created_at.desc())
+            .limit(limit)
+        )
+    )
 
 
 @router.post("/inventories", response_model=InventoryRead)

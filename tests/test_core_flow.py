@@ -63,7 +63,7 @@ from app.transfers import (
     receive_transfer_pallet,
     reserve_pallet_for_transfer,
 )
-from app.tasks import complete_task, create_task, start_task, sync_tasks
+from app.tasks import assign_task, cancel_task, complete_task, create_task, reopen_task, start_task, sync_tasks
 from app.schemas import TaskCreate
 from app.warehouse_map import create_map_row, ensure_demo_maps, reset_sandbox_map, update_map_item
 
@@ -185,6 +185,33 @@ def test_task_sync_creates_and_completes_operational_tasks(db):
 
     assert build_tasks[0].status == TaskStatus.COMPLETED
     assert any(task.task_type == TaskType.PLACE and task.object_uid == pallet.pallet_uid for task in active)
+
+
+def test_task_assignment_cancel_and_reopen(db):
+    create_fixture_data(db)
+    task = create_task(
+        db,
+        TaskCreate(
+            warehouse_code="WH01",
+            task_type=TaskType.INVENTORY,
+            assigned_to="Иванов",
+            actor="Диспетчер",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        start_task(db, task_uid=task.task_uid, actor="Петров")
+    assert "another operator" in error.value.detail
+
+    assigned = assign_task(db, task_uid=task.task_uid, assigned_to="Петров", actor="Диспетчер")
+    assert assigned.assigned_to == "Петров"
+    assert start_task(db, task_uid=task.task_uid, actor="Петров").status == TaskStatus.IN_PROGRESS
+    assert cancel_task(db, task_uid=task.task_uid, actor="Диспетчер").status == TaskStatus.CANCELLED
+
+    reopened = reopen_task(db, task_uid=task.task_uid, actor="Диспетчер")
+    assert reopened.status == TaskStatus.NEW
+    assert reopened.started_at is None
+    assert reopened.completed_at is None
 
 
 def test_cannot_accept_box_twice(db):
@@ -1023,13 +1050,33 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
 
     technical = tech_page()
     assert "Все функции системы" in technical
+    assert 'href="/tasks"' in technical
     assert 'href="/work"' in technical
     assert 'href="/scan"' in technical
     assert 'href="/catalog"' in technical
 
 
+def test_task_dispatcher_page_has_queue_assignment_and_history():
+    from app.task_web import tasks_page
+
+    page = tasks_page()
+
+    assert "Диспетчер заданий" in page
+    assert 'id="warehouseFilter"' in page
+    assert 'id="createForm"' in page
+    assert 'id="taskAssignee"' in page
+    assert 'id="taskList"' in page
+    assert 'id="detailPanel"' in page
+    assert 'id="historyList"' in page
+    assert 'post("/api/tasks"' in page
+    assert '/assign`' in page
+    assert '/${endpoint}`' in page
+    assert '/events?limit=50' in page
+
+
 def test_pages_use_one_stable_navigation_header():
     from app.map_web import map_page
+    from app.task_web import tasks_page
     from app.transfer_web import transfers_page
     from app.web import cards_page, catalog_page, inventory_page, scan_page, shipments_page, terminal_page
 
@@ -1042,12 +1089,14 @@ def test_pages_use_one_stable_navigation_header():
         "inventory": inventory_page(),
         "catalog": catalog_page(),
         "cards": cards_page(),
+        "tasks": tasks_page(),
     }
     expected_links = [
         "/scan",
         "/transfers",
         "/shipments",
         "/inventory",
+        "/tasks",
         "/work",
         "/terminal",
         "/map",

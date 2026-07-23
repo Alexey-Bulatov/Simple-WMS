@@ -423,10 +423,16 @@ class TaskCreate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     object_type: str | None = Field(default=None, max_length=40)
     object_uid: str | None = Field(default=None, max_length=120)
+    assigned_to: str | None = Field(default=None, max_length=80)
     actor: str = "system"
 
 
 class TaskActionRequest(BaseModel):
+    actor: str = "system"
+
+
+class TaskAssignRequest(BaseModel):
+    assigned_to: str | None = Field(default=None, max_length=80)
     actor: str = "system"
 
 
