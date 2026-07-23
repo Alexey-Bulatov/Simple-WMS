@@ -482,6 +482,9 @@ def test_interwarehouse_transfer_dispatch_receive_and_place(db):
         ),
     )
     reserve_pallet_for_transfer(db, transfer_uid=transfer.transfer_uid, pallet_uid=pallet.pallet_uid, actor="tester")
+    source_tasks = sync_tasks(db, warehouse_code="WH01", actor="dispatcher")
+    source_task = next(task for task in source_tasks if task.object_uid == transfer.transfer_uid)
+    start_task(db, task_uid=source_task.task_uid, actor="sender")
     move_transfer_to_expedition(db, transfer_uid=transfer.transfer_uid, actor="tester")
     db.refresh(pallet)
     assert pallet.current_location_id is None
@@ -492,6 +495,19 @@ def test_interwarehouse_transfer_dispatch_receive_and_place(db):
     db.refresh(pallet)
     assert dispatched.status == TransferStatus.IN_TRANSIT
     assert pallet.status == PalletStatus.IN_TRANSIT
+
+    assert all(
+        task.object_uid != transfer.transfer_uid
+        for task in sync_tasks(db, warehouse_code="WH01", actor="dispatcher")
+    )
+    db.refresh(source_task)
+    assert source_task.status == TaskStatus.COMPLETED
+
+    destination_tasks = sync_tasks(db, warehouse_code="WH02", actor="dispatcher")
+    destination_task = next(task for task in destination_tasks if task.object_uid == transfer.transfer_uid)
+    assert destination_task.task_uid != source_task.task_uid
+    assert destination_task.warehouse_id == destination.id
+    start_task(db, task_uid=destination_task.task_uid, actor="receiver")
 
     received = receive_transfer_pallet(
         db,
@@ -505,6 +521,9 @@ def test_interwarehouse_transfer_dispatch_receive_and_place(db):
     assert pallet.status == PalletStatus.WAITING_PLACEMENT
     assert receiving_location.warehouse_id == destination.id
     assert receiving_location.kind == LocationKind.TRANSFER_IN
+    sync_tasks(db, warehouse_code="WH02", actor="dispatcher")
+    db.refresh(destination_task)
+    assert destination_task.status == TaskStatus.COMPLETED
 
     with pytest.raises(HTTPException):
         place_pallet(db, pallet_uid=pallet.pallet_uid, location_code=source_location.code, actor="receiver")
@@ -1057,6 +1076,9 @@ def test_terminal_page_contains_compact_workflows():
     assert 'post("/api/tasks/sync"' in page
     assert 'query.set("include_unassigned", "true")' in page
     assert '/start`' in page
+    assert "async function finishActiveTask" in page
+    assert "Следующее:" in page
+    assert 'updated.status === "completed"' in page
     assert ".app-header.desktop-header { display: none; }" in page
     assert 'class="device"' in page
 

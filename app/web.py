@@ -96,7 +96,10 @@ def terminal_page() -> str:
     .task-item.normal { border-left-color: var(--accent); }
     .task-item.high { border-left-color: #d89725; }
     .task-item.urgent { border-left-color: var(--danger); }
+    .task-item.next { background: #f1fbf8; box-shadow: inset 0 0 0 2px #9ed9d1; }
     .task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .task-badges { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+    .task-badges .next-label { color: var(--accent); background: var(--accent-soft); }
     .task-title { margin: 4px 0 2px; font-weight: 900; overflow-wrap: anywhere; }
     .task-code { font: 800 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
     .task-item button { margin-top: 7px; }
@@ -310,6 +313,9 @@ def terminal_page() -> str:
       actor: localStorage.getItem("wms.terminal.actor") || "tsd-demo",
       taskWarehouseCode: localStorage.getItem("wms.terminal.warehouse") || "",
       tasks: [],
+      activeTaskUid: "",
+      activeTaskType: "",
+      suggestedTaskUid: "",
       activePalletUid: "",
       activeInventoryUid: "",
       activeShipmentUid: "",
@@ -446,10 +452,14 @@ def terminal_page() -> str:
       $("taskList").innerHTML = state.tasks.map((task) => {
         const ownership = task.assigned_to ? task.assigned_to : "Свободно";
         const action = task.status === "in_progress" ? "Продолжить" : task.assigned_to ? "Начать" : "Взять";
-        return `<div class="list-item task-item ${escapeHtml(task.priority)}">
+        const suggested = task.task_uid === state.suggestedTaskUid;
+        return `<div class="list-item task-item ${escapeHtml(task.priority)}${suggested ? " next" : ""}">
           <div class="task-head">
             <span class="task-code">${escapeHtml(task.object_uid || task.task_uid)}</span>
-            <span class="badge">${escapeHtml(taskPriorityLabels[task.priority] || task.priority)}</span>
+            <span class="task-badges">
+              ${suggested ? '<span class="badge next-label">Следующее</span>' : ""}
+              <span class="badge">${escapeHtml(taskPriorityLabels[task.priority] || task.priority)}</span>
+            </span>
           </div>
           <div class="task-title">${escapeHtml(task.title)}</div>
           <div class="meta">${escapeHtml(taskTypeLabels[task.task_type] || task.task_type)} · ${escapeHtml(ownership)}</div>
@@ -507,7 +517,32 @@ def terminal_page() -> str:
       if (task.status === "new") {
         task = await post(`/api/tasks/${encodeURIComponent(taskUid)}/start`, { actor: state.actor });
       }
+      state.activeTaskUid = task.task_uid;
+      state.activeTaskType = task.task_type;
+      state.suggestedTaskUid = "";
       await routeTask(task);
+    }
+    function clearActiveTask() {
+      state.activeTaskUid = "";
+      state.activeTaskType = "";
+    }
+    async function finishActiveTask(expectedTypes, message) {
+      if (!state.activeTaskUid || !expectedTypes.includes(state.activeTaskType)) return false;
+      await post(`/api/tasks/${encodeURIComponent(state.activeTaskUid)}/complete`, { actor: state.actor });
+      clearActiveTask();
+      setMode("tasks");
+      await refreshTasks(true);
+      const nextTask = state.tasks[0] || null;
+      state.suggestedTaskUid = nextTask?.task_uid || "";
+      renderTasks();
+      setStatus(
+        "taskStatus",
+        nextTask
+          ? `${message}. Следующее: ${nextTask.title}`
+          : `${message}. Очередь выполнена`,
+        "ok",
+      );
+      return true;
     }
 
     async function refreshPalletChoices() {
@@ -566,9 +601,11 @@ def terminal_page() -> str:
     }
     async function closePallet() {
       if (!state.activePalletUid) throw new Error("Сначала выберите палету");
+      const palletUid = state.activePalletUid;
       await post(`/api/pallets/${encodeURIComponent(state.activePalletUid)}/close`, { actor: state.actor, reason: "ТСД" });
-      setWarehouseMode("place");
       await Promise.all([refreshPalletChoices(), refreshActivePallet()]);
+      if (await finishActiveTask(["build"], `Палета ${palletUid} сформирована`)) return;
+      setWarehouseMode("place");
       setStatus("warehouseStatus", "Палета закрыта. Сканируйте ячейку", "ok");
     }
     async function placePallet(locationCode) {
@@ -579,6 +616,10 @@ def terminal_page() -> str:
         actor: state.actor, reason: "ТСД", location_code: locationCode,
       });
       await Promise.all([refreshPalletChoices(), refreshActivePallet()]);
+      const message = action === "move"
+        ? `Палета ${state.activePalletUid} перемещена`
+        : `Палета ${state.activePalletUid} размещена`;
+      if (await finishActiveTask([action], message)) return;
       setStatus("warehouseStatus", `Размещено: ${locationCode}`, "ok");
     }
     async function handleWarehouseScan(code) {
@@ -663,8 +704,10 @@ def terminal_page() -> str:
       setStatus("inventoryStatus", `Пустая ячейка подтверждена: ${code}`, "ok");
     }
     async function finishInventory() {
+      const inventoryUid = state.activeInventoryUid;
       await post(`/api/inventories/${state.activeInventoryUid}/complete`, { actor: state.actor });
       state.activeInventoryUid = "";
+      if (await finishActiveTask(["inventory"], `Инвентаризация ${inventoryUid} завершена`)) return;
       await refreshInventories(true);
       setStatus("inventoryStatus", "Инвентаризация завершена", "ok");
     }
@@ -727,8 +770,10 @@ def terminal_page() -> str:
       setStatus("shippingStatus", `Палета погружена: ${code}`, "ok");
     }
     async function finishShipment() {
+      const shipmentUid = state.activeShipmentUid;
       await post(`/api/shipments/${state.activeShipmentUid}/close`, { actor: state.actor, reason: "погрузка завершена с ТСД" });
       state.activeShipmentUid = "";
+      if (await finishActiveTask(["ship"], `Отгрузка ${shipmentUid} завершена`)) return;
       await refreshShipments(true);
       setStatus("shippingStatus", "Погрузка завершена", "ok");
     }
@@ -792,13 +837,23 @@ def terminal_page() -> str:
       const transfer = await api(`/api/transfers/${state.activeTransferUid}`);
       const receiving = ["in_transit", "receiving"].includes(transfer.status);
       const action = receiving ? "receive" : "load";
-      await post(`/api/transfers/${state.activeTransferUid}/${action}/${encodeURIComponent(code)}`, { actor: state.actor });
+      const updated = await post(`/api/transfers/${state.activeTransferUid}/${action}/${encodeURIComponent(code)}`, { actor: state.actor });
+      if (receiving && updated.status === "completed") {
+        const transferUid = state.activeTransferUid;
+        state.activeTransferUid = "";
+        if (await finishActiveTask(["transfer"], `Приёмка ${transferUid} завершена`)) return;
+        await refreshTransfers(true);
+        setStatus("transferStatus", "Межскладская приёмка завершена", "ok");
+        return;
+      }
       await refreshActiveTransfer();
       setStatus("transferStatus", receiving ? `Палета принята: ${code}` : `Палета погружена: ${code}`, "ok");
     }
     async function dispatchActiveTransfer() {
       if (!state.activeTransferUid) throw new Error("Выберите перемещение");
+      const transferUid = state.activeTransferUid;
       await post(`/api/transfers/${state.activeTransferUid}/dispatch`, { actor: state.actor, reason: "отправлено с ТСД" });
+      if (await finishActiveTask(["transfer"], `Перемещение ${transferUid} отправлено`)) return;
       await refreshActiveTransfer();
       setStatus("transferStatus", "Палеты отправлены в путь", "ok");
     }
@@ -851,6 +906,8 @@ def terminal_page() -> str:
     $("dispatchTransfer").addEventListener("click", () => dispatchActiveTransfer().catch((error) => showError("transferStatus", error)));
     function applyTaskActor(input) {
       state.actor = input.value.trim() || "tsd-demo";
+      clearActiveTask();
+      state.suggestedTaskUid = "";
       $("operatorLabel").textContent = state.actor;
       localStorage.setItem("wms.terminal.actor", state.actor);
       refreshTasks(true).catch(showTaskError);
@@ -866,6 +923,8 @@ def terminal_page() -> str:
     });
     $("taskWarehouse").addEventListener("change", (event) => {
       state.taskWarehouseCode = event.currentTarget.value;
+      clearActiveTask();
+      state.suggestedTaskUid = "";
       localStorage.setItem("wms.terminal.warehouse", state.taskWarehouseCode);
       refreshTasks(true).catch(showTaskError);
     });

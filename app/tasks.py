@@ -266,13 +266,14 @@ def _object_is_complete(db: Session, task: WarehouseTask) -> bool:
     return False
 
 
-def _has_task(db: Session, task_type: TaskType, object_uid: str) -> bool:
-    return db.scalar(
-        select(WarehouseTask.id).where(
-            WarehouseTask.task_type == task_type,
-            WarehouseTask.object_uid == object_uid,
-        )
-    ) is not None
+def _has_task(db: Session, task_type: TaskType, object_uid: str, *, active_only: bool = False) -> bool:
+    stmt = select(WarehouseTask.id).where(
+        WarehouseTask.task_type == task_type,
+        WarehouseTask.object_uid == object_uid,
+    )
+    if active_only:
+        stmt = stmt.where(WarehouseTask.status.in_({TaskStatus.NEW, TaskStatus.IN_PROGRESS}))
+    return db.scalar(stmt) is not None
 
 
 def _auto_task(
@@ -284,8 +285,9 @@ def _auto_task(
     priority: TaskPriority,
     actor: str,
     description: str | None = None,
+    active_only: bool = False,
 ) -> None:
-    if _has_task(db, task_type, object_uid):
+    if _has_task(db, task_type, object_uid, active_only=active_only):
         return
     create_task(
         db,
@@ -375,6 +377,36 @@ def sync_tasks(db: Session, *, warehouse_code: str, actor: str = "system") -> li
             if transfer.status in {TransferStatus.IN_TRANSIT, TransferStatus.RECEIVING}
             else transfer.source_warehouse_id
         )
+        active_transfer_task = db.scalar(
+            select(WarehouseTask)
+            .where(
+                WarehouseTask.task_type == TaskType.TRANSFER,
+                WarehouseTask.object_uid == transfer.transfer_uid,
+                WarehouseTask.status.in_({TaskStatus.NEW, TaskStatus.IN_PROGRESS}),
+            )
+            .order_by(WarehouseTask.created_at.desc())
+        )
+        if active_transfer_task is not None and active_transfer_task.warehouse_id != work_warehouse_id:
+            before = {
+                "status": active_transfer_task.status,
+                "warehouse_id": active_transfer_task.warehouse_id,
+                "assigned_to": active_transfer_task.assigned_to,
+            }
+            active_transfer_task.status = TaskStatus.COMPLETED
+            active_transfer_task.completed_at = utcnow()
+            create_event(
+                db,
+                operation="task_completed_automatically",
+                object_type="task",
+                object_uid=active_transfer_task.task_uid,
+                actor=actor,
+                before=before,
+                after={
+                    "status": active_transfer_task.status,
+                    "warehouse_id": work_warehouse_id,
+                    "reason": "transfer_handoff",
+                },
+            )
         if work_warehouse_id != warehouse.id:
             continue
         priority = (
@@ -389,6 +421,7 @@ def sync_tasks(db: Session, *, warehouse_code: str, actor: str = "system") -> li
             object_uid=transfer.transfer_uid,
             priority=priority,
             actor=actor,
+            active_only=True,
         )
 
     shipments = db.scalars(
