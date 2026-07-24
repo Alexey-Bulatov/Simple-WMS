@@ -154,7 +154,7 @@ def render_thermal_label(item: LabelItem) -> Image.Image:
 def build_thermal_label_tspl(item: LabelItem) -> bytes:
     image = render_thermal_label(item)
     row_bytes = LABEL_WIDTH_DOTS // 8
-    bitmap = bytes(value ^ 0xFF for value in image.tobytes())
+    bitmap = image.tobytes()
     header = (
         f"SIZE {LABEL_WIDTH_MM} mm,{LABEL_HEIGHT_MM} mm\r\n"
         f"GAP {LABEL_GAP_MM} mm,0 mm\r\n"

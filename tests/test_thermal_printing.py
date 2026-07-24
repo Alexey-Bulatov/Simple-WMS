@@ -33,6 +33,9 @@ def test_thermal_label_tspl_contains_one_bitmap_and_one_print_command():
     assert payload.startswith(b"SIZE 47 mm,25 mm\r\nGAP 2 mm,0 mm\r\n")
     assert payload.count(b"BITMAP ") == 1
     assert payload.endswith(b"\r\nPRINT 1,1\r\n")
+    marker = b"BITMAP 0,0,47,200,0,"
+    bitmap_start = payload.index(marker) + len(marker)
+    assert payload[bitmap_start] == 0xFF
 
 
 def test_print_job_id_is_parsed_from_localized_cups_output(monkeypatch):
