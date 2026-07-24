@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import re
-import shutil
-import subprocess
+import socket
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
@@ -167,25 +166,16 @@ def build_thermal_label_tspl(item: LabelItem) -> bytes:
 
 
 def print_thermal_label(item: LabelItem) -> dict[str, str]:
-    queue = get_settings().thermal_printer_queue
-    lp_command = shutil.which("lp")
-    if lp_command is None:
-        raise ThermalPrintError("На сервере не установлена команда печати lp")
+    settings = get_settings()
+    destination = (settings.thermal_printer_host, settings.thermal_printer_port)
 
     try:
-        result = subprocess.run(
-            [lp_command, "-d", queue, "-o", "raw"],
-            input=build_thermal_label_tspl(item),
-            capture_output=True,
-            timeout=20,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ThermalPrintError("Сервер печати не ответил за 20 секунд") from exc
-    if result.returncode != 0:
-        message = result.stderr.decode("utf-8", errors="replace").strip()
-        raise ThermalPrintError(message or "CUPS не принял этикетку")
+        with socket.create_connection(destination, timeout=3) as printer:
+            printer.sendall(build_thermal_label_tspl(item))
+    except OSError as exc:
+        raise ThermalPrintError(
+            f"Принтер {settings.thermal_printer_host}:{settings.thermal_printer_port} недоступен"
+        ) from exc
 
-    output = result.stdout.decode("utf-8", errors="replace").strip()
-    match = re.search(rf"\b({re.escape(queue)}-\d+)\b", output)
-    return {"queue": queue, "job_id": match.group(1) if match else output}
+    job_id = f"{settings.thermal_printer_queue}-{uuid.uuid4().hex[:8].upper()}"
+    return {"queue": settings.thermal_printer_queue, "job_id": job_id}

@@ -1147,6 +1147,9 @@ def test_workplace_is_default_and_keeps_technical_mode_available():
 
     workplace = work_page()
     assert 'id="workWarehouse"' in workplace
+    assert 'id="moveWarehouse"' in workplace
+    assert 'id="moveWarehouseContext"' in workplace
+    assert "function changeWarehouse" in workplace
     assert 'id="workActor"' in workplace
     assert 'data-operation="tasks"' in workplace
     assert 'data-operation="build"' in workplace

@@ -1,5 +1,3 @@
-import subprocess
-
 from app import thermal_printing
 from app.labels import LabelItem
 from app.thermal_printing import (
@@ -38,17 +36,30 @@ def test_thermal_label_tspl_contains_one_bitmap_and_one_print_command():
     assert payload[bitmap_start] == 0xFF
 
 
-def test_print_job_id_is_parsed_from_localized_cups_output(monkeypatch):
+def test_print_label_sends_tspl_directly_to_printer_socket(monkeypatch):
     item = LabelItem(object_type="Палета", code="PLT-000123", title="Демо")
-    completed = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout="id запроса ATOL_TT42-27 (0 файл.)\n".encode(),
-        stderr=b"",
-    )
-    monkeypatch.setattr(thermal_printing.shutil, "which", lambda _: "/usr/bin/lp")
-    monkeypatch.setattr(thermal_printing.subprocess, "run", lambda *args, **kwargs: completed)
+    sent: list[bytes] = []
+
+    class FakePrinter:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def sendall(self, payload):
+            sent.append(payload)
+
+    def fake_connection(destination, timeout):
+        assert destination == ("192.168.10.204", 9100)
+        assert timeout == 3
+        return FakePrinter()
+
+    monkeypatch.setattr(thermal_printing.socket, "create_connection", fake_connection)
 
     result = print_thermal_label(item)
 
-    assert result == {"queue": "ATOL_TT42", "job_id": "ATOL_TT42-27"}
+    assert result["queue"] == "ATOL_TT42"
+    assert result["job_id"].startswith("ATOL_TT42-")
+    assert len(sent) == 1
+    assert sent[0].startswith(b"SIZE 47 mm,25 mm\r\n")

@@ -253,6 +253,34 @@ def work_page() -> str:
     .notice.ok { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
     .notice.warn { border-color: #d89725; color: var(--warn); background: var(--warn-soft); }
     .notice.err { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+    .operation-context {
+      padding: 12px 0 15px;
+      display: grid;
+      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+      align-items: end;
+      gap: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .operation-context[hidden] { display: none; }
+    .operation-context label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+    .operation-context select {
+      width: 100%;
+      min-height: 44px;
+      padding: 8px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 5px;
+      background: #fff;
+      color: var(--text);
+      font-weight: 800;
+    }
+    .operation-context-help { padding-bottom: 5px; color: var(--muted); font-size: 12px; }
     .scan-area {
       padding: 16px;
       border: 2px solid var(--accent);
@@ -426,6 +454,7 @@ def work_page() -> str:
       .scan-input { height: 58px; font-size: 19px; }
       .facts { grid-template-columns: 1fr 1fr; }
       .shipment-fields { grid-template-columns: 1fr; }
+      .operation-context { grid-template-columns: 1fr; gap: 7px; }
       .action-row > * { width: 100%; }
       .problem-row { grid-template-columns: 1fr; }
       .problem-row .text-button { width: 100%; }
@@ -509,6 +538,16 @@ def work_page() -> str:
 
       <div class="workflow-body">
         <div id="notice" class="notice">Загрузка рабочего места...</div>
+
+        <div id="moveWarehouseContext" class="operation-context" hidden>
+          <div>
+            <label for="moveWarehouse">Склад перемещения</label>
+            <select id="moveWarehouse" aria-label="Склад перемещения"></select>
+          </div>
+          <div id="moveWarehouseHint" class="operation-context-help">
+            Палеты и целевые ячейки будут отфильтрованы по выбранному складу.
+          </div>
+        </div>
 
         <div id="shipmentCreate" class="shipment-create">
           <div class="shipment-fields">
@@ -1620,12 +1659,16 @@ def work_page() -> str:
     }
 
     function renderMove() {
-      setStepCount(3);
+      setStepCount(4);
       $("operationTitle").textContent = "Перемещение палеты";
       $("operationDescription").textContent = `Переместите палету в другую ячейку склада ${state.warehouseCode || "-"}.`;
-      $("stepOneLabel").textContent = "Палета";
-      $("stepTwoLabel").textContent = "Новая ячейка";
-      $("stepThreeLabel").textContent = "Готово";
+      $("stepOneLabel").textContent = "Склад";
+      $("stepTwoLabel").textContent = "Палета";
+      $("stepThreeLabel").textContent = "Новая ячейка";
+      $("stepFourLabel").textContent = "Готово";
+      $("moveWarehouse").value = state.warehouseCode;
+      $("moveWarehouseHint").textContent =
+        `${state.availablePallets.length} пал. доступно · ${storageLocations().length} яч. хранения`;
       $("newPalletBtn").hidden = true;
       $("closePalletBtn").hidden = true;
       $("toPlacementBtn").hidden = true;
@@ -1634,7 +1677,7 @@ def work_page() -> str:
       $("workScan").disabled = false;
 
       if (state.completedMove) {
-        setSteps(3, [1, 2, 3]);
+        setSteps(4, [1, 2, 3, 4]);
         $("scanArea").hidden = true;
         $("nextPalletBtn").hidden = false;
         $("nextPalletBtn").textContent = "Переместить следующую палету";
@@ -1648,7 +1691,7 @@ def work_page() -> str:
 
       clearCompletion();
       if (!state.pallet) {
-        setSteps(1);
+        setSteps(2, [1]);
         $("nextAction").textContent = "Отсканируйте палету";
         $("workScan").placeholder = "Код палеты";
         $("scanHint").textContent = `Нужна размещённая палета склада ${state.warehouseCode}`;
@@ -1656,14 +1699,14 @@ def work_page() -> str:
       }
 
       if (state.pallet.status === "available" && palletBelongsToSelectedWarehouse(state.pallet)) {
-        setSteps(2, [1]);
+        setSteps(3, [1, 2]);
         $("nextAction").textContent = "Отсканируйте новую ячейку";
         $("workScan").placeholder = "Код ячейки";
         $("scanHint").textContent = `Текущая ячейка: ${locationCode(state.pallet.current_location_id)}`;
         return;
       }
 
-      setSteps(1);
+      setSteps(2, [1]);
       $("scanArea").hidden = true;
       setNotice(`Палета недоступна для перемещения на складе ${state.warehouseCode}.`, "warn");
     }
@@ -1907,6 +1950,7 @@ def work_page() -> str:
     }
 
     function render() {
+      $("moveWarehouseContext").hidden = state.operation !== "move";
       if (state.operation !== "ship") {
         $("shipmentCreate").classList.remove("visible");
         $("toExpeditionBtn").hidden = true;
@@ -2604,15 +2648,18 @@ def work_page() -> str:
       state.locations = locations;
       state.batches = batches;
 
-      $("workWarehouse").innerHTML = warehouses.map((warehouse) =>
+      const warehouseOptions = warehouses.map((warehouse) =>
         `<option value="${escapeHtml(warehouse.code)}">${escapeHtml(warehouse.code)} — ${escapeHtml(warehouse.name)}</option>`,
       ).join("");
+      $("workWarehouse").innerHTML = warehouseOptions;
+      $("moveWarehouse").innerHTML = warehouseOptions;
       if (!warehouses.some((item) => item.code === state.warehouseCode)) {
         state.warehouseCode = warehouses.some((item) => item.code === constants.default_warehouse_code)
           ? constants.default_warehouse_code
           : warehouses[0]?.code || "";
       }
       $("workWarehouse").value = state.warehouseCode;
+      $("moveWarehouse").value = state.warehouseCode;
       updateTransferDestinations();
       $("workActor").value = localStorage.getItem("wms.work.actor") || "Кладовщик";
 
@@ -2666,11 +2713,11 @@ def work_page() -> str:
       event.currentTarget.value = "";
       try { await handleScan(value); } catch (error) { showError(error); } finally { focusScan(); }
     });
-    $("workWarehouse").addEventListener("change", (event) => {
-      const warehouseCode = event.currentTarget.value;
-      Promise.resolve().then(async () => {
+    async function changeWarehouse(warehouseCode) {
         state.warehouseCode = warehouseCode;
         localStorage.setItem("wms.work.warehouse", state.warehouseCode);
+        $("workWarehouse").value = state.warehouseCode;
+        $("moveWarehouse").value = state.warehouseCode;
         persistActivePallet("");
         state.pallet = null;
         state.boxes = [];
@@ -2690,7 +2737,12 @@ def work_page() -> str:
         render();
         setNotice(`Выбран склад: ${state.warehouseCode}`, "ok");
         focusScan();
-      }).catch(showError);
+    }
+    $("workWarehouse").addEventListener("change", (event) => {
+      changeWarehouse(event.currentTarget.value).catch(showError);
+    });
+    $("moveWarehouse").addEventListener("change", (event) => {
+      changeWarehouse(event.currentTarget.value).catch(showError);
     });
     $("workActor").addEventListener("change", () => {
       localStorage.setItem("wms.work.actor", actor());
