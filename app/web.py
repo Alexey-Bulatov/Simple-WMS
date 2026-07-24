@@ -1050,6 +1050,7 @@ def cards_page() -> str:
         </select>
       </div>
       <button id="loadBtn">Открыть карточку</button>
+      <button id="printBtn">Печать 47×25</button>
       <button id="pdfBtn" class="secondary">PDF этикетки</button>
       <div class="grid3">
         <button id="samplePalletBtn" class="ghost">Палеты</button>
@@ -1123,8 +1124,8 @@ def cards_page() -> str:
       el.textContent = message;
     }
     function focusCode() { setTimeout(() => $("codeInput").focus(), 30); }
-    async function api(path) {
-      const response = await fetch(path);
+    async function api(path, options = {}) {
+      const response = await fetch(path, options);
       const text = await response.text();
       const data = text ? JSON.parse(text) : null;
       if (!response.ok) throw new Error(data?.detail || response.statusText);
@@ -1274,6 +1275,17 @@ def cards_page() -> str:
     $("pdfBtn").addEventListener("click", () => {
       if (!state.card?.pdf_url) return setStatus("Сначала откройте карточку", "err");
       window.open(state.card.pdf_url, "_blank");
+      focusCode();
+    });
+    $("printBtn").addEventListener("click", async () => {
+      if (!state.card?.print_url) return setStatus("Сначала откройте карточку", "err");
+      setStatus("Отправляем этикетку на АТОЛ ТТ42...");
+      try {
+        const job = await api(state.card.print_url, { method: "POST" });
+        setStatus(`Этикетка ${job.code} отправлена, задание ${job.job_id}`, "ok");
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
       focusCode();
     });
     $("samplePalletBtn").addEventListener("click", () => quickList("pallet").catch((err) => setStatus(err.message, "err")));

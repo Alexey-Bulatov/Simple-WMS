@@ -962,6 +962,49 @@ def test_label_pdf_filters_selected_objects(db, monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_thermal_label_endpoints_submit_selected_objects(db, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import routes as api_routes
+    from app.db.session import get_db
+    from app.main import app
+
+    _, batch, _, location = create_fixture_data(db)
+    box = generate_boxes(db, batch_id=batch.id, quantity=1)[0]
+    pallet = open_pallet(db)
+    captured = []
+
+    def fake_print(item):
+        captured.append((item.object_type, item.code))
+        return {"queue": "ATOL_TT42", "job_id": f"ATOL_TT42-{len(captured)}"}
+
+    def override_db():
+        yield db
+
+    monkeypatch.setattr(api_routes, "print_thermal_label", fake_print)
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[api_routes.get_db] = override_db
+    try:
+        client = TestClient(app)
+        paths = [
+            f"/api/boxes/{box.box_uid}/label.print",
+            f"/api/pallets/{pallet.pallet_uid}/label.print",
+            f"/api/locations/{location.code}/label.print",
+        ]
+        for path in paths:
+            response = client.post(path)
+            assert response.status_code == 200
+            assert response.json()["status"] == "queued"
+            assert response.json()["queue"] == "ATOL_TT42"
+        assert captured == [
+            ("Коробка", box.box_uid),
+            ("Палета", pallet.pallet_uid),
+            ("Ячейка", location.code),
+        ]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_catalog_import_preview_and_apply_csv(db):
     from fastapi.testclient import TestClient
 

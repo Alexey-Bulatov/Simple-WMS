@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "WMS Pilot"
     app_env: str = "development"
     database_url: str = "sqlite:///./wms.db"
+    thermal_printer_queue: str = "ATOL_TT42"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

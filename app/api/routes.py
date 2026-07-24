@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.core.constants import (
 )
 from app.db.session import get_db
 from app.labels import LabelItem, build_labels_pdf
+from app.thermal_printing import ThermalPrintError, print_thermal_label
 from app.imports import apply_import, parse_import_file, validate_import_rows
 from app.models.entities import (
     Batch,
@@ -476,6 +477,19 @@ def pdf_response(content: bytes, filename: str) -> Response:
     )
 
 
+def thermal_print_response(item: LabelItem) -> dict:
+    try:
+        job = print_thermal_label(item)
+    except ThermalPrintError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "status": "queued",
+        "object_type": item.object_type,
+        "code": item.code,
+        **job,
+    }
+
+
 def box_label_item(db: Session, box: Box) -> LabelItem:
     batch = db.get(Batch, box.batch_id)
     expiry = batch.expiry_date.isoformat() if batch else "-"
@@ -710,6 +724,14 @@ def api_location_label(location_code: str, db: Session = Depends(get_db)) -> Res
     return pdf_response(content, f"location-{location.code}.pdf")
 
 
+@router.post("/locations/{location_code}/label.print")
+def api_print_location_label(location_code: str, db: Session = Depends(get_db)) -> dict:
+    location = db.scalar(select(Location).where(Location.code == location_code))
+    if location is None:
+        raise not_found("location")
+    return thermal_print_response(location_label_item(location))
+
+
 @router.get("/labels/locations.pdf")
 def api_location_labels(
     warehouse_code_filter: str | None = Query(default=None, alias="warehouse_code"),
@@ -801,6 +823,14 @@ def api_box_label(box_uid: str, db: Session = Depends(get_db)) -> Response:
         raise not_found("box")
     content = build_labels_pdf([box_label_item(db, box)], title=f"Этикетка коробки {box.box_uid}")
     return pdf_response(content, f"box-{box.box_uid}.pdf")
+
+
+@router.post("/boxes/{box_uid}/label.print")
+def api_print_box_label(box_uid: str, db: Session = Depends(get_db)) -> dict:
+    box = db.scalar(select(Box).where(Box.box_uid == box_uid))
+    if box is None:
+        raise not_found("box")
+    return thermal_print_response(box_label_item(db, box))
 
 
 @router.get("/labels/boxes.pdf")
@@ -901,6 +931,14 @@ def api_pallet_label(pallet_uid: str, db: Session = Depends(get_db)) -> Response
         raise not_found("pallet")
     content = build_labels_pdf([pallet_label_item(db, pallet)], title=f"Этикетка палеты {pallet.pallet_uid}")
     return pdf_response(content, f"pallet-{pallet.pallet_uid}.pdf")
+
+
+@router.post("/pallets/{pallet_uid}/label.print")
+def api_print_pallet_label(pallet_uid: str, db: Session = Depends(get_db)) -> dict:
+    pallet = db.scalar(select(Pallet).where(Pallet.pallet_uid == pallet_uid))
+    if pallet is None:
+        raise not_found("pallet")
+    return thermal_print_response(pallet_label_item(db, pallet))
 
 
 @router.get("/labels/pallets.pdf")
@@ -1091,6 +1129,7 @@ def api_pallet_card(pallet_uid: str, db: Session = Depends(get_db)) -> dict:
         ],
         "events": object_events(db, object_type="pallet", object_uid=pallet.pallet_uid),
         "pdf_url": f"/api/pallets/{pallet.pallet_uid}/label.pdf",
+        "print_url": f"/api/pallets/{pallet.pallet_uid}/label.print",
     }
 
 
@@ -1139,6 +1178,7 @@ def api_box_card(box_uid: str, db: Session = Depends(get_db)) -> dict:
         "location": location_payload(db, location),
         "events": events[:100],
         "pdf_url": f"/api/boxes/{box.box_uid}/label.pdf",
+        "print_url": f"/api/boxes/{box.box_uid}/label.print",
     }
 
 
@@ -1177,6 +1217,7 @@ def api_location_card(location_code: str, db: Session = Depends(get_db)) -> dict
         ],
         "events": events,
         "pdf_url": f"/api/locations/{location.code}/label.pdf",
+        "print_url": f"/api/locations/{location.code}/label.print",
     }
 
 
