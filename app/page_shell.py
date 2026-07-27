@@ -112,6 +112,7 @@ MORE_LINKS = (
     ("terminal", "/terminal", "Эмулятор ТСД"),
     ("map", "/map", "Карта склада"),
     ("catalog", "/catalog", "Справочники"),
+    ("settings", "/settings", "Настройки"),
     ("cards", "/cards", "Карточки"),
     ("docs", "/docs", "Документация API"),
 )

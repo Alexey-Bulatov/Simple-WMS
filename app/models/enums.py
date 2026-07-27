@@ -1,6 +1,33 @@
 from enum import StrEnum
 
 
+class MeasurementDimension(StrEnum):
+    QUANTITY = "quantity"
+    MASS = "mass"
+    VOLUME = "volume"
+    LENGTH = "length"
+    AREA = "area"
+
+
+class EquipmentKind(StrEnum):
+    PRINTER = "printer"
+    SCANNER = "scanner"
+    TERMINAL = "terminal"
+    SCALE = "scale"
+    OTHER = "other"
+
+
+class EquipmentConnection(StrEnum):
+    PDF = "pdf"
+    SYSTEM_QUEUE = "system_queue"
+    RAW_TCP = "raw_tcp"
+    KEYBOARD = "keyboard"
+    CAMERA = "camera"
+    WEB = "web"
+    SERIAL = "serial"
+    USB = "usb"
+
+
 class UserRole(StrEnum):
     PRODUCTION_OPERATOR = "production_operator"
     RECEIVING_CLERK = "receiving_clerk"

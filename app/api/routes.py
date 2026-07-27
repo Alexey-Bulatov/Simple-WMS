@@ -18,8 +18,10 @@ from app.imports import apply_import, parse_import_file, validate_import_rows
 from app.models.entities import (
     Batch,
     Box,
+    EquipmentProfile,
     InventoryLine,
     InventorySession,
+    LogisticUnitType,
     Location,
     OperationEvent,
     Pallet,
@@ -27,6 +29,7 @@ from app.models.entities import (
     Product,
     Shipment,
     ShipmentPallet,
+    UnitOfMeasure,
     User,
     Warehouse,
     WarehouseTransfer,
@@ -42,6 +45,9 @@ from app.schemas import (
     DemoCatalogRequest,
     DemoGenerateRead,
     DemoPalletsRequest,
+    EquipmentProfileCreate,
+    EquipmentProfileRead,
+    EquipmentProfileUpdate,
     EventRead,
     GenerateBoxesRequest,
     InventoryLineRead,
@@ -51,6 +57,8 @@ from app.schemas import (
     InventoryResolveRequest,
     InventoryScanRequest,
     InventoryStartRequest,
+    LogisticUnitTypeCreate,
+    LogisticUnitTypeRead,
     LocationCreate,
     LocationRead,
     PalletActionRequest,
@@ -76,6 +84,8 @@ from app.schemas import (
     TaskSyncRequest,
     UserCreate,
     UserRead,
+    UnitOfMeasureCreate,
+    UnitOfMeasureRead,
     WarehouseCreate,
     WarehouseMapActionRequest,
     WarehouseMapItemUpdate,
@@ -96,10 +106,13 @@ from app.services import (
     confirm_inventory_location,
     confirmed_inventory_location_codes,
     create_batch,
+    create_equipment_profile,
     create_location,
+    create_logistic_unit_type,
     create_product,
     create_shipment,
     create_user,
+    create_unit_of_measure,
     create_warehouse,
     create_zone,
     ensure_demo_catalog,
@@ -120,6 +133,7 @@ from app.services import (
     scan_inventory_location,
     set_pallet_problem_status,
     start_inventory,
+    update_equipment_profile,
     inventory_scope_locations,
     inventory_line_resolution_event,
     resolved_inventory_line_ids,
@@ -652,6 +666,60 @@ def api_create_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
 @router.get("/users", response_model=list[UserRead])
 def api_list_users(db: Session = Depends(get_db)) -> list[User]:
     return list(db.scalars(select(User).order_by(User.username)))
+
+
+@router.post("/equipment-profiles", response_model=EquipmentProfileRead)
+def api_create_equipment_profile(
+    payload: EquipmentProfileCreate,
+    db: Session = Depends(get_db),
+) -> EquipmentProfile:
+    return create_equipment_profile(db, payload)
+
+
+@router.get("/equipment-profiles", response_model=list[EquipmentProfileRead])
+def api_list_equipment_profiles(
+    warehouse_id: int | None = Query(default=None),
+    device_kind: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> list[EquipmentProfile]:
+    query = select(EquipmentProfile)
+    if warehouse_id is not None:
+        query = query.where(EquipmentProfile.warehouse_id == warehouse_id)
+    if device_kind is not None:
+        query = query.where(EquipmentProfile.device_kind == device_kind)
+    return list(db.scalars(query.order_by(EquipmentProfile.device_kind, EquipmentProfile.code)))
+
+
+@router.put("/equipment-profiles/{profile_id}", response_model=EquipmentProfileRead)
+def api_update_equipment_profile(
+    profile_id: int,
+    payload: EquipmentProfileUpdate,
+    db: Session = Depends(get_db),
+) -> EquipmentProfile:
+    return update_equipment_profile(db, profile_id, payload)
+
+
+@router.post("/units-of-measure", response_model=UnitOfMeasureRead)
+def api_create_unit_of_measure(payload: UnitOfMeasureCreate, db: Session = Depends(get_db)) -> UnitOfMeasure:
+    return create_unit_of_measure(db, payload)
+
+
+@router.get("/units-of-measure", response_model=list[UnitOfMeasureRead])
+def api_list_units_of_measure(db: Session = Depends(get_db)) -> list[UnitOfMeasure]:
+    return list(db.scalars(select(UnitOfMeasure).order_by(UnitOfMeasure.dimension, UnitOfMeasure.code)))
+
+
+@router.post("/logistic-unit-types", response_model=LogisticUnitTypeRead)
+def api_create_logistic_unit_type(
+    payload: LogisticUnitTypeCreate,
+    db: Session = Depends(get_db),
+) -> LogisticUnitType:
+    return create_logistic_unit_type(db, payload)
+
+
+@router.get("/logistic-unit-types", response_model=list[LogisticUnitTypeRead])
+def api_list_logistic_unit_types(db: Session = Depends(get_db)) -> list[LogisticUnitType]:
+    return list(db.scalars(select(LogisticUnitType).order_by(LogisticUnitType.code)))
 
 
 @router.post("/products", response_model=ProductRead)

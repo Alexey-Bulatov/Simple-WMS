@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -26,8 +27,11 @@ from app.core.constants import (
 from app.models.entities import (
     Batch,
     Box,
+    EquipmentProfile,
     InventoryLine,
     InventorySession,
+    LogisticUnitType,
+    LogisticUnitTypeAllowedChild,
     Location,
     OperationEvent,
     Pallet,
@@ -35,24 +39,65 @@ from app.models.entities import (
     Product,
     Shipment,
     ShipmentPallet,
+    UnitOfMeasure,
     User,
     Warehouse,
     Zone,
     utcnow,
 )
-from app.models.enums import BoxStatus, InventoryLineStatus, InventoryStatus, LocationKind, PalletStatus, ShipmentStatus
+from app.models.enums import (
+    BoxStatus,
+    InventoryLineStatus,
+    InventoryStatus,
+    LocationKind,
+    MeasurementDimension,
+    PalletStatus,
+    ShipmentStatus,
+)
 from app.schemas import (
     BatchCreate,
     DemoCatalogRequest,
     DemoPalletsRequest,
+    EquipmentProfileCreate,
+    EquipmentProfileUpdate,
     InventoryStartRequest,
+    LogisticUnitTypeCreate,
     LocationCreate,
     ProductCreate,
     ShipmentCreate,
     UserCreate,
+    UnitOfMeasureCreate,
     WarehouseCreate,
     ZoneCreate,
 )
+
+
+DEFAULT_UNITS_OF_MEASURE = (
+    ("PCS", "Штука", "шт", MeasurementDimension.QUANTITY, 0, Decimal("1"), True),
+    ("KG", "Килограмм", "кг", MeasurementDimension.MASS, 3, Decimal("1"), True),
+    ("G", "Грамм", "г", MeasurementDimension.MASS, 3, Decimal("0.001"), False),
+    ("L", "Литр", "л", MeasurementDimension.VOLUME, 3, Decimal("1"), True),
+    ("ML", "Миллилитр", "мл", MeasurementDimension.VOLUME, 3, Decimal("0.001"), False),
+    ("M3", "Кубический метр", "м³", MeasurementDimension.VOLUME, 6, Decimal("1000"), False),
+    ("M", "Метр", "м", MeasurementDimension.LENGTH, 3, Decimal("1"), True),
+    ("M2", "Квадратный метр", "м²", MeasurementDimension.AREA, 3, Decimal("1"), True),
+)
+
+DEFAULT_LOGISTIC_UNIT_TYPES = (
+    ("BOX", "Коробка", BOX_CODE_PREFIX, True, False, False),
+    ("PALLET", "Палета", PALLET_CODE_PREFIX, False, True, True),
+    ("CRATE", "Ящик", "CRT", True, False, True),
+    ("DRUM", "Бочка", "DRM", True, False, True),
+    ("CANISTER", "Канистра", "CAN", True, False, True),
+    ("IBC", "Еврокуб", "IBC", True, False, True),
+    ("ROLL", "Рулон", "ROL", True, False, False),
+    ("CONTAINER", "Контейнер", "CNT", True, True, True),
+)
+
+DEFAULT_ALLOWED_CHILD_TYPES = {
+    "PALLET": ("BOX", "CRATE", "DRUM", "CANISTER"),
+    "CONTAINER": ("BOX", "PALLET", "CRATE", "DRUM", "CANISTER", "IBC", "ROLL"),
+}
 
 
 def not_found(name: str) -> HTTPException:
@@ -103,8 +148,308 @@ def create_user(db: Session, payload: UserCreate) -> User:
     return user
 
 
+def ensure_reference_catalogs(db: Session) -> dict[str, int]:
+    changed = False
+    units: dict[str, UnitOfMeasure] = {
+        unit.code: unit for unit in db.scalars(select(UnitOfMeasure).order_by(UnitOfMeasure.id))
+    }
+    for code, name, symbol, dimension, precision, factor, is_base in DEFAULT_UNITS_OF_MEASURE:
+        if code in units:
+            continue
+        unit = UnitOfMeasure(
+            code=code,
+            name=name,
+            symbol=symbol,
+            dimension=dimension.value,
+            decimal_precision=precision,
+            factor_to_base=factor,
+            is_base=is_base,
+        )
+        db.add(unit)
+        units[code] = unit
+        changed = True
+    if changed:
+        db.flush()
+
+    unit_types: dict[str, LogisticUnitType] = {
+        item.code: item for item in db.scalars(select(LogisticUnitType).order_by(LogisticUnitType.id))
+    }
+    for code, name, prefix, can_contain_goods, can_contain_units, is_returnable in DEFAULT_LOGISTIC_UNIT_TYPES:
+        if code in unit_types:
+            continue
+        item = LogisticUnitType(
+            code=code,
+            name=name,
+            identifier_prefix=prefix,
+            can_contain_goods=can_contain_goods,
+            can_contain_units=can_contain_units,
+            is_returnable=is_returnable,
+        )
+        db.add(item)
+        unit_types[code] = item
+        changed = True
+    if changed:
+        db.flush()
+
+    for parent_code, child_codes in DEFAULT_ALLOWED_CHILD_TYPES.items():
+        parent = unit_types[parent_code]
+        existing_child_ids = {
+            child_id
+            for child_id in db.scalars(
+                select(LogisticUnitTypeAllowedChild.child_type_id).where(
+                    LogisticUnitTypeAllowedChild.parent_type_id == parent.id
+                )
+            )
+        }
+        for child_code in child_codes:
+            child = unit_types[child_code]
+            if child.id in existing_child_ids:
+                continue
+            db.add(LogisticUnitTypeAllowedChild(parent_type_id=parent.id, child_type_id=child.id))
+            changed = True
+
+    if changed:
+        commit_or_409(db, "reference catalog initialization conflict")
+    return {
+        "units_of_measure": len(units),
+        "logistic_unit_types": len(unit_types),
+    }
+
+
+def create_unit_of_measure(db: Session, payload: UnitOfMeasureCreate) -> UnitOfMeasure:
+    ensure_reference_catalogs(db)
+    code = payload.code.strip().upper()
+    if payload.is_base:
+        existing_base = db.scalar(
+            select(UnitOfMeasure).where(
+                UnitOfMeasure.dimension == payload.dimension.value,
+                UnitOfMeasure.is_base.is_(True),
+            )
+        )
+        if existing_base is not None:
+            raise bad_request(f"base unit already exists for dimension {payload.dimension.value}")
+    unit = UnitOfMeasure(
+        code=code,
+        name=payload.name.strip(),
+        symbol=payload.symbol.strip(),
+        dimension=payload.dimension.value,
+        decimal_precision=payload.decimal_precision,
+        factor_to_base=payload.factor_to_base,
+        is_base=payload.is_base,
+    )
+    db.add(unit)
+    create_event(
+        db,
+        operation="unit_of_measure_created",
+        object_type="unit_of_measure",
+        object_uid=code,
+        after={
+            "name": unit.name,
+            "symbol": unit.symbol,
+            "dimension": unit.dimension,
+            "factor_to_base": str(unit.factor_to_base),
+            "is_base": unit.is_base,
+        },
+    )
+    commit_or_409(db, "unit of measure already exists")
+    db.refresh(unit)
+    return unit
+
+
+def validate_weight_uom(db: Session, uom_id: int | None, field_name: str) -> None:
+    if uom_id is None:
+        return
+    unit = db.get(UnitOfMeasure, uom_id)
+    if unit is None:
+        raise not_found(field_name)
+    if unit.dimension != MeasurementDimension.MASS.value:
+        raise bad_request(f"{field_name} must reference a mass unit")
+
+
+def create_logistic_unit_type(db: Session, payload: LogisticUnitTypeCreate) -> LogisticUnitType:
+    ensure_reference_catalogs(db)
+    validate_weight_uom(db, payload.tare_weight_uom_id, "tare_weight_uom")
+    validate_weight_uom(db, payload.max_weight_uom_id, "max_weight_uom")
+
+    code = payload.code.strip().upper()
+    prefix = payload.identifier_prefix.strip().upper()
+    duplicate = db.scalar(
+        select(LogisticUnitType).where(
+            (LogisticUnitType.code == code) | (LogisticUnitType.identifier_prefix == prefix)
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="logistic unit type code or prefix already exists",
+        )
+
+    child_ids = sorted(set(payload.allowed_child_type_ids))
+    if child_ids:
+        existing_child_ids = set(
+            db.scalars(select(LogisticUnitType.id).where(LogisticUnitType.id.in_(child_ids)))
+        )
+        missing_ids = set(child_ids) - existing_child_ids
+        if missing_ids:
+            raise bad_request(f"unknown allowed child type ids: {sorted(missing_ids)}")
+
+    data = payload.model_dump(exclude={"allowed_child_type_ids"})
+    data["code"] = code
+    data["identifier_prefix"] = prefix
+    data["name"] = payload.name.strip()
+    item = LogisticUnitType(**data)
+    db.add(item)
+    db.flush()
+    if item.id in child_ids:
+        db.rollback()
+        raise bad_request("logistic unit type cannot contain itself")
+    for child_id in child_ids:
+        db.add(LogisticUnitTypeAllowedChild(parent_type_id=item.id, child_type_id=child_id))
+    create_event(
+        db,
+        operation="logistic_unit_type_created",
+        object_type="logistic_unit_type",
+        object_uid=item.code,
+        after={
+            "name": item.name,
+            "identifier_prefix": item.identifier_prefix,
+            "allowed_child_type_ids": child_ids,
+        },
+    )
+    commit_or_409(db, "logistic unit type code or prefix already exists")
+    db.refresh(item)
+    return item
+
+
+def create_equipment_profile(db: Session, payload: EquipmentProfileCreate) -> EquipmentProfile:
+    if payload.warehouse_id is not None and db.get(Warehouse, payload.warehouse_id) is None:
+        raise not_found("warehouse")
+
+    code = payload.code.strip().upper()
+    if payload.is_default:
+        default_query = select(EquipmentProfile).where(
+            EquipmentProfile.device_kind == payload.device_kind.value,
+            EquipmentProfile.is_default.is_(True),
+        )
+        if payload.warehouse_id is None:
+            default_query = default_query.where(EquipmentProfile.warehouse_id.is_(None))
+        else:
+            default_query = default_query.where(EquipmentProfile.warehouse_id == payload.warehouse_id)
+        for existing_default in db.scalars(default_query):
+            existing_default.is_default = False
+
+    data = payload.model_dump()
+    data["code"] = code
+    data["name"] = payload.name.strip()
+    data["device_kind"] = payload.device_kind.value
+    data["connection_type"] = payload.connection_type.value
+    item = EquipmentProfile(**data)
+    db.add(item)
+    create_event(
+        db,
+        operation="equipment_profile_created",
+        object_type="equipment_profile",
+        object_uid=code,
+        after={
+            "name": item.name,
+            "device_kind": item.device_kind,
+            "connection_type": item.connection_type,
+            "host": item.host,
+            "port": item.port,
+            "warehouse_id": item.warehouse_id,
+            "is_default": item.is_default,
+        },
+    )
+    commit_or_409(db, "equipment profile already exists")
+    db.refresh(item)
+    return item
+
+
+def update_equipment_profile(
+    db: Session,
+    profile_id: int,
+    payload: EquipmentProfileUpdate,
+) -> EquipmentProfile:
+    item = db.get(EquipmentProfile, profile_id)
+    if item is None:
+        raise not_found("equipment_profile")
+    if payload.warehouse_id is not None and db.get(Warehouse, payload.warehouse_id) is None:
+        raise not_found("warehouse")
+
+    if payload.is_default:
+        default_query = select(EquipmentProfile).where(
+            EquipmentProfile.id != item.id,
+            EquipmentProfile.device_kind == payload.device_kind.value,
+            EquipmentProfile.is_default.is_(True),
+        )
+        if payload.warehouse_id is None:
+            default_query = default_query.where(EquipmentProfile.warehouse_id.is_(None))
+        else:
+            default_query = default_query.where(EquipmentProfile.warehouse_id == payload.warehouse_id)
+        for existing_default in db.scalars(default_query):
+            existing_default.is_default = False
+
+    before = {
+        "code": item.code,
+        "name": item.name,
+        "device_kind": item.device_kind,
+        "connection_type": item.connection_type,
+        "host": item.host,
+        "port": item.port,
+        "warehouse_id": item.warehouse_id,
+        "is_default": item.is_default,
+        "is_active": item.is_active,
+    }
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    data["name"] = payload.name.strip()
+    data["device_kind"] = payload.device_kind.value
+    data["connection_type"] = payload.connection_type.value
+    for field, value in data.items():
+        setattr(item, field, value)
+    after = {
+        "code": item.code,
+        "name": item.name,
+        "device_kind": item.device_kind,
+        "connection_type": item.connection_type,
+        "host": item.host,
+        "port": item.port,
+        "warehouse_id": item.warehouse_id,
+        "is_default": item.is_default,
+        "is_active": item.is_active,
+    }
+    create_event(
+        db,
+        operation="equipment_profile_updated",
+        object_type="equipment_profile",
+        object_uid=item.code,
+        before=before,
+        after=after,
+    )
+    commit_or_409(db, "equipment profile code already exists")
+    db.refresh(item)
+    return item
+
+
 def create_product(db: Session, payload: ProductCreate) -> Product:
-    product = Product(**payload.model_dump())
+    ensure_reference_catalogs(db)
+    data = payload.model_dump()
+    base_uom_id = data.get("base_uom_id")
+    if base_uom_id is not None:
+        unit = db.get(UnitOfMeasure, base_uom_id)
+        if unit is None:
+            raise not_found("base_uom")
+        data["unit"] = unit.symbol
+    else:
+        legacy_unit = payload.unit.strip()
+        unit = db.scalar(
+            select(UnitOfMeasure).where(
+                (func.upper(UnitOfMeasure.code) == legacy_unit.upper()) | (UnitOfMeasure.symbol == legacy_unit)
+            )
+        )
+        data["base_uom_id"] = unit.id if unit else None
+        data["unit"] = legacy_unit
+    product = Product(**data)
     db.add(product)
     commit_or_409(db, "product already exists")
     db.refresh(product)

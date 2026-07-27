@@ -1,7 +1,22 @@
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from decimal import Decimal
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import DEFAULT_UNIT
@@ -36,6 +51,76 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class UnitOfMeasure(Base):
+    __tablename__ = "units_of_measure"
+    __table_args__ = (
+        CheckConstraint("decimal_precision >= 0 AND decimal_precision <= 6", name="ck_uom_decimal_precision"),
+        CheckConstraint("factor_to_base > 0", name="ck_uom_factor_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    symbol: Mapped[str] = mapped_column(String(24))
+    dimension: Mapped[str] = mapped_column(String(32), index=True)
+    decimal_precision: Mapped[int] = mapped_column(Integer, default=0)
+    factor_to_base: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=Decimal("1"))
+    is_base: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class LogisticUnitTypeAllowedChild(Base):
+    __tablename__ = "logistic_unit_type_allowed_children"
+    __table_args__ = (
+        UniqueConstraint("parent_type_id", "child_type_id", name="uq_logistic_type_allowed_child"),
+        CheckConstraint("parent_type_id <> child_type_id", name="ck_logistic_type_no_self_child"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_type_id: Mapped[int] = mapped_column(ForeignKey("logistic_unit_types.id", ondelete="CASCADE"), index=True)
+    child_type_id: Mapped[int] = mapped_column(ForeignKey("logistic_unit_types.id", ondelete="CASCADE"), index=True)
+
+
+class LogisticUnitType(Base):
+    __tablename__ = "logistic_unit_types"
+    __table_args__ = (
+        CheckConstraint("tare_weight IS NULL OR tare_weight >= 0", name="ck_logistic_type_tare_weight"),
+        CheckConstraint("max_weight IS NULL OR max_weight > 0", name="ck_logistic_type_max_weight"),
+        CheckConstraint("length_mm IS NULL OR length_mm > 0", name="ck_logistic_type_length"),
+        CheckConstraint("width_mm IS NULL OR width_mm > 0", name="ck_logistic_type_width"),
+        CheckConstraint("height_mm IS NULL OR height_mm > 0", name="ck_logistic_type_height"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    identifier_prefix: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    tare_weight: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    tare_weight_uom_id: Mapped[int | None] = mapped_column(ForeignKey("units_of_measure.id"), nullable=True)
+    max_weight: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    max_weight_uom_id: Mapped[int | None] = mapped_column(ForeignKey("units_of_measure.id"), nullable=True)
+    length_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    width_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    can_contain_goods: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_contain_units: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_returnable: Mapped[bool] = mapped_column(Boolean, default=False)
+    barcode_template: Mapped[str] = mapped_column(String(240), default="{uid}")
+    label_profile: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    tare_weight_uom: Mapped[UnitOfMeasure | None] = relationship(foreign_keys=[tare_weight_uom_id])
+    max_weight_uom: Mapped[UnitOfMeasure | None] = relationship(foreign_keys=[max_weight_uom_id])
+    allowed_children: Mapped[list[LogisticUnitTypeAllowedChild]] = relationship(
+        foreign_keys=[LogisticUnitTypeAllowedChild.parent_type_id],
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def allowed_child_type_ids(self) -> list[int]:
+        return sorted(row.child_type_id for row in self.allowed_children)
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -43,12 +128,14 @@ class Product(Base):
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(240))
     unit: Mapped[str] = mapped_column(String(32), default=DEFAULT_UNIT)
+    base_uom_id: Mapped[int | None] = mapped_column(ForeignKey("units_of_measure.id"), nullable=True, index=True)
     quantity_per_box: Mapped[int] = mapped_column(Integer, default=1)
     boxes_per_pallet: Mapped[int] = mapped_column(Integer, default=1)
     shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     batches: Mapped[list["Batch"]] = relationship(back_populates="product")
+    base_uom: Mapped[UnitOfMeasure | None] = relationship()
 
 
 class Batch(Base):
@@ -76,6 +163,33 @@ class Warehouse(Base):
     timezone: Mapped[str] = mapped_column(String(80), default="Europe/Moscow")
 
     zones: Mapped[list["Zone"]] = relationship(back_populates="warehouse")
+
+
+class EquipmentProfile(Base):
+    __tablename__ = "equipment_profiles"
+    __table_args__ = (
+        CheckConstraint("port IS NULL OR (port >= 1 AND port <= 65535)", name="ck_equipment_port"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(48), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    device_kind: Mapped[str] = mapped_column(String(32), index=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    connection_type: Mapped[str] = mapped_column(String(32), index=True)
+    host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    queue_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    serial_device: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    driver_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True, index=True)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    warehouse: Mapped[Warehouse | None] = relationship()
 
 
 class Zone(Base):
