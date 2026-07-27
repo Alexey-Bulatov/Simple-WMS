@@ -10,6 +10,7 @@ from app.models.enums import (
     EquipmentConnection,
     EquipmentKind,
     InventoryLineStatus,
+    InventoryLocationStatus,
     InventoryStatus,
     LocationKind,
     LogisticUnitStatus,
@@ -638,6 +639,82 @@ class LogisticTransferRead(BaseModel):
     loaded_count: int
     received_count: int
     units: list[LogisticDocumentUnitRead]
+
+
+class LogisticInventoryStartRequest(BaseModel):
+    warehouse_code: str = Field(min_length=1, max_length=32)
+    scope_type: Literal["warehouse"] = "warehouse"
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticInventoryLocationRequest(BaseModel):
+    location_code: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticInventoryUnitRequest(BaseModel):
+    unit_uid: str = Field(min_length=1, max_length=64)
+    finish_location: bool | None = None
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticInventoryResolveRequest(BaseModel):
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticInventoryLocationRead(BaseModel):
+    id: int
+    location_id: int
+    location_code: str
+    expected_unit_count: int
+    scanned_unit_count: int
+    problem_count: int
+    status: InventoryLocationStatus
+    checked_at: datetime | None
+    checked_by: str | None
+
+
+class LogisticInventoryLineRead(BaseModel):
+    id: int
+    unit_uid: str
+    type_code: str
+    unit_status: LogisticUnitStatus
+    status: InventoryLineStatus
+    expected_location_code: str | None
+    actual_location_code: str | None
+    scanned_at: datetime | None
+    resolution_action: str | None
+    resolution_actor: str | None
+    resolution_reason: str | None
+    resolved_at: datetime | None
+
+
+class LogisticInventoryRead(BaseModel):
+    id: int
+    inventory_uid: str
+    warehouse_id: int
+    warehouse_code: str
+    scope_type: str
+    scope_parameters: dict[str, Any]
+    current_location_id: int | None
+    current_location_code: str | None
+    status: InventoryStatus
+    actor: str
+    created_at: datetime
+    completed_at: datetime | None
+    total_locations: int
+    checked_locations: int
+    unchecked_locations: int
+    progress_percent: float
+    expected_count: int
+    scanned_count: int
+    missing_count: int
+    extra_count: int
+    wrong_location_count: int
+    unresolved_problem_count: int
+    locations: list[LogisticInventoryLocationRead]
+    lines: list[LogisticInventoryLineRead]
 
 
 class InventoryStartRequest(BaseModel):

@@ -116,6 +116,12 @@ class InventoryLineStatus(StrEnum):
     WRONG_LOCATION = "wrong_location"
 
 
+class InventoryLocationStatus(StrEnum):
+    UNCHECKED = "unchecked"
+    CHECKED = "checked"
+    PROBLEM = "problem"
+
+
 class TaskType(StrEnum):
     BUILD = "build"
     PLACE = "place"

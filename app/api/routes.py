@@ -6,6 +6,7 @@ from app.core.constants import (
     BOX_CODE_PREFIX,
     DEFAULT_WAREHOUSE_CODE,
     INVENTORY_CODE_PREFIX,
+    LOGISTIC_INVENTORY_CODE_PREFIX,
     PALLET_CODE_PREFIX,
     SHIPMENT_CODE_PREFIX,
     TASK_CODE_PREFIX,
@@ -21,6 +22,7 @@ from app.models.entities import (
     EquipmentProfile,
     InventoryLine,
     InventorySession,
+    LogisticInventory,
     LogisticShipment,
     LogisticTransfer,
     LogisticUnit,
@@ -72,6 +74,11 @@ from app.schemas import (
     LogisticDocumentActionRequest,
     LogisticDocumentStageRequest,
     LogisticDocumentUnitRequest,
+    LogisticInventoryLocationRequest,
+    LogisticInventoryRead,
+    LogisticInventoryResolveRequest,
+    LogisticInventoryStartRequest,
+    LogisticInventoryUnitRequest,
     LogisticShipmentCreate,
     LogisticShipmentRead,
     LogisticTransferCreate,
@@ -189,6 +196,18 @@ from app.logistic_documents import (
     stage_logistic_shipment,
     stage_logistic_transfer,
 )
+from app.logistic_inventory import (
+    complete_logistic_inventory,
+    confirm_logistic_inventory_location,
+    confirm_logistic_inventory_missing,
+    get_logistic_inventory,
+    logistic_inventory_payload,
+    move_logistic_inventory_unit_to_actual,
+    place_logistic_inventory_found_unit,
+    scan_logistic_inventory_location,
+    scan_logistic_inventory_unit,
+    start_logistic_inventory,
+)
 from app.models.enums import (
     InventoryLineStatus,
     LocationKind,
@@ -289,6 +308,7 @@ def api_constants() -> dict:
         "pallet_code_prefix": PALLET_CODE_PREFIX,
         "shipment_code_prefix": SHIPMENT_CODE_PREFIX,
         "inventory_code_prefix": INVENTORY_CODE_PREFIX,
+        "logistic_inventory_code_prefix": LOGISTIC_INVENTORY_CODE_PREFIX,
         "transfer_code_prefix": TRANSFER_CODE_PREFIX,
         "task_code_prefix": TASK_CODE_PREFIX,
         "default_warehouse_code": DEFAULT_WAREHOUSE_CODE,
@@ -1138,6 +1158,212 @@ def api_receive_logistic_transfer_unit(
         payload.location_code,
     )
     return logistic_transfer_payload(db, transfer)
+
+
+@router.post("/logistic-inventories", response_model=LogisticInventoryRead)
+def api_start_logistic_inventory(
+    payload: LogisticInventoryStartRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = start_logistic_inventory(db, payload)
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.get(
+    "/logistic-inventories",
+    response_model=list[LogisticInventoryRead],
+)
+def api_list_logistic_inventories(
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = (
+        select(LogisticInventory)
+        .order_by(LogisticInventory.created_at.desc())
+        .limit(limit)
+    )
+    if status_filter:
+        query = query.where(LogisticInventory.status.in_(status_filter))
+    return [
+        logistic_inventory_payload(db, inventory)
+        for inventory in db.scalars(query)
+    ]
+
+
+@router.get(
+    "/logistic-inventories/{inventory_uid}",
+    response_model=LogisticInventoryRead,
+)
+def api_get_logistic_inventory(
+    inventory_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_inventory_payload(
+        db,
+        get_logistic_inventory(db, inventory_uid),
+    )
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/scan-location",
+    response_model=LogisticInventoryRead,
+)
+def api_scan_logistic_inventory_location(
+    inventory_uid: str,
+    payload: LogisticInventoryLocationRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = scan_logistic_inventory_location(db, inventory_uid, payload)
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/scan-unit",
+    response_model=LogisticInventoryRead,
+)
+def api_scan_logistic_inventory_unit(
+    inventory_uid: str,
+    payload: LogisticInventoryUnitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = scan_logistic_inventory_unit(db, inventory_uid, payload)
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/confirm-location",
+    response_model=LogisticInventoryRead,
+)
+def api_confirm_logistic_inventory_location(
+    inventory_uid: str,
+    payload: LogisticDocumentActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = confirm_logistic_inventory_location(
+        db,
+        inventory_uid,
+        actor=payload.actor,
+    )
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/empty",
+    response_model=LogisticInventoryRead,
+)
+def api_mark_logistic_inventory_location_empty(
+    inventory_uid: str,
+    payload: LogisticDocumentActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = confirm_logistic_inventory_location(
+        db,
+        inventory_uid,
+        actor=payload.actor,
+        require_empty=True,
+    )
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/complete",
+    response_model=LogisticInventoryRead,
+)
+def api_complete_logistic_inventory(
+    inventory_uid: str,
+    payload: LogisticDocumentActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = complete_logistic_inventory(
+        db,
+        inventory_uid,
+        actor=payload.actor,
+    )
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.get(
+    "/logistic-inventories/{inventory_uid}/events",
+    response_model=list[EventRead],
+)
+def api_logistic_inventory_events(
+    inventory_uid: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[OperationEvent]:
+    inventory = get_logistic_inventory(db, inventory_uid)
+    return list(
+        db.scalars(
+            select(OperationEvent)
+            .where(
+                OperationEvent.object_type == "logistic_inventory",
+                OperationEvent.object_uid == inventory.inventory_uid,
+            )
+            .order_by(OperationEvent.created_at.desc())
+            .limit(limit)
+        )
+    )
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/discrepancies/"
+    "{unit_uid}/confirm-missing",
+    response_model=LogisticInventoryRead,
+)
+def api_confirm_logistic_inventory_missing(
+    inventory_uid: str,
+    unit_uid: str,
+    payload: LogisticInventoryResolveRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = confirm_logistic_inventory_missing(
+        db,
+        inventory_uid,
+        unit_uid,
+        payload,
+    )
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/discrepancies/"
+    "{unit_uid}/place-found",
+    response_model=LogisticInventoryRead,
+)
+def api_place_logistic_inventory_found_unit(
+    inventory_uid: str,
+    unit_uid: str,
+    payload: LogisticInventoryResolveRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = place_logistic_inventory_found_unit(
+        db,
+        inventory_uid,
+        unit_uid,
+        payload,
+    )
+    return logistic_inventory_payload(db, inventory)
+
+
+@router.post(
+    "/logistic-inventories/{inventory_uid}/discrepancies/"
+    "{unit_uid}/move-to-actual",
+    response_model=LogisticInventoryRead,
+)
+def api_move_logistic_inventory_unit_to_actual(
+    inventory_uid: str,
+    unit_uid: str,
+    payload: LogisticInventoryResolveRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    inventory = move_logistic_inventory_unit_to_actual(
+        db,
+        inventory_uid,
+        unit_uid,
+        payload,
+    )
+    return logistic_inventory_payload(db, inventory)
 
 
 @router.post("/products", response_model=ProductRead)

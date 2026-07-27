@@ -24,6 +24,7 @@ from app.db.session import Base
 from app.models.enums import (
     BoxStatus,
     InventoryLineStatus,
+    InventoryLocationStatus,
     InventoryStatus,
     LocationKind,
     LogisticUnitStatus,
@@ -409,6 +410,120 @@ class LogisticTransferUnit(Base):
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     transfer: Mapped[LogisticTransfer] = relationship(back_populates="units")
+
+
+class LogisticInventory(Base):
+    __tablename__ = "logistic_inventories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inventory_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    scope_type: Mapped[str] = mapped_column(String(32), default="warehouse", index=True)
+    scope_parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    current_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+    )
+    status: Mapped[InventoryStatus] = mapped_column(
+        Enum(InventoryStatus, native_enum=False, length=32),
+        default=InventoryStatus.OPEN,
+        index=True,
+    )
+    actor: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    locations: Mapped[list["LogisticInventoryLocation"]] = relationship(
+        back_populates="inventory",
+        cascade="all, delete-orphan",
+    )
+    lines: Mapped[list["LogisticInventoryLine"]] = relationship(
+        back_populates="inventory",
+        cascade="all, delete-orphan",
+    )
+
+
+class LogisticInventoryLocation(Base):
+    __tablename__ = "logistic_inventory_locations"
+    __table_args__ = (
+        UniqueConstraint(
+            "inventory_id",
+            "location_id",
+            name="uq_logistic_inventory_location",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inventory_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_inventories.id"),
+        index=True,
+    )
+    location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"), index=True)
+    expected_unit_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[InventoryLocationStatus] = mapped_column(
+        Enum(InventoryLocationStatus, native_enum=False, length=32),
+        default=InventoryLocationStatus.UNCHECKED,
+        index=True,
+    )
+    checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    checked_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    inventory: Mapped[LogisticInventory] = relationship(back_populates="locations")
+
+
+class LogisticInventoryLine(Base):
+    __tablename__ = "logistic_inventory_lines"
+    __table_args__ = (
+        UniqueConstraint(
+            "inventory_id",
+            "logistic_unit_id",
+            name="uq_logistic_inventory_unit",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inventory_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_inventories.id"),
+        index=True,
+    )
+    logistic_unit_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_units.id"),
+        index=True,
+    )
+    expected_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    actual_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    status: Mapped[InventoryLineStatus] = mapped_column(
+        Enum(InventoryLineStatus, native_enum=False, length=32),
+        default=InventoryLineStatus.EXPECTED,
+        index=True,
+    )
+    scanned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    resolution_action: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    resolution_actor: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    inventory: Mapped[LogisticInventory] = relationship(back_populates="lines")
 
 
 class WarehouseMapItem(Base):
