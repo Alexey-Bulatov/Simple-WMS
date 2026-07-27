@@ -526,6 +526,55 @@ class LogisticInventoryLine(Base):
     inventory: Mapped[LogisticInventory] = relationship(back_populates="lines")
 
 
+class LogisticTask(Base):
+    __tablename__ = "logistic_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id"),
+        index=True,
+    )
+    task_type: Mapped[TaskType] = mapped_column(
+        Enum(TaskType, native_enum=False, length=32),
+        index=True,
+    )
+    status: Mapped[TaskStatus] = mapped_column(
+        Enum(TaskStatus, native_enum=False, length=32),
+        default=TaskStatus.NEW,
+        index=True,
+    )
+    priority: Mapped[TaskPriority] = mapped_column(
+        Enum(TaskPriority, native_enum=False, length=32),
+        default=TaskPriority.NORMAL,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    object_type: Mapped[str] = mapped_column(String(40), index=True)
+    object_uid: Mapped[str] = mapped_column(String(120), index=True)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    assigned_to: Mapped[str | None] = mapped_column(
+        String(80),
+        nullable=True,
+        index=True,
+    )
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
 class WarehouseMapItem(Base):
     __tablename__ = "warehouse_map_items"
     __table_args__ = (

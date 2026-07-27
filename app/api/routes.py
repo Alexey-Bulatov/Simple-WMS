@@ -7,6 +7,7 @@ from app.core.constants import (
     DEFAULT_WAREHOUSE_CODE,
     INVENTORY_CODE_PREFIX,
     LOGISTIC_INVENTORY_CODE_PREFIX,
+    LOGISTIC_TASK_CODE_PREFIX,
     PALLET_CODE_PREFIX,
     SHIPMENT_CODE_PREFIX,
     TASK_CODE_PREFIX,
@@ -23,6 +24,7 @@ from app.models.entities import (
     InventoryLine,
     InventorySession,
     LogisticInventory,
+    LogisticTask,
     LogisticShipment,
     LogisticTransfer,
     LogisticUnit,
@@ -79,6 +81,8 @@ from app.schemas import (
     LogisticInventoryResolveRequest,
     LogisticInventoryStartRequest,
     LogisticInventoryUnitRequest,
+    LogisticTaskCreate,
+    LogisticTaskRead,
     LogisticShipmentCreate,
     LogisticShipmentRead,
     LogisticTransferCreate,
@@ -208,12 +212,23 @@ from app.logistic_inventory import (
     scan_logistic_inventory_unit,
     start_logistic_inventory,
 )
+from app.logistic_tasks import (
+    assign_logistic_task,
+    cancel_logistic_task,
+    complete_logistic_task,
+    create_logistic_task,
+    get_logistic_task,
+    logistic_task_payload,
+    reopen_logistic_task,
+    start_logistic_task,
+)
 from app.models.enums import (
     InventoryLineStatus,
     LocationKind,
     LogisticUnitStatus,
     PalletStatus,
     TaskStatus,
+    TaskType,
 )
 from app.warehouse_map import (
     create_map_label,
@@ -309,6 +324,7 @@ def api_constants() -> dict:
         "shipment_code_prefix": SHIPMENT_CODE_PREFIX,
         "inventory_code_prefix": INVENTORY_CODE_PREFIX,
         "logistic_inventory_code_prefix": LOGISTIC_INVENTORY_CODE_PREFIX,
+        "logistic_task_code_prefix": LOGISTIC_TASK_CODE_PREFIX,
         "transfer_code_prefix": TRANSFER_CODE_PREFIX,
         "task_code_prefix": TASK_CODE_PREFIX,
         "default_warehouse_code": DEFAULT_WAREHOUSE_CODE,
@@ -1364,6 +1380,170 @@ def api_move_logistic_inventory_unit_to_actual(
         payload,
     )
     return logistic_inventory_payload(db, inventory)
+
+
+@router.post("/logistic-tasks", response_model=LogisticTaskRead)
+def api_create_logistic_task(
+    payload: LogisticTaskCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_task_payload(db, create_logistic_task(db, payload))
+
+
+@router.get("/logistic-tasks", response_model=list[LogisticTaskRead])
+def api_list_logistic_tasks(
+    warehouse_code: str | None = Query(default=None),
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    task_type: TaskType | None = Query(default=None),
+    assigned_to: str | None = Query(default=None, max_length=80),
+    include_unassigned: bool = False,
+    object_uid: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(LogisticTask).order_by(LogisticTask.created_at).limit(limit)
+    if warehouse_code:
+        warehouse = db.scalar(
+            select(Warehouse).where(
+                Warehouse.code == warehouse_code.strip().upper()
+            )
+        )
+        if warehouse is None:
+            raise not_found("warehouse")
+        query = query.where(LogisticTask.warehouse_id == warehouse.id)
+    if status_filter:
+        query = query.where(LogisticTask.status.in_(status_filter))
+    if task_type is not None:
+        query = query.where(LogisticTask.task_type == task_type)
+    if assigned_to:
+        assignment = LogisticTask.assigned_to == assigned_to
+        if include_unassigned:
+            assignment = or_(assignment, LogisticTask.assigned_to.is_(None))
+        query = query.where(assignment)
+    if object_uid:
+        query = query.where(
+            LogisticTask.object_uid == object_uid.strip().upper()
+        )
+    tasks = list(db.scalars(query))
+    status_order = {
+        TaskStatus.IN_PROGRESS: 0,
+        TaskStatus.NEW: 1,
+        TaskStatus.COMPLETED: 2,
+        TaskStatus.CANCELLED: 3,
+    }
+    priority_order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+    tasks.sort(
+        key=lambda task: (
+            status_order.get(task.status, 9),
+            priority_order.get(task.priority.value, 9),
+            task.created_at,
+        )
+    )
+    return [logistic_task_payload(db, task) for task in tasks]
+
+
+@router.get(
+    "/logistic-tasks/{task_uid}",
+    response_model=LogisticTaskRead,
+)
+def api_get_logistic_task(
+    task_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_task_payload(db, get_logistic_task(db, task_uid))
+
+
+@router.post(
+    "/logistic-tasks/{task_uid}/start",
+    response_model=LogisticTaskRead,
+)
+def api_start_logistic_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    task = start_logistic_task(db, task_uid, actor=payload.actor)
+    return logistic_task_payload(db, task)
+
+
+@router.post(
+    "/logistic-tasks/{task_uid}/assign",
+    response_model=LogisticTaskRead,
+)
+def api_assign_logistic_task(
+    task_uid: str,
+    payload: TaskAssignRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    task = assign_logistic_task(
+        db,
+        task_uid,
+        assigned_to=payload.assigned_to,
+        actor=payload.actor,
+    )
+    return logistic_task_payload(db, task)
+
+
+@router.post(
+    "/logistic-tasks/{task_uid}/complete",
+    response_model=LogisticTaskRead,
+)
+def api_complete_logistic_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    task = complete_logistic_task(db, task_uid, actor=payload.actor)
+    return logistic_task_payload(db, task)
+
+
+@router.post(
+    "/logistic-tasks/{task_uid}/cancel",
+    response_model=LogisticTaskRead,
+)
+def api_cancel_logistic_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    task = cancel_logistic_task(db, task_uid, actor=payload.actor)
+    return logistic_task_payload(db, task)
+
+
+@router.post(
+    "/logistic-tasks/{task_uid}/reopen",
+    response_model=LogisticTaskRead,
+)
+def api_reopen_logistic_task(
+    task_uid: str,
+    payload: TaskActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    task = reopen_logistic_task(db, task_uid, actor=payload.actor)
+    return logistic_task_payload(db, task)
+
+
+@router.get(
+    "/logistic-tasks/{task_uid}/events",
+    response_model=list[EventRead],
+)
+def api_logistic_task_events(
+    task_uid: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[OperationEvent]:
+    task = get_logistic_task(db, task_uid)
+    return list(
+        db.scalars(
+            select(OperationEvent)
+            .where(
+                OperationEvent.object_type == "logistic_task",
+                OperationEvent.object_uid == task.task_uid,
+            )
+            .order_by(OperationEvent.created_at.desc())
+            .limit(limit)
+        )
+    )
 
 
 @router.post("/products", response_model=ProductRead)

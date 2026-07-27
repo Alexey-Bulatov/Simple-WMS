@@ -717,6 +717,41 @@ class LogisticInventoryRead(BaseModel):
     lines: list[LogisticInventoryLineRead]
 
 
+class LogisticTaskCreate(BaseModel):
+    warehouse_code: str = Field(min_length=1, max_length=32)
+    task_type: TaskType
+    priority: TaskPriority = TaskPriority.NORMAL
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    object_uid: str = Field(min_length=1, max_length=120)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    assigned_to: str | None = Field(default=None, max_length=80)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticTaskRead(BaseModel):
+    id: int
+    task_uid: str
+    warehouse_id: int
+    warehouse_code: str
+    warehouse_name: str
+    task_type: TaskType
+    status: TaskStatus
+    priority: TaskPriority
+    title: str
+    description: str | None
+    object_type: str
+    object_uid: str
+    object_status: str | None
+    object_url: str
+    parameters: dict[str, Any]
+    assigned_to: str | None
+    created_by: str
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
 class InventoryStartRequest(BaseModel):
     warehouse_code: str | None = Field(default=None, max_length=32)
     location_code: str | None = Field(default=None, max_length=120)
