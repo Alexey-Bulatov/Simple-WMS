@@ -64,11 +64,14 @@ from app.schemas import (
     EquipmentProfileCreate,
     EquipmentProfileUpdate,
     InventoryStartRequest,
+    LogisticUnitAcceptRequest,
     LogisticUnitActionRequest,
     LogisticUnitChildRequest,
     LogisticUnitContentCreate,
     LogisticUnitContentRemoveRequest,
     LogisticUnitCreate,
+    LogisticUnitHoldRequest,
+    LogisticUnitLocationRequest,
     LogisticUnitTypeCreate,
     LocationCreate,
     ProductCreate,
@@ -346,6 +349,11 @@ def generate_logistic_unit_uid(db: Session, unit_type: LogisticUnitType) -> str:
 def logistic_unit_payload(db: Session, item: LogisticUnit) -> dict:
     unit_type = db.get(LogisticUnitType, item.type_id)
     parent = db.get(LogisticUnit, item.parent_unit_id) if item.parent_unit_id is not None else None
+    current_location = (
+        db.get(Location, item.current_location_id)
+        if item.current_location_id is not None
+        else None
+    )
     weight_uom = db.get(UnitOfMeasure, item.weight_uom_id) if item.weight_uom_id is not None else None
     content_rows = list(
         db.scalars(
@@ -402,13 +410,16 @@ def logistic_unit_payload(db: Session, item: LogisticUnit) -> dict:
         "status": item.status,
         "parent_uid": parent.uid if parent else None,
         "current_location_id": item.current_location_id,
+        "current_location_code": current_location.code if current_location else None,
         "measured_gross_weight": item.measured_gross_weight,
         "weight_uom_id": item.weight_uom_id,
         "weight_uom_code": weight_uom.code if weight_uom else None,
         "length_mm": item.length_mm,
         "width_mm": item.width_mm,
         "height_mm": item.height_mm,
+        "status_before_hold": item.status_before_hold,
         "created_at": item.created_at,
+        "accepted_at": item.accepted_at,
         "closed_at": item.closed_at,
         "contents": contents,
         "child_units": children,
@@ -479,6 +490,69 @@ def create_logistic_unit(db: Session, payload: LogisticUnitCreate) -> LogisticUn
         },
     )
     commit_or_409(db, "logistic unit identifier already exists")
+    db.refresh(item)
+    return item
+
+
+def logistic_location_occupied_count(db: Session, location_id: int) -> int:
+    return (
+        db.scalar(
+            select(func.count(LogisticUnit.id)).where(
+                LogisticUnit.current_location_id == location_id,
+                LogisticUnit.parent_unit_id.is_(None),
+            )
+        )
+        or 0
+    )
+
+
+def get_active_location(db: Session, location_code: str) -> Location:
+    location = db.scalar(
+        select(Location).where(func.upper(Location.code) == location_code.strip().upper())
+    )
+    if location is None:
+        raise not_found("location")
+    if not location.is_active:
+        raise bad_request("location is not active")
+    return location
+
+
+def accept_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitAcceptRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    if item.parent_unit_id is not None:
+        raise bad_request("nested logistic unit cannot be accepted separately")
+    if item.accepted_at is not None:
+        raise bad_request("logistic unit is already accepted")
+    if item.status not in {LogisticUnitStatus.OPEN, LogisticUnitStatus.CLOSED}:
+        raise bad_request(f"logistic unit cannot be accepted from status {item.status.value}")
+    if item.current_location_id is not None:
+        raise bad_request("logistic unit already has a current location")
+    location = get_active_location(db, payload.location_code)
+    if location.kind != LocationKind.RECEIVING:
+        raise bad_request("logistic unit can be accepted only at a receiving location")
+    if logistic_location_occupied_count(db, location.id) >= location.capacity_pallets:
+        raise bad_request("location capacity is already reached")
+    item.current_location_id = location.id
+    item.accepted_at = utcnow()
+    create_event(
+        db,
+        operation="logistic_unit_accepted",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"location_id": None, "accepted_at": None},
+        after={
+            "location_id": location.id,
+            "location_code": location.code,
+            "accepted_at": item.accepted_at.isoformat(),
+        },
+    )
+    db.commit()
     db.refresh(item)
     return item
 
@@ -722,6 +796,186 @@ def reopen_logistic_unit(
         reason=payload.reason,
         before={"status": LogisticUnitStatus.CLOSED.value},
         after={"status": LogisticUnitStatus.OPEN.value},
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def hold_logistic_unit(
+    db: Session,
+    uid: str,
+    target_status: LogisticUnitStatus,
+    payload: LogisticUnitHoldRequest,
+) -> LogisticUnit:
+    if target_status not in {LogisticUnitStatus.BLOCKED, LogisticUnitStatus.QUARANTINE}:
+        raise bad_request("target status must be blocked or quarantine")
+    item = get_logistic_unit(db, uid)
+    if item.parent_unit_id is not None:
+        raise bad_request("nested logistic unit must be removed from its parent before a hold")
+    allowed_statuses = {
+        LogisticUnitStatus.OPEN,
+        LogisticUnitStatus.CLOSED,
+        LogisticUnitStatus.AVAILABLE,
+        LogisticUnitStatus.BLOCKED,
+        LogisticUnitStatus.QUARANTINE,
+    }
+    if item.status not in allowed_statuses:
+        raise bad_request(f"logistic unit cannot be held from status {item.status.value}")
+    if item.status == target_status:
+        raise bad_request(f"logistic unit is already {target_status.value}")
+    before_status = item.status
+    if item.status not in {LogisticUnitStatus.BLOCKED, LogisticUnitStatus.QUARANTINE}:
+        item.status_before_hold = item.status.value
+    item.status = target_status
+    create_event(
+        db,
+        operation=f"logistic_unit_{target_status.value}",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"status": before_status.value},
+        after={
+            "status": target_status.value,
+            "status_before_hold": item.status_before_hold,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def release_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitHoldRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    if item.status not in {LogisticUnitStatus.BLOCKED, LogisticUnitStatus.QUARANTINE}:
+        raise bad_request("only blocked or quarantine logistic unit can be released")
+    try:
+        restored_status = LogisticUnitStatus(item.status_before_hold or "")
+    except ValueError:
+        if item.current_location_id is not None and item.closed_at is not None:
+            restored_status = LogisticUnitStatus.AVAILABLE
+        elif item.closed_at is not None:
+            restored_status = LogisticUnitStatus.CLOSED
+        else:
+            restored_status = LogisticUnitStatus.OPEN
+    if restored_status not in {
+        LogisticUnitStatus.OPEN,
+        LogisticUnitStatus.CLOSED,
+        LogisticUnitStatus.AVAILABLE,
+    }:
+        raise bad_request("stored status cannot be restored after hold")
+    before_status = item.status
+    item.status = restored_status
+    item.status_before_hold = None
+    create_event(
+        db,
+        operation="logistic_unit_released",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"status": before_status.value},
+        after={"status": restored_status.value},
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def place_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitLocationRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    if item.parent_unit_id is not None:
+        raise bad_request("nested logistic unit is placed together with its parent")
+    if item.status != LogisticUnitStatus.CLOSED:
+        raise bad_request("only a closed logistic unit can be placed")
+    location = get_active_location(db, payload.location_code)
+    if location.kind != LocationKind.STORAGE:
+        raise bad_request("logistic unit can be placed only in a storage location")
+    current_location = (
+        db.get(Location, item.current_location_id)
+        if item.current_location_id is not None
+        else None
+    )
+    if current_location is not None and current_location.kind == LocationKind.STORAGE:
+        raise bad_request("placed logistic unit must be moved instead")
+    if current_location is not None and current_location.warehouse_id != location.warehouse_id:
+        raise bad_request("logistic unit cannot be placed in another warehouse")
+    if logistic_location_occupied_count(db, location.id) >= location.capacity_pallets:
+        raise bad_request("location capacity is already reached")
+    before = {
+        "status": item.status.value,
+        "location_id": item.current_location_id,
+        "location_code": current_location.code if current_location else None,
+    }
+    item.current_location_id = location.id
+    item.status = LogisticUnitStatus.AVAILABLE
+    create_event(
+        db,
+        operation="logistic_unit_placed",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before=before,
+        after={
+            "status": item.status.value,
+            "location_id": location.id,
+            "location_code": location.code,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def move_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitLocationRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    if item.parent_unit_id is not None:
+        raise bad_request("nested logistic unit is moved together with its parent")
+    if item.status != LogisticUnitStatus.AVAILABLE:
+        raise bad_request("only an available logistic unit can be moved")
+    current_location = (
+        db.get(Location, item.current_location_id)
+        if item.current_location_id is not None
+        else None
+    )
+    if current_location is None or current_location.kind != LocationKind.STORAGE:
+        raise bad_request("available logistic unit must have a storage location")
+    location = get_active_location(db, payload.location_code)
+    if location.kind != LocationKind.STORAGE:
+        raise bad_request("logistic unit can be moved only to a storage location")
+    if current_location.id == location.id:
+        raise bad_request("logistic unit is already in this location")
+    if current_location.warehouse_id != location.warehouse_id:
+        raise bad_request("logistic unit cannot be moved between warehouses without a transfer")
+    if logistic_location_occupied_count(db, location.id) >= location.capacity_pallets:
+        raise bad_request("location capacity is already reached")
+    item.current_location_id = location.id
+    create_event(
+        db,
+        operation="logistic_unit_moved",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={
+            "location_id": current_location.id,
+            "location_code": current_location.code,
+        },
+        after={"location_id": location.id, "location_code": location.code},
     )
     db.commit()
     db.refresh(item)

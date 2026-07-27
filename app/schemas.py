@@ -147,6 +147,23 @@ class LogisticUnitActionRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class LogisticUnitAcceptRequest(BaseModel):
+    location_code: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticUnitHoldRequest(BaseModel):
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class LogisticUnitLocationRequest(BaseModel):
+    location_code: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class LogisticUnitContentRead(BaseModel):
     id: int
     product_id: int
@@ -178,13 +195,16 @@ class LogisticUnitRead(BaseModel):
     status: LogisticUnitStatus
     parent_uid: str | None
     current_location_id: int | None
+    current_location_code: str | None
     measured_gross_weight: Decimal | None
     weight_uom_id: int | None
     weight_uom_code: str | None
     length_mm: int | None
     width_mm: int | None
     height_mm: int | None
+    status_before_hold: LogisticUnitStatus | None
     created_at: datetime
+    accepted_at: datetime | None
     closed_at: datetime | None
     contents: list[LogisticUnitContentRead] = Field(default_factory=list)
     child_units: list[LogisticUnitChildRead] = Field(default_factory=list)

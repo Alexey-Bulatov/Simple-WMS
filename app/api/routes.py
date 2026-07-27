@@ -58,11 +58,14 @@ from app.schemas import (
     InventoryResolveRequest,
     InventoryScanRequest,
     InventoryStartRequest,
+    LogisticUnitAcceptRequest,
     LogisticUnitActionRequest,
     LogisticUnitChildRequest,
     LogisticUnitContentCreate,
     LogisticUnitContentRemoveRequest,
     LogisticUnitCreate,
+    LogisticUnitHoldRequest,
+    LogisticUnitLocationRequest,
     LogisticUnitRead,
     LogisticUnitTypeCreate,
     LogisticUnitTypeRead,
@@ -105,6 +108,7 @@ from app.schemas import (
 )
 from app.services import (
     accept_box,
+    accept_logistic_unit,
     add_box_to_pallet,
     close_pallet,
     close_shipment,
@@ -149,7 +153,11 @@ from app.services import (
     inventory_line_resolution_event,
     disassemble_logistic_unit,
     get_logistic_unit,
+    hold_logistic_unit,
     logistic_unit_payload,
+    move_logistic_unit,
+    place_logistic_unit,
+    release_logistic_unit,
     remove_logistic_unit_child,
     remove_logistic_unit_content,
     reopen_logistic_unit,
@@ -779,6 +787,15 @@ def api_get_logistic_unit(uid: str, db: Session = Depends(get_db)) -> dict:
     return logistic_unit_payload(db, get_logistic_unit(db, uid))
 
 
+@router.post("/logistic-units/{uid}/accept", response_model=LogisticUnitRead)
+def api_accept_logistic_unit(
+    uid: str,
+    payload: LogisticUnitAcceptRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, accept_logistic_unit(db, uid, payload))
+
+
 @router.post("/logistic-units/{uid}/contents", response_model=LogisticUnitRead)
 def api_add_logistic_unit_content(
     uid: str,
@@ -845,6 +862,57 @@ def api_reopen_logistic_unit(
     db: Session = Depends(get_db),
 ) -> dict:
     return logistic_unit_payload(db, reopen_logistic_unit(db, uid, payload))
+
+
+@router.post("/logistic-units/{uid}/block", response_model=LogisticUnitRead)
+def api_block_logistic_unit(
+    uid: str,
+    payload: LogisticUnitHoldRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(
+        db,
+        hold_logistic_unit(db, uid, LogisticUnitStatus.BLOCKED, payload),
+    )
+
+
+@router.post("/logistic-units/{uid}/quarantine", response_model=LogisticUnitRead)
+def api_quarantine_logistic_unit(
+    uid: str,
+    payload: LogisticUnitHoldRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(
+        db,
+        hold_logistic_unit(db, uid, LogisticUnitStatus.QUARANTINE, payload),
+    )
+
+
+@router.post("/logistic-units/{uid}/release", response_model=LogisticUnitRead)
+def api_release_logistic_unit(
+    uid: str,
+    payload: LogisticUnitHoldRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, release_logistic_unit(db, uid, payload))
+
+
+@router.post("/logistic-units/{uid}/place", response_model=LogisticUnitRead)
+def api_place_logistic_unit(
+    uid: str,
+    payload: LogisticUnitLocationRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, place_logistic_unit(db, uid, payload))
+
+
+@router.post("/logistic-units/{uid}/move", response_model=LogisticUnitRead)
+def api_move_logistic_unit(
+    uid: str,
+    payload: LogisticUnitLocationRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, move_logistic_unit(db, uid, payload))
 
 
 @router.post("/logistic-units/{uid}/disassemble", response_model=LogisticUnitRead)
