@@ -28,6 +28,22 @@ class EquipmentConnection(StrEnum):
     USB = "usb"
 
 
+class LogisticUnitStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    AVAILABLE = "available"
+    RESERVED = "reserved"
+    PICKING = "picking"
+    EXPEDITION = "expedition"
+    LOADED = "loaded"
+    IN_TRANSIT = "in_transit"
+    QUARANTINE = "quarantine"
+    BLOCKED = "blocked"
+    DISASSEMBLED = "disassembled"
+    WRITTEN_OFF = "written_off"
+    SHIPPED = "shipped"
+
+
 class UserRole(StrEnum):
     PRODUCTION_OPERATOR = "production_operator"
     RECEIVING_CLERK = "receiving_clerk"

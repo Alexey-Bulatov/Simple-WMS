@@ -21,6 +21,7 @@ from app.models.entities import (
     EquipmentProfile,
     InventoryLine,
     InventorySession,
+    LogisticUnit,
     LogisticUnitType,
     Location,
     OperationEvent,
@@ -57,6 +58,12 @@ from app.schemas import (
     InventoryResolveRequest,
     InventoryScanRequest,
     InventoryStartRequest,
+    LogisticUnitActionRequest,
+    LogisticUnitChildRequest,
+    LogisticUnitContentCreate,
+    LogisticUnitContentRemoveRequest,
+    LogisticUnitCreate,
+    LogisticUnitRead,
     LogisticUnitTypeCreate,
     LogisticUnitTypeRead,
     LocationCreate,
@@ -105,9 +112,13 @@ from app.services import (
     confirm_inventory_missing,
     confirm_inventory_location,
     confirmed_inventory_location_codes,
+    add_logistic_unit_child,
+    add_logistic_unit_content,
+    close_logistic_unit,
     create_batch,
     create_equipment_profile,
     create_location,
+    create_logistic_unit,
     create_logistic_unit_type,
     create_product,
     create_shipment,
@@ -136,9 +147,21 @@ from app.services import (
     update_equipment_profile,
     inventory_scope_locations,
     inventory_line_resolution_event,
+    disassemble_logistic_unit,
+    get_logistic_unit,
+    logistic_unit_payload,
+    remove_logistic_unit_child,
+    remove_logistic_unit_content,
+    reopen_logistic_unit,
     resolved_inventory_line_ids,
 )
-from app.models.enums import InventoryLineStatus, LocationKind, PalletStatus, TaskStatus
+from app.models.enums import (
+    InventoryLineStatus,
+    LocationKind,
+    LogisticUnitStatus,
+    PalletStatus,
+    TaskStatus,
+)
 from app.warehouse_map import (
     create_map_label,
     create_map_location,
@@ -720,6 +743,117 @@ def api_create_logistic_unit_type(
 @router.get("/logistic-unit-types", response_model=list[LogisticUnitTypeRead])
 def api_list_logistic_unit_types(db: Session = Depends(get_db)) -> list[LogisticUnitType]:
     return list(db.scalars(select(LogisticUnitType).order_by(LogisticUnitType.code)))
+
+
+@router.post("/logistic-units", response_model=LogisticUnitRead)
+def api_create_logistic_unit(
+    payload: LogisticUnitCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, create_logistic_unit(db, payload))
+
+
+@router.get("/logistic-units", response_model=list[LogisticUnitRead])
+def api_list_logistic_units(
+    type_id: int | None = Query(default=None),
+    unit_status: LogisticUnitStatus | None = Query(default=None, alias="status"),
+    parent_uid: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(LogisticUnit)
+    if type_id is not None:
+        query = query.where(LogisticUnit.type_id == type_id)
+    if unit_status is not None:
+        query = query.where(LogisticUnit.status == unit_status)
+    if parent_uid is not None:
+        parent = get_logistic_unit(db, parent_uid)
+        query = query.where(LogisticUnit.parent_unit_id == parent.id)
+    return [
+        logistic_unit_payload(db, item)
+        for item in db.scalars(query.order_by(LogisticUnit.created_at.desc(), LogisticUnit.uid))
+    ]
+
+
+@router.get("/logistic-units/{uid}", response_model=LogisticUnitRead)
+def api_get_logistic_unit(uid: str, db: Session = Depends(get_db)) -> dict:
+    return logistic_unit_payload(db, get_logistic_unit(db, uid))
+
+
+@router.post("/logistic-units/{uid}/contents", response_model=LogisticUnitRead)
+def api_add_logistic_unit_content(
+    uid: str,
+    payload: LogisticUnitContentCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, add_logistic_unit_content(db, uid, payload))
+
+
+@router.post(
+    "/logistic-units/{uid}/contents/{content_id}/remove",
+    response_model=LogisticUnitRead,
+)
+def api_remove_logistic_unit_content(
+    uid: str,
+    content_id: int,
+    payload: LogisticUnitContentRemoveRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(
+        db,
+        remove_logistic_unit_content(db, uid, content_id, payload),
+    )
+
+
+@router.post("/logistic-units/{uid}/children", response_model=LogisticUnitRead)
+def api_add_logistic_unit_child(
+    uid: str,
+    payload: LogisticUnitChildRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, add_logistic_unit_child(db, uid, payload))
+
+
+@router.post(
+    "/logistic-units/{uid}/children/{child_uid}/remove",
+    response_model=LogisticUnitRead,
+)
+def api_remove_logistic_unit_child(
+    uid: str,
+    child_uid: str,
+    payload: LogisticUnitActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(
+        db,
+        remove_logistic_unit_child(db, uid, child_uid, payload),
+    )
+
+
+@router.post("/logistic-units/{uid}/close", response_model=LogisticUnitRead)
+def api_close_logistic_unit(
+    uid: str,
+    payload: LogisticUnitActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, close_logistic_unit(db, uid, payload))
+
+
+@router.post("/logistic-units/{uid}/reopen", response_model=LogisticUnitRead)
+def api_reopen_logistic_unit(
+    uid: str,
+    payload: LogisticUnitActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, reopen_logistic_unit(db, uid, payload))
+
+
+@router.post("/logistic-units/{uid}/disassemble", response_model=LogisticUnitRead)
+def api_disassemble_logistic_unit(
+    uid: str,
+    payload: LogisticUnitActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_unit_payload(db, disassemble_logistic_unit(db, uid, payload))
 
 
 @router.post("/products", response_model=ProductRead)

@@ -30,6 +30,8 @@ from app.models.entities import (
     EquipmentProfile,
     InventoryLine,
     InventorySession,
+    LogisticUnit,
+    LogisticUnitContent,
     LogisticUnitType,
     LogisticUnitTypeAllowedChild,
     Location,
@@ -50,6 +52,7 @@ from app.models.enums import (
     InventoryLineStatus,
     InventoryStatus,
     LocationKind,
+    LogisticUnitStatus,
     MeasurementDimension,
     PalletStatus,
     ShipmentStatus,
@@ -61,6 +64,11 @@ from app.schemas import (
     EquipmentProfileCreate,
     EquipmentProfileUpdate,
     InventoryStartRequest,
+    LogisticUnitActionRequest,
+    LogisticUnitChildRequest,
+    LogisticUnitContentCreate,
+    LogisticUnitContentRemoveRequest,
+    LogisticUnitCreate,
     LogisticUnitTypeCreate,
     LocationCreate,
     ProductCreate,
@@ -317,6 +325,438 @@ def create_logistic_unit_type(db: Session, payload: LogisticUnitTypeCreate) -> L
         },
     )
     commit_or_409(db, "logistic unit type code or prefix already exists")
+    db.refresh(item)
+    return item
+
+
+def get_logistic_unit(db: Session, uid: str) -> LogisticUnit:
+    item = db.scalar(select(LogisticUnit).where(func.upper(LogisticUnit.uid) == uid.strip().upper()))
+    if item is None:
+        raise not_found("logistic_unit")
+    return item
+
+
+def generate_logistic_unit_uid(db: Session, unit_type: LogisticUnitType) -> str:
+    while True:
+        candidate = f"{unit_type.identifier_prefix}{CODE_SEPARATOR}{uuid4().hex[:14].upper()}"
+        if db.scalar(select(LogisticUnit.id).where(LogisticUnit.uid == candidate)) is None:
+            return candidate
+
+
+def logistic_unit_payload(db: Session, item: LogisticUnit) -> dict:
+    unit_type = db.get(LogisticUnitType, item.type_id)
+    parent = db.get(LogisticUnit, item.parent_unit_id) if item.parent_unit_id is not None else None
+    weight_uom = db.get(UnitOfMeasure, item.weight_uom_id) if item.weight_uom_id is not None else None
+    content_rows = list(
+        db.scalars(
+            select(LogisticUnitContent)
+            .where(LogisticUnitContent.logistic_unit_id == item.id)
+            .order_by(LogisticUnitContent.id)
+        )
+    )
+    contents = []
+    for row in content_rows:
+        product = db.get(Product, row.product_id)
+        batch = db.get(Batch, row.batch_id) if row.batch_id is not None else None
+        uom = db.get(UnitOfMeasure, row.uom_id)
+        contents.append(
+            {
+                "id": row.id,
+                "product_id": row.product_id,
+                "product_code": product.code if product else "",
+                "batch_id": row.batch_id,
+                "batch_number": batch.batch_number if batch else None,
+                "quantity": row.quantity,
+                "uom_id": row.uom_id,
+                "uom_code": uom.code if uom else "",
+                "uom_symbol": uom.symbol if uom else "",
+                "added_at": row.added_at,
+            }
+        )
+    child_rows = list(
+        db.scalars(
+            select(LogisticUnit)
+            .where(LogisticUnit.parent_unit_id == item.id)
+            .order_by(LogisticUnit.uid)
+        )
+    )
+    children = []
+    for child in child_rows:
+        child_type = db.get(LogisticUnitType, child.type_id)
+        children.append(
+            {
+                "id": child.id,
+                "uid": child.uid,
+                "type_id": child.type_id,
+                "type_code": child_type.code if child_type else "",
+                "type_name": child_type.name if child_type else "",
+                "status": child.status,
+            }
+        )
+    return {
+        "id": item.id,
+        "uid": item.uid,
+        "type_id": item.type_id,
+        "type_code": unit_type.code if unit_type else "",
+        "type_name": unit_type.name if unit_type else "",
+        "status": item.status,
+        "parent_uid": parent.uid if parent else None,
+        "current_location_id": item.current_location_id,
+        "measured_gross_weight": item.measured_gross_weight,
+        "weight_uom_id": item.weight_uom_id,
+        "weight_uom_code": weight_uom.code if weight_uom else None,
+        "length_mm": item.length_mm,
+        "width_mm": item.width_mm,
+        "height_mm": item.height_mm,
+        "created_at": item.created_at,
+        "closed_at": item.closed_at,
+        "contents": contents,
+        "child_units": children,
+    }
+
+
+def validate_logistic_unit_weight(
+    db: Session,
+    unit_type: LogisticUnitType,
+    measured_weight: Decimal | None,
+    weight_uom_id: int | None,
+) -> None:
+    if measured_weight is None:
+        return
+    weight_uom = db.get(UnitOfMeasure, weight_uom_id)
+    if weight_uom is None:
+        raise not_found("weight_uom")
+    if weight_uom.dimension != MeasurementDimension.MASS.value:
+        raise bad_request("weight_uom must reference a mass unit")
+    if unit_type.max_weight is None or unit_type.max_weight_uom_id is None:
+        return
+    max_weight_uom = db.get(UnitOfMeasure, unit_type.max_weight_uom_id)
+    if max_weight_uom is None:
+        raise bad_request("logistic unit type has an invalid max weight unit")
+    measured_base = measured_weight * weight_uom.factor_to_base
+    max_base = unit_type.max_weight * max_weight_uom.factor_to_base
+    if measured_base > max_base:
+        raise bad_request("measured gross weight exceeds the logistic unit type limit")
+
+
+def create_logistic_unit(db: Session, payload: LogisticUnitCreate) -> LogisticUnit:
+    ensure_reference_catalogs(db)
+    unit_type = db.get(LogisticUnitType, payload.type_id)
+    if unit_type is None or not unit_type.is_active:
+        raise not_found("logistic_unit_type")
+    validate_logistic_unit_weight(
+        db,
+        unit_type,
+        payload.measured_gross_weight,
+        payload.weight_uom_id,
+    )
+    uid = payload.uid.strip().upper() if payload.uid else generate_logistic_unit_uid(db, unit_type)
+    item = LogisticUnit(
+        uid=uid,
+        type_id=unit_type.id,
+        measured_gross_weight=payload.measured_gross_weight,
+        weight_uom_id=payload.weight_uom_id,
+        length_mm=payload.length_mm or unit_type.length_mm,
+        width_mm=payload.width_mm or unit_type.width_mm,
+        height_mm=payload.height_mm or unit_type.height_mm,
+    )
+    db.add(item)
+    create_event(
+        db,
+        operation="logistic_unit_created",
+        object_type="logistic_unit",
+        object_uid=uid,
+        actor=payload.actor,
+        after={
+            "type_code": unit_type.code,
+            "status": LogisticUnitStatus.OPEN.value,
+            "measured_gross_weight": (
+                str(payload.measured_gross_weight)
+                if payload.measured_gross_weight is not None
+                else None
+            ),
+            "weight_uom_id": payload.weight_uom_id,
+        },
+    )
+    commit_or_409(db, "logistic unit identifier already exists")
+    db.refresh(item)
+    return item
+
+
+def require_open_logistic_unit(item: LogisticUnit) -> None:
+    if item.status != LogisticUnitStatus.OPEN:
+        raise bad_request("logistic unit must be open for composition changes")
+
+
+def add_logistic_unit_content(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitContentCreate,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    require_open_logistic_unit(item)
+    unit_type = db.get(LogisticUnitType, item.type_id)
+    if unit_type is None or not unit_type.can_contain_goods:
+        raise bad_request("logistic unit type cannot contain goods directly")
+    product = db.get(Product, payload.product_id)
+    if product is None:
+        raise not_found("product")
+    batch = db.get(Batch, payload.batch_id) if payload.batch_id is not None else None
+    if payload.batch_id is not None and batch is None:
+        raise not_found("batch")
+    if batch is not None and batch.product_id != product.id:
+        raise bad_request("batch belongs to another product")
+    uom = db.get(UnitOfMeasure, payload.uom_id)
+    if uom is None:
+        raise not_found("unit_of_measure")
+    if product.base_uom_id is not None:
+        base_uom = db.get(UnitOfMeasure, product.base_uom_id)
+        if base_uom is None:
+            raise bad_request("product has an invalid base unit")
+        if base_uom.dimension != uom.dimension:
+            raise bad_request("content unit is incompatible with the product base unit")
+
+    line_query = select(LogisticUnitContent).where(
+        LogisticUnitContent.logistic_unit_id == item.id,
+        LogisticUnitContent.product_id == product.id,
+        LogisticUnitContent.uom_id == uom.id,
+    )
+    if batch is None:
+        line_query = line_query.where(LogisticUnitContent.batch_id.is_(None))
+    else:
+        line_query = line_query.where(LogisticUnitContent.batch_id == batch.id)
+    line = db.scalar(line_query)
+    before_quantity = line.quantity if line else Decimal("0")
+    if line is None:
+        line = LogisticUnitContent(
+            logistic_unit_id=item.id,
+            product_id=product.id,
+            batch_id=batch.id if batch else None,
+            quantity=payload.quantity,
+            uom_id=uom.id,
+        )
+        db.add(line)
+    else:
+        line.quantity += payload.quantity
+    create_event(
+        db,
+        operation="logistic_unit_content_added",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        before={"quantity": str(before_quantity)},
+        after={
+            "product_code": product.code,
+            "batch_number": batch.batch_number if batch else None,
+            "quantity": str(before_quantity + payload.quantity),
+            "uom_code": uom.code,
+        },
+    )
+    commit_or_409(db, "logistic unit content conflicts with an existing line")
+    db.refresh(item)
+    return item
+
+
+def remove_logistic_unit_content(
+    db: Session,
+    uid: str,
+    content_id: int,
+    payload: LogisticUnitContentRemoveRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    require_open_logistic_unit(item)
+    line = db.get(LogisticUnitContent, content_id)
+    if line is None or line.logistic_unit_id != item.id:
+        raise not_found("logistic_unit_content")
+    if payload.quantity > line.quantity:
+        raise bad_request("removed quantity exceeds the content line quantity")
+    before_quantity = line.quantity
+    remaining = line.quantity - payload.quantity
+    if remaining == 0:
+        db.delete(line)
+    else:
+        line.quantity = remaining
+    create_event(
+        db,
+        operation="logistic_unit_content_removed",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"content_id": content_id, "quantity": str(before_quantity)},
+        after={"content_id": content_id, "quantity": str(remaining)},
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def add_logistic_unit_child(
+    db: Session,
+    parent_uid: str,
+    payload: LogisticUnitChildRequest,
+) -> LogisticUnit:
+    parent = get_logistic_unit(db, parent_uid)
+    child = get_logistic_unit(db, payload.child_uid)
+    require_open_logistic_unit(parent)
+    if parent.id == child.id:
+        raise bad_request("logistic unit cannot contain itself")
+    parent_type = db.get(LogisticUnitType, parent.type_id)
+    if parent_type is None or not parent_type.can_contain_units:
+        raise bad_request("logistic unit type cannot contain other units")
+    allowed = db.scalar(
+        select(LogisticUnitTypeAllowedChild.id).where(
+            LogisticUnitTypeAllowedChild.parent_type_id == parent.type_id,
+            LogisticUnitTypeAllowedChild.child_type_id == child.type_id,
+        )
+    )
+    if allowed is None:
+        raise bad_request("child logistic unit type is not allowed for this parent")
+    if child.parent_unit_id is not None:
+        raise bad_request("child logistic unit already belongs to another parent")
+    if child.current_location_id is not None:
+        raise bad_request("placed logistic unit must be removed from its location before nesting")
+    if child.status not in {LogisticUnitStatus.CLOSED, LogisticUnitStatus.AVAILABLE}:
+        raise bad_request("child logistic unit must be closed before nesting")
+
+    ancestor = parent
+    while ancestor.parent_unit_id is not None:
+        ancestor = db.get(LogisticUnit, ancestor.parent_unit_id)
+        if ancestor is None:
+            break
+        if ancestor.id == child.id:
+            raise bad_request("logistic unit nesting cycle is not allowed")
+
+    child.parent_unit_id = parent.id
+    create_event(
+        db,
+        operation="logistic_unit_child_added",
+        object_type="logistic_unit",
+        object_uid=parent.uid,
+        actor=payload.actor,
+        after={"child_uid": child.uid},
+    )
+    commit_or_409(db, "logistic unit cannot be attached to this parent")
+    db.refresh(parent)
+    return parent
+
+
+def remove_logistic_unit_child(
+    db: Session,
+    parent_uid: str,
+    child_uid: str,
+    payload: LogisticUnitActionRequest,
+) -> LogisticUnit:
+    parent = get_logistic_unit(db, parent_uid)
+    child = get_logistic_unit(db, child_uid)
+    require_open_logistic_unit(parent)
+    if child.parent_unit_id != parent.id:
+        raise bad_request("logistic unit is not a direct child of this parent")
+    child.parent_unit_id = None
+    create_event(
+        db,
+        operation="logistic_unit_child_removed",
+        object_type="logistic_unit",
+        object_uid=parent.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"child_uid": child.uid},
+    )
+    db.commit()
+    db.refresh(parent)
+    return parent
+
+
+def close_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitActionRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    require_open_logistic_unit(item)
+    open_child = db.scalar(
+        select(LogisticUnit.id).where(
+            LogisticUnit.parent_unit_id == item.id,
+            LogisticUnit.status == LogisticUnitStatus.OPEN,
+        )
+    )
+    if open_child is not None:
+        raise bad_request("all child logistic units must be closed first")
+    item.status = LogisticUnitStatus.CLOSED
+    item.closed_at = utcnow()
+    create_event(
+        db,
+        operation="logistic_unit_closed",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"status": LogisticUnitStatus.OPEN.value},
+        after={"status": LogisticUnitStatus.CLOSED.value},
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def reopen_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitActionRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    if item.status != LogisticUnitStatus.CLOSED:
+        raise bad_request("only a closed logistic unit can be reopened")
+    if item.parent_unit_id is not None:
+        parent = db.get(LogisticUnit, item.parent_unit_id)
+        if parent is not None and parent.status != LogisticUnitStatus.OPEN:
+            raise bad_request("parent logistic unit must be reopened first")
+    item.status = LogisticUnitStatus.OPEN
+    item.closed_at = None
+    create_event(
+        db,
+        operation="logistic_unit_reopened",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"status": LogisticUnitStatus.CLOSED.value},
+        after={"status": LogisticUnitStatus.OPEN.value},
+    )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def disassemble_logistic_unit(
+    db: Session,
+    uid: str,
+    payload: LogisticUnitActionRequest,
+) -> LogisticUnit:
+    item = get_logistic_unit(db, uid)
+    require_open_logistic_unit(item)
+    if item.parent_unit_id is not None:
+        raise bad_request("nested logistic unit must be removed from its parent first")
+    has_content = db.scalar(
+        select(LogisticUnitContent.id).where(LogisticUnitContent.logistic_unit_id == item.id)
+    )
+    has_children = db.scalar(
+        select(LogisticUnit.id).where(LogisticUnit.parent_unit_id == item.id)
+    )
+    if has_content is not None or has_children is not None:
+        raise bad_request("logistic unit must be empty before disassembly")
+    item.status = LogisticUnitStatus.DISASSEMBLED
+    create_event(
+        db,
+        operation="logistic_unit_disassembled",
+        object_type="logistic_unit",
+        object_uid=item.uid,
+        actor=payload.actor,
+        reason=payload.reason,
+        before={"status": LogisticUnitStatus.OPEN.value},
+        after={"status": LogisticUnitStatus.DISASSEMBLED.value},
+    )
+    db.commit()
     db.refresh(item)
     return item
 

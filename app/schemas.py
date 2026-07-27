@@ -12,6 +12,7 @@ from app.models.enums import (
     InventoryLineStatus,
     InventoryStatus,
     LocationKind,
+    LogisticUnitStatus,
     MeasurementDimension,
     PalletStatus,
     ShipmentStatus,
@@ -96,6 +97,97 @@ class LogisticUnitTypeRead(LogisticUnitTypeCreate):
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class LogisticUnitCreate(BaseModel):
+    type_id: int
+    uid: str | None = Field(default=None, min_length=1, max_length=64)
+    measured_gross_weight: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=18,
+        decimal_places=6,
+    )
+    weight_uom_id: int | None = None
+    length_mm: int | None = Field(default=None, gt=0)
+    width_mm: int | None = Field(default=None, gt=0)
+    height_mm: int | None = Field(default=None, gt=0)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_weight(self):
+        if self.measured_gross_weight is not None and self.weight_uom_id is None:
+            raise ValueError("weight_uom_id is required when measured_gross_weight is set")
+        if self.measured_gross_weight is None and self.weight_uom_id is not None:
+            raise ValueError("measured_gross_weight is required when weight_uom_id is set")
+        return self
+
+
+class LogisticUnitContentCreate(BaseModel):
+    product_id: int
+    batch_id: int | None = None
+    quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=6)
+    uom_id: int
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticUnitContentRemoveRequest(BaseModel):
+    quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=6)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticUnitChildRequest(BaseModel):
+    child_uid: str = Field(min_length=1, max_length=64)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticUnitActionRequest(BaseModel):
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticUnitContentRead(BaseModel):
+    id: int
+    product_id: int
+    product_code: str
+    batch_id: int | None
+    batch_number: str | None
+    quantity: Decimal
+    uom_id: int
+    uom_code: str
+    uom_symbol: str
+    added_at: datetime
+
+
+class LogisticUnitChildRead(BaseModel):
+    id: int
+    uid: str
+    type_id: int
+    type_code: str
+    type_name: str
+    status: LogisticUnitStatus
+
+
+class LogisticUnitRead(BaseModel):
+    id: int
+    uid: str
+    type_id: int
+    type_code: str
+    type_name: str
+    status: LogisticUnitStatus
+    parent_uid: str | None
+    current_location_id: int | None
+    measured_gross_weight: Decimal | None
+    weight_uom_id: int | None
+    weight_uom_code: str | None
+    length_mm: int | None
+    width_mm: int | None
+    height_mm: int | None
+    created_at: datetime
+    closed_at: datetime | None
+    contents: list[LogisticUnitContentRead] = Field(default_factory=list)
+    child_units: list[LogisticUnitChildRead] = Field(default_factory=list)
 
 
 class EquipmentProfileCreate(BaseModel):

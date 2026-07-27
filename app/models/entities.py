@@ -26,6 +26,7 @@ from app.models.enums import (
     InventoryLineStatus,
     InventoryStatus,
     LocationKind,
+    LogisticUnitStatus,
     PalletStatus,
     ShipmentStatus,
     TransferStatus,
@@ -119,6 +120,95 @@ class LogisticUnitType(Base):
     @property
     def allowed_child_type_ids(self) -> list[int]:
         return sorted(row.child_type_id for row in self.allowed_children)
+
+
+class LogisticUnit(Base):
+    __tablename__ = "logistic_units"
+    __table_args__ = (
+        CheckConstraint("parent_unit_id IS NULL OR parent_unit_id <> id", name="ck_logistic_unit_no_self_parent"),
+        CheckConstraint(
+            "measured_gross_weight IS NULL OR measured_gross_weight > 0",
+            name="ck_logistic_unit_gross_weight",
+        ),
+        CheckConstraint("length_mm IS NULL OR length_mm > 0", name="ck_logistic_unit_length"),
+        CheckConstraint("width_mm IS NULL OR width_mm > 0", name="ck_logistic_unit_width"),
+        CheckConstraint("height_mm IS NULL OR height_mm > 0", name="ck_logistic_unit_height"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey("logistic_unit_types.id"), index=True)
+    status: Mapped[LogisticUnitStatus] = mapped_column(
+        Enum(LogisticUnitStatus),
+        default=LogisticUnitStatus.OPEN,
+        index=True,
+    )
+    parent_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_units.id"),
+        nullable=True,
+        index=True,
+    )
+    current_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    measured_gross_weight: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    weight_uom_id: Mapped[int | None] = mapped_column(
+        ForeignKey("units_of_measure.id"),
+        nullable=True,
+    )
+    length_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    width_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    type: Mapped[LogisticUnitType] = relationship()
+    parent_unit: Mapped["LogisticUnit | None"] = relationship(
+        remote_side="LogisticUnit.id",
+        back_populates="child_units",
+        foreign_keys=[parent_unit_id],
+    )
+    child_units: Mapped[list["LogisticUnit"]] = relationship(
+        back_populates="parent_unit",
+        foreign_keys=[parent_unit_id],
+    )
+    contents: Mapped[list["LogisticUnitContent"]] = relationship(
+        back_populates="logistic_unit",
+        cascade="all, delete-orphan",
+    )
+    weight_uom: Mapped[UnitOfMeasure | None] = relationship(foreign_keys=[weight_uom_id])
+
+
+class LogisticUnitContent(Base):
+    __tablename__ = "logistic_unit_contents"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_logistic_unit_content_quantity"),
+        UniqueConstraint(
+            "logistic_unit_id",
+            "product_id",
+            "batch_id",
+            "uom_id",
+            name="uq_logistic_unit_content_line",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    logistic_unit_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_units.id", ondelete="CASCADE"),
+        index=True,
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"), nullable=True, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    logistic_unit: Mapped[LogisticUnit] = relationship(back_populates="contents")
+    product: Mapped["Product"] = relationship(foreign_keys=[product_id])
+    batch: Mapped["Batch | None"] = relationship(foreign_keys=[batch_id])
+    uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[uom_id])
 
 
 class Product(Base):
