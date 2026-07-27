@@ -21,6 +21,8 @@ from app.models.entities import (
     EquipmentProfile,
     InventoryLine,
     InventorySession,
+    LogisticShipment,
+    LogisticTransfer,
     LogisticUnit,
     LogisticUnitType,
     Location,
@@ -67,6 +69,13 @@ from app.schemas import (
     LogisticUnitHoldRequest,
     LogisticUnitLocationRequest,
     LogisticUnitRead,
+    LogisticDocumentActionRequest,
+    LogisticDocumentStageRequest,
+    LogisticDocumentUnitRequest,
+    LogisticShipmentCreate,
+    LogisticShipmentRead,
+    LogisticTransferCreate,
+    LogisticTransferRead,
     LogisticUnitTypeCreate,
     LogisticUnitTypeRead,
     LocationCreate,
@@ -162,6 +171,23 @@ from app.services import (
     remove_logistic_unit_content,
     reopen_logistic_unit,
     resolved_inventory_line_ids,
+)
+from app.logistic_documents import (
+    close_logistic_shipment,
+    create_logistic_shipment,
+    create_logistic_transfer,
+    dispatch_logistic_transfer,
+    get_logistic_shipment,
+    get_logistic_transfer,
+    load_logistic_shipment_unit,
+    load_logistic_transfer_unit,
+    logistic_shipment_payload,
+    logistic_transfer_payload,
+    receive_logistic_transfer_unit,
+    reserve_unit_for_logistic_shipment,
+    reserve_unit_for_logistic_transfer,
+    stage_logistic_shipment,
+    stage_logistic_transfer,
 )
 from app.models.enums import (
     InventoryLineStatus,
@@ -922,6 +948,196 @@ def api_disassemble_logistic_unit(
     db: Session = Depends(get_db),
 ) -> dict:
     return logistic_unit_payload(db, disassemble_logistic_unit(db, uid, payload))
+
+
+@router.post("/logistic-shipments", response_model=LogisticShipmentRead)
+def api_create_logistic_shipment(
+    payload: LogisticShipmentCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_shipment_payload(db, create_logistic_shipment(db, payload))
+
+
+@router.get("/logistic-shipments", response_model=list[LogisticShipmentRead])
+def api_list_logistic_shipments(
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(LogisticShipment).order_by(LogisticShipment.created_at.desc()).limit(limit)
+    if status_filter:
+        query = query.where(LogisticShipment.status.in_(status_filter))
+    return [logistic_shipment_payload(db, item) for item in db.scalars(query)]
+
+
+@router.get(
+    "/logistic-shipments/{shipment_uid}",
+    response_model=LogisticShipmentRead,
+)
+def api_get_logistic_shipment(
+    shipment_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_shipment_payload(db, get_logistic_shipment(db, shipment_uid))
+
+
+@router.post(
+    "/logistic-shipments/{shipment_uid}/units",
+    response_model=LogisticShipmentRead,
+)
+def api_reserve_logistic_shipment_unit(
+    shipment_uid: str,
+    payload: LogisticDocumentUnitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = reserve_unit_for_logistic_shipment(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post(
+    "/logistic-shipments/{shipment_uid}/expedition",
+    response_model=LogisticShipmentRead,
+)
+def api_stage_logistic_shipment(
+    shipment_uid: str,
+    payload: LogisticDocumentStageRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = stage_logistic_shipment(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post(
+    "/logistic-shipments/{shipment_uid}/load",
+    response_model=LogisticShipmentRead,
+)
+def api_load_logistic_shipment_unit(
+    shipment_uid: str,
+    payload: LogisticDocumentUnitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = load_logistic_shipment_unit(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post(
+    "/logistic-shipments/{shipment_uid}/close",
+    response_model=LogisticShipmentRead,
+)
+def api_close_logistic_shipment(
+    shipment_uid: str,
+    payload: LogisticDocumentActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = close_logistic_shipment(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post("/logistic-transfers", response_model=LogisticTransferRead)
+def api_create_logistic_transfer(
+    payload: LogisticTransferCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_transfer_payload(db, create_logistic_transfer(db, payload))
+
+
+@router.get("/logistic-transfers", response_model=list[LogisticTransferRead])
+def api_list_logistic_transfers(
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(LogisticTransfer).order_by(LogisticTransfer.created_at.desc()).limit(limit)
+    if status_filter:
+        query = query.where(LogisticTransfer.status.in_(status_filter))
+    return [logistic_transfer_payload(db, item) for item in db.scalars(query)]
+
+
+@router.get(
+    "/logistic-transfers/{transfer_uid}",
+    response_model=LogisticTransferRead,
+)
+def api_get_logistic_transfer(
+    transfer_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    return logistic_transfer_payload(db, get_logistic_transfer(db, transfer_uid))
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/units",
+    response_model=LogisticTransferRead,
+)
+def api_reserve_logistic_transfer_unit(
+    transfer_uid: str,
+    payload: LogisticDocumentUnitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = reserve_unit_for_logistic_transfer(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/expedition",
+    response_model=LogisticTransferRead,
+)
+def api_stage_logistic_transfer(
+    transfer_uid: str,
+    payload: LogisticDocumentStageRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = stage_logistic_transfer(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/load",
+    response_model=LogisticTransferRead,
+)
+def api_load_logistic_transfer_unit(
+    transfer_uid: str,
+    payload: LogisticDocumentUnitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = load_logistic_transfer_unit(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/dispatch",
+    response_model=LogisticTransferRead,
+)
+def api_dispatch_logistic_transfer(
+    transfer_uid: str,
+    payload: LogisticDocumentActionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = dispatch_logistic_transfer(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/receive/{unit_uid}",
+    response_model=LogisticTransferRead,
+)
+def api_receive_logistic_transfer_unit(
+    transfer_uid: str,
+    unit_uid: str,
+    payload: LogisticDocumentStageRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    unit_request = LogisticDocumentUnitRequest(
+        unit_uid=unit_uid,
+        actor=payload.actor,
+        reason=payload.reason,
+    )
+    transfer = receive_logistic_transfer_unit(
+        db,
+        transfer_uid,
+        unit_request,
+        payload.location_code,
+    )
+    return logistic_transfer_payload(db, transfer)
 
 
 @router.post("/products", response_model=ProductRead)

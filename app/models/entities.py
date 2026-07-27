@@ -313,6 +313,104 @@ class Location(Base):
     zone: Mapped[Zone] = relationship(back_populates="locations")
 
 
+class LogisticShipment(Base):
+    __tablename__ = "logistic_shipments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shipment_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    customer_name: Mapped[str] = mapped_column(String(160))
+    destination: Mapped[str] = mapped_column(String(160))
+    status: Mapped[ShipmentStatus] = mapped_column(
+        Enum(ShipmentStatus, native_enum=False, length=32),
+        default=ShipmentStatus.DRAFT,
+        index=True,
+    )
+    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    units: Mapped[list["LogisticShipmentUnit"]] = relationship(
+        back_populates="shipment",
+        cascade="all, delete-orphan",
+    )
+
+
+class LogisticShipmentUnit(Base):
+    __tablename__ = "logistic_shipment_units"
+    __table_args__ = (
+        UniqueConstraint(
+            "shipment_id",
+            "logistic_unit_id",
+            name="uq_logistic_shipment_unit",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shipment_id: Mapped[int] = mapped_column(ForeignKey("logistic_shipments.id"), index=True)
+    logistic_unit_id: Mapped[int] = mapped_column(ForeignKey("logistic_units.id"), index=True)
+    source_location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
+    status: Mapped[str] = mapped_column(String(32), default="reserved", index=True)
+    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    moved_to_expedition_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    shipment: Mapped[LogisticShipment] = relationship(back_populates="units")
+
+
+class LogisticTransfer(Base):
+    __tablename__ = "logistic_transfers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    source_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    destination_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    status: Mapped[TransferStatus] = mapped_column(
+        Enum(TransferStatus, native_enum=False, length=32),
+        default=TransferStatus.DRAFT,
+        index=True,
+    )
+    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    vehicle_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    units: Mapped[list["LogisticTransferUnit"]] = relationship(
+        back_populates="transfer",
+        cascade="all, delete-orphan",
+    )
+
+
+class LogisticTransferUnit(Base):
+    __tablename__ = "logistic_transfer_units"
+    __table_args__ = (
+        UniqueConstraint(
+            "transfer_id",
+            "logistic_unit_id",
+            name="uq_logistic_transfer_unit",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_id: Mapped[int] = mapped_column(ForeignKey("logistic_transfers.id"), index=True)
+    logistic_unit_id: Mapped[int] = mapped_column(ForeignKey("logistic_units.id"), index=True)
+    source_location_id: Mapped[int] = mapped_column(ForeignKey("locations.id"))
+    status: Mapped[str] = mapped_column(String(32), default="reserved", index=True)
+    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    moved_to_expedition_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    transfer: Mapped[LogisticTransfer] = relationship(back_populates="units")
+
+
 class WarehouseMapItem(Base):
     __tablename__ = "warehouse_map_items"
     __table_args__ = (

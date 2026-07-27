@@ -558,6 +558,88 @@ class TransferPalletRead(BaseModel):
     received_at: datetime | None
 
 
+class LogisticDocumentUnitRequest(BaseModel):
+    unit_uid: str = Field(min_length=1, max_length=64)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticDocumentStageRequest(BaseModel):
+    location_code: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticDocumentActionRequest(BaseModel):
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LogisticDocumentUnitRead(BaseModel):
+    id: int
+    unit_uid: str
+    type_code: str
+    unit_status: LogisticUnitStatus
+    item_status: str
+    source_location_code: str
+    current_location_code: str | None
+    reserved_at: datetime
+    moved_to_expedition_at: datetime | None
+    loaded_at: datetime | None
+    received_at: datetime | None = None
+
+
+class LogisticShipmentCreate(BaseModel):
+    warehouse_code: str = Field(min_length=1, max_length=32)
+    customer_name: str = Field(min_length=1, max_length=160)
+    destination: str = Field(min_length=1, max_length=160)
+    planned_date: date | None = None
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticShipmentRead(BaseModel):
+    id: int
+    shipment_uid: str
+    warehouse_id: int
+    warehouse_code: str
+    customer_name: str
+    destination: str
+    status: ShipmentStatus
+    planned_date: date | None
+    created_at: datetime
+    closed_at: datetime | None
+    unit_count: int
+    loaded_count: int
+    units: list[LogisticDocumentUnitRead]
+
+
+class LogisticTransferCreate(BaseModel):
+    source_warehouse_code: str = Field(min_length=1, max_length=32)
+    destination_warehouse_code: str = Field(min_length=1, max_length=32)
+    planned_date: date | None = None
+    vehicle_number: str | None = Field(default=None, max_length=80)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+
+
+class LogisticTransferRead(BaseModel):
+    id: int
+    transfer_uid: str
+    source_warehouse_id: int
+    source_warehouse_code: str
+    destination_warehouse_id: int
+    destination_warehouse_code: str
+    status: TransferStatus
+    planned_date: date | None
+    vehicle_number: str | None
+    created_at: datetime
+    dispatched_at: datetime | None
+    completed_at: datetime | None
+    unit_count: int
+    loaded_count: int
+    received_count: int
+    units: list[LogisticDocumentUnitRead]
+
+
 class InventoryStartRequest(BaseModel):
     warehouse_code: str | None = Field(default=None, max_length=32)
     location_code: str | None = Field(default=None, max_length=120)
