@@ -50,6 +50,7 @@ from app.models.enums import (
     TaskPriority,
     TaskStatus,
     TaskType,
+    TransferKind,
     TransferStatus,
 )
 from app.models.entities import InventoryLine
@@ -530,6 +531,66 @@ def test_interwarehouse_transfer_dispatch_receive_and_place(db):
     placed = place_pallet(db, pallet_uid=pallet.pallet_uid, location_code=destination_location.code, actor="receiver")
     assert placed.status == PalletStatus.AVAILABLE
     assert placed.current_location_id == destination_location.id
+
+
+def test_local_interwarehouse_transfer_starts_after_handover(db):
+    _, batch, _, source_location = create_fixture_data(db)
+    create_warehouse(db, WarehouseCreate(code="WH02", name="Соседний склад"))
+    box = generate_boxes(db, batch_id=batch.id, quantity=1)[0]
+    accept_box(db, box_uid=box.box_uid, actor="tester")
+    pallet = open_pallet(db, actor="tester")
+    add_box_to_pallet(
+        db,
+        pallet_uid=pallet.pallet_uid,
+        box_uid=box.box_uid,
+        actor="tester",
+    )
+    close_pallet(db, pallet_uid=pallet.pallet_uid, actor="tester")
+    place_pallet(
+        db,
+        pallet_uid=pallet.pallet_uid,
+        location_code=source_location.code,
+        actor="tester",
+    )
+    transfer = create_transfer(
+        db,
+        TransferCreate(
+            source_warehouse_code="WH01",
+            destination_warehouse_code="WH02",
+            transfer_kind=TransferKind.LOCAL,
+            vehicle_number="НЕ СОХРАНЯТЬ",
+            actor="tester",
+        ),
+    )
+
+    assert transfer.vehicle_number is None
+    reserve_pallet_for_transfer(
+        db,
+        transfer_uid=transfer.transfer_uid,
+        pallet_uid=pallet.pallet_uid,
+        actor="tester",
+    )
+    move_transfer_to_expedition(
+        db,
+        transfer_uid=transfer.transfer_uid,
+        actor="tester",
+    )
+    load_transfer_pallet(
+        db,
+        transfer_uid=transfer.transfer_uid,
+        pallet_uid=pallet.pallet_uid,
+        actor="tester",
+    )
+
+    assert transfer.status == TransferStatus.IN_TRANSIT
+    assert transfer.dispatched_at is not None
+    assert pallet.status == PalletStatus.IN_TRANSIT
+    with pytest.raises(HTTPException, match="starts automatically"):
+        dispatch_transfer(
+            db,
+            transfer_uid=transfer.transfer_uid,
+            actor="tester",
+        )
 
 
 def test_interwarehouse_transfer_rejects_pallet_not_in_document(db):

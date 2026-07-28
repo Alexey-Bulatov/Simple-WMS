@@ -25,6 +25,7 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     ShipmentStatus,
+    TransferKind,
     TransferStatus,
 )
 from app.schemas import (
@@ -264,6 +265,74 @@ def test_logistic_transfer_finishes_at_destination_receiving(db):
     assert unit.current_location_id == destination[LocationKind.STORAGE].id
 
 
+def test_local_logistic_transfer_skips_vehicle_dispatch(db):
+    source = warehouse_layout(db, "WH-LA")
+    destination = warehouse_layout(db, "WH-LB")
+    unit = available_unit(db, "PLT-LOCAL-001", source[LocationKind.STORAGE].code)
+    transfer = create_logistic_transfer(
+        db,
+        LogisticTransferCreate(
+            source_warehouse_code="WH-LA",
+            destination_warehouse_code="WH-LB",
+            transfer_kind=TransferKind.LOCAL,
+            vehicle_number="НЕ ДОЛЖЕН СОХРАНИТЬСЯ",
+            actor="dispatcher",
+        ),
+    )
+
+    assert transfer.transfer_kind == TransferKind.LOCAL
+    assert transfer.vehicle_number is None
+    reserve_unit_for_logistic_transfer(
+        db,
+        transfer.transfer_uid,
+        LogisticDocumentUnitRequest(unit_uid=unit.uid, actor="dispatcher"),
+    )
+    stage_logistic_transfer(
+        db,
+        transfer.transfer_uid,
+        LogisticDocumentStageRequest(
+            location_code=source[LocationKind.TRANSFER_OUT].code,
+            actor="storekeeper",
+        ),
+    )
+    load_logistic_transfer_unit(
+        db,
+        transfer.transfer_uid,
+        LogisticDocumentUnitRequest(unit_uid=unit.uid, actor="storekeeper"),
+    )
+
+    assert transfer.status == TransferStatus.IN_TRANSIT
+    assert transfer.dispatched_at is not None
+    assert unit.status == LogisticUnitStatus.IN_TRANSIT
+    with pytest.raises(HTTPException, match="starts automatically"):
+        dispatch_logistic_transfer(
+            db,
+            transfer.transfer_uid,
+            LogisticDocumentActionRequest(actor="storekeeper"),
+        )
+
+    operations = set(
+        db.scalars(
+            select(OperationEvent.operation).where(
+                OperationEvent.object_uid.in_([transfer.transfer_uid, unit.uid])
+            )
+        )
+    )
+    assert {
+        "logistic_local_transfer_prepared",
+        "logistic_unit_handed_over_for_local_transfer",
+        "logistic_local_transfer_started",
+    }.issubset(operations)
+
+    receive_logistic_transfer_unit(
+        db,
+        transfer.transfer_uid,
+        LogisticDocumentUnitRequest(unit_uid=unit.uid, actor="receiver"),
+        destination[LocationKind.TRANSFER_IN].code,
+    )
+    assert transfer.status == TransferStatus.COMPLETED
+
+
 def test_documents_reject_wrong_units_and_warehouses(db):
     source = warehouse_layout(db, "WH-A")
     destination = warehouse_layout(db, "WH-B")
@@ -401,6 +470,7 @@ def test_logistic_transfer_api_flow(db):
                 },
             )
             assert created.status_code == 200
+            assert created.json()["transfer_kind"] == "transport"
             transfer_uid = created.json()["transfer_uid"]
 
             assert client.post(
@@ -439,7 +509,7 @@ def test_logistic_transfer_api_flow(db):
 
             listed = client.get(
                 "/api/logistic-transfers",
-                params={"status": "completed"},
+                params={"status": "completed", "transfer_kind": "transport"},
             )
             assert listed.status_code == 200
             assert [item["transfer_uid"] for item in listed.json()] == [transfer_uid]

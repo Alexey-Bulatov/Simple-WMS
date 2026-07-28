@@ -19,7 +19,7 @@ from app.models.entities import (
     Zone,
     utcnow,
 )
-from app.models.enums import LocationKind, PalletStatus, TransferStatus
+from app.models.enums import LocationKind, PalletStatus, TransferKind, TransferStatus
 from app.schemas import TransferCreate
 from app.services import bad_request, commit_or_409, create_event, not_found
 
@@ -62,8 +62,13 @@ def create_transfer(db: Session, payload: TransferCreate) -> WarehouseTransfer:
         transfer_uid=generate_transfer_uid(db),
         source_warehouse_id=source.id,
         destination_warehouse_id=destination.id,
+        transfer_kind=payload.transfer_kind,
         planned_date=payload.planned_date,
-        vehicle_number=(payload.vehicle_number or "").strip() or None,
+        vehicle_number=(
+            (payload.vehicle_number or "").strip() or None
+            if payload.transfer_kind == TransferKind.TRANSPORT
+            else None
+        ),
     )
     db.add(transfer)
     create_event(
@@ -75,6 +80,7 @@ def create_transfer(db: Session, payload: TransferCreate) -> WarehouseTransfer:
         after={
             "source_warehouse": source.code,
             "destination_warehouse": destination.code,
+            "transfer_kind": transfer.transfer_kind.value,
             "vehicle_number": transfer.vehicle_number,
         },
     )
@@ -165,7 +171,11 @@ def move_transfer_to_expedition(db: Session, *, transfer_uid: str, actor: str = 
         link.moved_to_expedition_at = now
         create_event(
             db,
-            operation="pallet_moved_to_transfer_expedition",
+            operation=(
+                "pallet_prepared_for_local_transfer"
+                if transfer.transfer_kind == TransferKind.LOCAL
+                else "pallet_moved_to_transfer_expedition"
+            ),
             object_type="pallet",
             object_uid=pallet.pallet_uid,
             actor=actor,
@@ -175,7 +185,11 @@ def move_transfer_to_expedition(db: Session, *, transfer_uid: str, actor: str = 
     transfer.status = TransferStatus.EXPEDITION
     create_event(
         db,
-        operation="transfer_moved_to_expedition",
+        operation=(
+            "local_transfer_prepared"
+            if transfer.transfer_kind == TransferKind.LOCAL
+            else "transfer_moved_to_expedition"
+        ),
         object_type="transfer",
         object_uid=transfer.transfer_uid,
         actor=actor,
@@ -213,13 +227,18 @@ def load_transfer_pallet(
     if link.status != "expedition" or pallet.status != PalletStatus.EXPEDITION:
         raise bad_request(f"pallet cannot be loaded from status {pallet.status}")
 
+    is_local = transfer.transfer_kind == TransferKind.LOCAL
     transfer.status = TransferStatus.LOADING
-    pallet.status = PalletStatus.LOADED
-    link.status = "loaded"
+    pallet.status = PalletStatus.IN_TRANSIT if is_local else PalletStatus.LOADED
+    link.status = "in_transit" if is_local else "loaded"
     link.loaded_at = utcnow()
     create_event(
         db,
-        operation="transfer_pallet_loaded",
+        operation=(
+            "transfer_pallet_handed_over"
+            if is_local
+            else "transfer_pallet_loaded"
+        ),
         object_type="transfer",
         object_uid=transfer.transfer_uid,
         actor=actor,
@@ -227,13 +246,33 @@ def load_transfer_pallet(
     )
     create_event(
         db,
-        operation="pallet_loaded_for_transfer",
+        operation=(
+            "pallet_handed_over_for_local_transfer"
+            if is_local
+            else "pallet_loaded_for_transfer"
+        ),
         object_type="pallet",
         object_uid=pallet.pallet_uid,
         actor=actor,
         before={"status": PalletStatus.EXPEDITION},
         after={"status": pallet.status, "transfer_uid": transfer.transfer_uid},
     )
+    if is_local:
+        links = transfer_links(db, transfer.id)
+        if all(item.status == "in_transit" for item in links):
+            transfer.status = TransferStatus.IN_TRANSIT
+            transfer.dispatched_at = utcnow()
+            create_event(
+                db,
+                operation="local_transfer_started",
+                object_type="transfer",
+                object_uid=transfer.transfer_uid,
+                actor=actor,
+                after={
+                    "status": transfer.status,
+                    "pallet_count": len(links),
+                },
+            )
     db.commit()
     db.refresh(transfer)
     return transfer
@@ -247,6 +286,10 @@ def dispatch_transfer(
     reason: str | None = None,
 ) -> WarehouseTransfer:
     transfer = get_transfer(db, transfer_uid)
+    if transfer.transfer_kind == TransferKind.LOCAL:
+        raise bad_request(
+            "local transfer starts automatically after all pallets are handed over"
+        )
     if transfer.status != TransferStatus.LOADING:
         raise bad_request("transfer can be dispatched only after loading has started")
     links = transfer_links(db, transfer.id)

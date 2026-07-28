@@ -229,6 +229,7 @@ from app.models.enums import (
     PalletStatus,
     TaskStatus,
     TaskType,
+    TransferKind,
 )
 from app.warehouse_map import (
     create_map_label,
@@ -538,6 +539,7 @@ def transfer_summary(db: Session, transfer: WarehouseTransfer) -> dict:
         "destination_warehouse_id": transfer.destination_warehouse_id,
         "destination_warehouse_code": destination.code if destination else "-",
         "destination_warehouse_name": destination.name if destination else "-",
+        "transfer_kind": transfer.transfer_kind,
         "status": transfer.status,
         "planned_date": transfer.planned_date,
         "vehicle_number": transfer.vehicle_number,
@@ -1080,12 +1082,15 @@ def api_create_logistic_transfer(
 @router.get("/logistic-transfers", response_model=list[LogisticTransferRead])
 def api_list_logistic_transfers(
     status_filter: list[str] | None = Query(default=None, alias="status"),
+    transfer_kind: TransferKind | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     query = select(LogisticTransfer).order_by(LogisticTransfer.created_at.desc()).limit(limit)
     if status_filter:
         query = query.where(LogisticTransfer.status.in_(status_filter))
+    if transfer_kind is not None:
+        query = query.where(LogisticTransfer.transfer_kind == transfer_kind)
     return [logistic_transfer_payload(db, item) for item in db.scalars(query)]
 
 
@@ -2226,12 +2231,15 @@ def api_create_transfer(payload: TransferCreate, db: Session = Depends(get_db)) 
 @router.get("/transfers", response_model=list[TransferRead])
 def api_list_transfers(
     status_filter: list[str] | None = Query(default=None, alias="status"),
+    transfer_kind: TransferKind | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     stmt = select(WarehouseTransfer).order_by(WarehouseTransfer.created_at.desc()).limit(limit)
     if status_filter:
         stmt = stmt.where(WarehouseTransfer.status.in_(status_filter))
+    if transfer_kind is not None:
+        stmt = stmt.where(WarehouseTransfer.transfer_kind == transfer_kind)
     return [transfer_summary(db, transfer) for transfer in db.scalars(stmt)]
 
 

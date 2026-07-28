@@ -17,6 +17,7 @@ from app.models.enums import (
     MeasurementDimension,
     PalletStatus,
     ShipmentStatus,
+    TransferKind,
     TransferStatus,
     TaskPriority,
     TaskStatus,
@@ -519,6 +520,7 @@ class ShipmentActionRequest(BaseModel):
 class TransferCreate(BaseModel):
     source_warehouse_code: str = Field(min_length=1, max_length=32)
     destination_warehouse_code: str = Field(min_length=1, max_length=32)
+    transfer_kind: TransferKind = TransferKind.TRANSPORT
     planned_date: date | None = None
     vehicle_number: str | None = Field(default=None, max_length=80)
     actor: str = "system"
@@ -538,6 +540,7 @@ class TransferRead(BaseModel):
     destination_warehouse_id: int
     destination_warehouse_code: str
     destination_warehouse_name: str
+    transfer_kind: TransferKind
     status: TransferStatus
     planned_date: date | None
     vehicle_number: str | None
@@ -617,6 +620,7 @@ class LogisticShipmentRead(BaseModel):
 class LogisticTransferCreate(BaseModel):
     source_warehouse_code: str = Field(min_length=1, max_length=32)
     destination_warehouse_code: str = Field(min_length=1, max_length=32)
+    transfer_kind: TransferKind = TransferKind.TRANSPORT
     planned_date: date | None = None
     vehicle_number: str | None = Field(default=None, max_length=80)
     actor: str = Field(default="system", min_length=1, max_length=80)
@@ -629,6 +633,7 @@ class LogisticTransferRead(BaseModel):
     source_warehouse_code: str
     destination_warehouse_id: int
     destination_warehouse_code: str
+    transfer_kind: TransferKind
     status: TransferStatus
     planned_date: date | None
     vehicle_number: str | None

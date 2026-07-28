@@ -103,6 +103,11 @@ class TransferStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class TransferKind(StrEnum):
+    LOCAL = "local"
+    TRANSPORT = "transport"
+
+
 class InventoryStatus(StrEnum):
     OPEN = "open"
     COMPLETED = "completed"

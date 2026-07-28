@@ -23,6 +23,7 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     ShipmentStatus,
+    TransferKind,
     TransferStatus,
 )
 from app.schemas import (
@@ -216,6 +217,7 @@ def logistic_transfer_payload(db: Session, transfer: LogisticTransfer) -> dict:
         "source_warehouse_code": source.code if source else "",
         "destination_warehouse_id": transfer.destination_warehouse_id,
         "destination_warehouse_code": destination.code if destination else "",
+        "transfer_kind": transfer.transfer_kind,
         "status": transfer.status,
         "planned_date": transfer.planned_date,
         "vehicle_number": transfer.vehicle_number,
@@ -517,8 +519,13 @@ def create_logistic_transfer(
         transfer_uid=generate_logistic_transfer_uid(db),
         source_warehouse_id=source.id,
         destination_warehouse_id=destination.id,
+        transfer_kind=payload.transfer_kind,
         planned_date=payload.planned_date,
-        vehicle_number=(payload.vehicle_number or "").strip() or None,
+        vehicle_number=(
+            (payload.vehicle_number or "").strip() or None
+            if payload.transfer_kind == TransferKind.TRANSPORT
+            else None
+        ),
     )
     db.add(transfer)
     create_event(
@@ -530,6 +537,7 @@ def create_logistic_transfer(
         after={
             "source_warehouse_code": source.code,
             "destination_warehouse_code": destination.code,
+            "transfer_kind": transfer.transfer_kind.value,
             "vehicle_number": transfer.vehicle_number,
         },
     )
@@ -613,7 +621,11 @@ def stage_logistic_transfer(
         link.moved_to_expedition_at = now
         create_event(
             db,
-            operation="logistic_unit_moved_to_transfer_expedition",
+            operation=(
+                "logistic_unit_prepared_for_local_transfer"
+                if transfer.transfer_kind == TransferKind.LOCAL
+                else "logistic_unit_moved_to_transfer_expedition"
+            ),
             object_type="logistic_unit",
             object_uid=unit.uid,
             actor=payload.actor,
@@ -627,7 +639,11 @@ def stage_logistic_transfer(
     transfer.status = TransferStatus.EXPEDITION
     create_event(
         db,
-        operation="logistic_transfer_moved_to_expedition",
+        operation=(
+            "logistic_local_transfer_prepared"
+            if transfer.transfer_kind == TransferKind.LOCAL
+            else "logistic_transfer_moved_to_expedition"
+        ),
         object_type="logistic_transfer",
         object_uid=transfer.transfer_uid,
         actor=payload.actor,
@@ -658,14 +674,23 @@ def load_logistic_transfer_unit(
         raise bad_request("logistic unit does not belong to this transfer")
     if link.status != "expedition" or unit.status != LogisticUnitStatus.EXPEDITION:
         raise bad_request("logistic unit cannot be loaded from its current status")
-    unit.status = LogisticUnitStatus.LOADED
+    is_local = transfer.transfer_kind == TransferKind.LOCAL
+    unit.status = (
+        LogisticUnitStatus.IN_TRANSIT
+        if is_local
+        else LogisticUnitStatus.LOADED
+    )
     unit.current_location_id = None
-    link.status = "loaded"
+    link.status = "in_transit" if is_local else "loaded"
     link.loaded_at = utcnow()
     transfer.status = TransferStatus.LOADING
     create_event(
         db,
-        operation="logistic_unit_loaded_for_transfer",
+        operation=(
+            "logistic_unit_handed_over_for_local_transfer"
+            if is_local
+            else "logistic_unit_loaded_for_transfer"
+        ),
         object_type="logistic_unit",
         object_uid=unit.uid,
         actor=payload.actor,
@@ -675,6 +700,23 @@ def load_logistic_transfer_unit(
             "transfer_uid": transfer.transfer_uid,
         },
     )
+    if is_local:
+        links = logistic_transfer_links(db, transfer.id)
+        if all(item.status == "in_transit" for item in links):
+            transfer.status = TransferStatus.IN_TRANSIT
+            transfer.dispatched_at = utcnow()
+            create_event(
+                db,
+                operation="logistic_local_transfer_started",
+                object_type="logistic_transfer",
+                object_uid=transfer.transfer_uid,
+                actor=payload.actor,
+                reason=payload.reason,
+                after={
+                    "status": transfer.status.value,
+                    "unit_count": len(links),
+                },
+            )
     db.commit()
     db.refresh(transfer)
     return transfer
@@ -686,6 +728,10 @@ def dispatch_logistic_transfer(
     payload: LogisticDocumentActionRequest,
 ) -> LogisticTransfer:
     transfer = get_logistic_transfer(db, transfer_uid, for_update=True)
+    if transfer.transfer_kind == TransferKind.LOCAL:
+        raise bad_request(
+            "local transfer starts automatically after all units are handed over"
+        )
     if transfer.status != TransferStatus.LOADING:
         raise bad_request("transfer can be dispatched only after loading has started")
     links = logistic_transfer_links(db, transfer.id)

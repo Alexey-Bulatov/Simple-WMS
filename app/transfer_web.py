@@ -42,12 +42,19 @@ def transfers_page() -> str:
     a { color: #0b5e58; font-weight: 800; text-decoration: none; }
     .stack { display: grid; gap: 11px; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-    .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .facts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
     .fact { min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; }
     .fact b { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; }
     .fact span { display: block; margin-top: 2px; font-weight: 850; overflow-wrap: anywhere; }
     label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
     input, button, select { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fff; color: var(--text); font: inherit; }
+    .segmented { display: grid; grid-template-columns: 1fr 1fr; }
+    .segmented label { margin: 0; position: relative; }
+    .segmented input { position: absolute; width: 1px; min-height: 1px; opacity: 0; pointer-events: none; }
+    .segmented span { min-height: 40px; display: grid; place-items: center; border: 1px solid var(--line); background: #fff; color: var(--muted); font-size: 13px; font-weight: 850; text-transform: none; cursor: pointer; }
+    .segmented label:first-child span { border-radius: 6px 0 0 6px; }
+    .segmented label:last-child span { margin-left: -1px; border-radius: 0 6px 6px 0; }
+    .segmented input:checked + span { position: relative; z-index: 1; border-color: var(--accent); background: #ecfdf3; color: #0b5e58; }
     button { cursor: pointer; border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 850; }
     button.secondary { background: #f2fbf9; color: #0b5e58; }
     button.danger { border-color: var(--danger); background: var(--danger); }
@@ -80,6 +87,9 @@ def transfers_page() -> str:
     }
     @media (max-width: 640px) {
       .grid2, .facts { grid-template-columns: 1fr; }
+      .segmented { grid-template-columns: 1fr; }
+      .segmented label:first-child span { border-radius: 6px 6px 0 0; }
+      .segmented label:last-child span { margin-top: -1px; margin-left: 0; border-radius: 0 0 6px 6px; }
     }
   </style>
 </head>
@@ -98,8 +108,15 @@ def transfers_page() -> str:
         <div><label for="destinationWarehouse">Куда</label><select id="destinationWarehouse"></select></div>
       </div>
       <div>
+        <label>Вид перемещения</label>
+        <div class="segmented" role="radiogroup" aria-label="Вид перемещения">
+          <label><input type="radio" name="transferKind" value="local" checked><span>Локальное</span></label>
+          <label><input type="radio" name="transferKind" value="transport"><span>Транспортное</span></label>
+        </div>
+      </div>
+      <div id="vehicleField" hidden>
         <label for="vehicleNumber">Автомобиль</label>
-        <input id="vehicleNumber" value="А000АА 77" autocomplete="off">
+        <input id="vehicleNumber" placeholder="Например, А000АА 77" autocomplete="off">
       </div>
       <button id="createBtn">Создать перемещение</button>
       <button id="refreshBtn" class="secondary">Обновить список</button>
@@ -117,8 +134,9 @@ def transfers_page() -> str:
       </div>
       <div class="facts">
         <div class="fact"><b>Документ</b><span id="activeTransfer" class="mono">-</span></div>
+        <div class="fact"><b>Вид</b><span id="activeKind">-</span></div>
         <div class="fact"><b>Статус</b><span id="activeStatus">-</span></div>
-        <div class="fact"><b>Погружено</b><span id="loadedCount">0 / 0</span></div>
+        <div class="fact"><b id="transferProgressLabel">Погружено</b><span id="loadedCount">0 / 0</span></div>
         <div class="fact"><b>Принято</b><span id="receivedCount">0 / 0</span></div>
       </div>
       <div class="grid2">
@@ -155,14 +173,18 @@ def transfers_page() -> str:
       loading: "Погрузка", in_transit: "В пути", receiving: "Приёмка",
       completed: "Завершено", cancelled: "Отменено",
     };
+    const transferKindLabels = { local: "Локальное", transport: "Транспортное" };
     const palletStatusLabels = {
       reserved: "В резерве", expedition: "В зоне отправки", loaded: "Погружена",
       in_transit: "В пути", received: "Принята",
     };
     const operationLabels = {
       transfer_created: "Документ создан",
+      local_transfer_prepared: "Палеты подготовлены к локальной передаче",
+      local_transfer_started: "Локальное перемещение начато",
       transfer_pallet_reserved: "Палета добавлена",
       transfer_moved_to_expedition: "Палеты переданы в зону отправки",
+      transfer_pallet_handed_over: "Палета выдана для локального перемещения",
       transfer_pallet_loaded: "Палета погружена",
       transfer_dispatched: "Машина отправлена",
       transfer_pallet_received: "Палета принята складом назначения",
@@ -173,6 +195,29 @@ def transfers_page() -> str:
     }
     function label(map, value) { return map[value] || value || "-"; }
     function actor() { return $("actor").value.trim() || "transfer-demo"; }
+    function selectedTransferKind() {
+      return document.querySelector('input[name="transferKind"]:checked')?.value || "local";
+    }
+    function isLocal(transfer = state.active) {
+      return (transfer?.transfer_kind || selectedTransferKind()) === "local";
+    }
+    function transferStatusLabel(transfer) {
+      if (!transfer) return "-";
+      if (transfer.transfer_kind === "local") {
+        return {
+          expedition: "К выдаче", loading: "Передача",
+          in_transit: "Перемещается",
+        }[transfer.status] || label(transferStatusLabels, transfer.status);
+      }
+      return label(transferStatusLabels, transfer.status);
+    }
+    function transferUnitStatusLabel(transfer, value) {
+      if (transfer?.transfer_kind === "local" && value === "in_transit") return "Передана";
+      return label(palletStatusLabels, value);
+    }
+    function syncTransferKind() {
+      $("vehicleField").hidden = selectedTransferKind() !== "transport";
+    }
     function setStatus(message, kind = "") {
       $("status").className = `status ${kind}`;
       $("status").textContent = message;
@@ -203,9 +248,9 @@ def transfers_page() -> str:
         <div class="item ${transfer.transfer_uid === state.activeTransferUid ? "active" : ""}">
           <div class="item-head">
             <strong class="mono">${escapeHtml(transfer.transfer_uid)}</strong>
-            <span class="badge ${escapeHtml(transfer.status)}">${escapeHtml(label(transferStatusLabels, transfer.status))}</span>
+            <span class="badge ${escapeHtml(transfer.status)}">${escapeHtml(transferStatusLabel(transfer))}</span>
           </div>
-          <div class="meta">${escapeHtml(transfer.source_warehouse_code)} → ${escapeHtml(transfer.destination_warehouse_code)} · ${transfer.pallet_count} пал.</div>
+          <div class="meta">${escapeHtml(label(transferKindLabels, transfer.transfer_kind))} · ${escapeHtml(transfer.source_warehouse_code)} → ${escapeHtml(transfer.destination_warehouse_code)} · ${transfer.pallet_count} пал.</div>
           <button class="secondary" data-select-transfer="${escapeHtml(transfer.transfer_uid)}">Выбрать</button>
         </div>
       `).join("") || `<div class="item">Перемещений пока нет</div>`;
@@ -234,19 +279,28 @@ def transfers_page() -> str:
     }
     function updateControls() {
       const status = state.active?.status || "";
+      const local = isLocal();
       $("expeditionBtn").disabled = status !== "reserved";
-      $("dispatchBtn").disabled = status !== "loading";
+      $("expeditionBtn").textContent = local ? "Подготовить к передаче" : "В зону отправки";
+      $("dispatchBtn").hidden = local;
+      $("dispatchBtn").disabled = local || status !== "loading";
       const loading = ["expedition", "loading"].includes(status);
       const receiving = ["in_transit", "receiving"].includes(status);
       $("scanInput").disabled = !loading && !receiving;
-      $("scanLabel").textContent = receiving ? "Скан приёмки на складе назначения" : "Скан погрузки";
-      $("scanInput").placeholder = receiving ? "Принятая палета и Enter" : "Погружаемая палета и Enter";
+      $("scanLabel").textContent = receiving
+        ? "Скан приёмки на складе назначения"
+        : (local ? "Скан выдачи" : "Скан погрузки");
+      $("scanInput").placeholder = receiving
+        ? "Принятая палета и Enter"
+        : (local ? "Передаваемая палета и Enter" : "Погружаемая палета и Enter");
+      $("transferProgressLabel").textContent = local ? "Передано" : "Погружено";
       $("destinationWarehouseLink").hidden = status !== "completed";
     }
     async function refreshActive() {
       if (!state.activeTransferUid) {
         state.active = null;
         $("activeTransfer").textContent = "-";
+        $("activeKind").textContent = "-";
         $("activeStatus").textContent = "-";
         $("sourceCode").textContent = "-";
         $("destinationCode").textContent = "-";
@@ -262,7 +316,8 @@ def transfers_page() -> str:
       ]);
       state.active = transfer;
       $("activeTransfer").textContent = transfer.transfer_uid;
-      $("activeStatus").textContent = label(transferStatusLabels, transfer.status);
+      $("activeKind").textContent = label(transferKindLabels, transfer.transfer_kind);
+      $("activeStatus").textContent = transferStatusLabel(transfer);
       $("sourceCode").textContent = transfer.source_warehouse_code;
       $("destinationCode").textContent = transfer.destination_warehouse_code;
       $("loadedCount").textContent = `${transfer.loaded_count} / ${transfer.pallet_count}`;
@@ -275,10 +330,10 @@ def transfers_page() -> str:
           <div class="item">
             <div class="item-head">
               <a class="mono" href="/cards?kind=pallet&code=${encodeURIComponent(row.pallet.pallet_uid)}">${escapeHtml(row.pallet.pallet_uid)}</a>
-              <span class="badge ${escapeHtml(row.transfer_pallet_status)}">${escapeHtml(label(palletStatusLabels, row.transfer_pallet_status))}</span>
+              <span class="badge ${escapeHtml(row.transfer_pallet_status)}">${escapeHtml(transferUnitStatusLabel(transfer, row.transfer_pallet_status))}</span>
             </div>
             <div class="meta">Исходная ячейка: ${escapeHtml(row.source_location_code || "-")} · ${row.pallet.box_count} кор.</div>
-            ${canLoad ? `<button data-load-pallet="${escapeHtml(row.pallet.pallet_uid)}">Погрузить</button>` : ""}
+            ${canLoad ? `<button data-load-pallet="${escapeHtml(row.pallet.pallet_uid)}">${transfer.transfer_kind === "local" ? "Передать" : "Погрузить"}</button>` : ""}
             ${canReceive ? `<button data-receive-pallet="${escapeHtml(row.pallet.pallet_uid)}">Принять</button>` : ""}
           </div>`;
       }).join("") || `<div class="item">Палеты пока не выбраны</div>`;
@@ -315,7 +370,8 @@ def transfers_page() -> str:
       if (!source || !destination || source === destination) throw new Error("Выберите два разных склада");
       const transfer = await post("/api/transfers", {
         actor: actor(), source_warehouse_code: source, destination_warehouse_code: destination,
-        vehicle_number: $("vehicleNumber").value.trim() || null,
+        transfer_kind: selectedTransferKind(),
+        vehicle_number: selectedTransferKind() === "transport" ? ($("vehicleNumber").value.trim() || null) : null,
       });
       state.activeTransferUid = transfer.transfer_uid;
       await refreshAll();
@@ -330,12 +386,17 @@ def transfers_page() -> str:
     async function toExpedition() {
       await post(`/api/transfers/${state.activeTransferUid}/expedition`, { actor: actor() });
       await refreshAll();
-      setStatus("Исходные ячейки освобождены, палеты в зоне отправки", "ok");
+      setStatus(
+        isLocal()
+          ? "Исходные ячейки освобождены, палеты готовы к передаче"
+          : "Исходные ячейки освобождены, палеты в зоне отправки",
+        "ok",
+      );
     }
     async function loadPallet(uid) {
       await post(`/api/transfers/${state.activeTransferUid}/load/${encodeURIComponent(uid)}`, { actor: actor() });
       await refreshAll();
-      setStatus(`Палета погружена: ${uid}`, "ok");
+      setStatus(`${isLocal() ? "Палета передана" : "Палета погружена"}: ${uid}`, "ok");
     }
     async function dispatchTransfer() {
       await post(`/api/transfers/${state.activeTransferUid}/dispatch`, { actor: actor(), reason: "межскладская отправка" });
@@ -351,6 +412,12 @@ def transfers_page() -> str:
     $("refreshBtn").addEventListener("click", () => refreshAll().catch(showError));
     $("refreshAvailableBtn").addEventListener("click", () => refreshAvailable().catch(showError));
     $("sourceWarehouse").addEventListener("change", () => refreshAvailable().catch(showError));
+    document.querySelectorAll('input[name="transferKind"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        syncTransferKind();
+        updateControls();
+      });
+    });
     $("expeditionBtn").addEventListener("click", () => toExpedition().catch(showError));
     $("dispatchBtn").addEventListener("click", () => dispatchTransfer().catch(showError));
     $("scanInput").addEventListener("keydown", (event) => {
@@ -362,6 +429,7 @@ def transfers_page() -> str:
       const receiving = ["in_transit", "receiving"].includes(state.active?.status);
       (receiving ? receivePallet(uid) : loadPallet(uid)).catch(showError);
     });
+    syncTransferKind();
     loadWarehouses().then(refreshAll).then(focusScan).catch(showError);
   </script>
 </body>

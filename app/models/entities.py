@@ -30,6 +30,7 @@ from app.models.enums import (
     LogisticUnitStatus,
     PalletStatus,
     ShipmentStatus,
+    TransferKind,
     TransferStatus,
     TaskPriority,
     TaskStatus,
@@ -369,6 +370,11 @@ class LogisticTransfer(Base):
     transfer_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     source_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
     destination_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    transfer_kind: Mapped[TransferKind] = mapped_column(
+        Enum(TransferKind, native_enum=False, length=32),
+        default=TransferKind.TRANSPORT,
+        index=True,
+    )
     status: Mapped[TransferStatus] = mapped_column(
         Enum(TransferStatus, native_enum=False, length=32),
         default=TransferStatus.DRAFT,
@@ -680,6 +686,11 @@ class WarehouseTransfer(Base):
     transfer_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     source_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
     destination_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    transfer_kind: Mapped[TransferKind] = mapped_column(
+        Enum(TransferKind, native_enum=False, length=32),
+        default=TransferKind.TRANSPORT,
+        index=True,
+    )
     status: Mapped[TransferStatus] = mapped_column(Enum(TransferStatus), default=TransferStatus.DRAFT, index=True)
     planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     vehicle_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
