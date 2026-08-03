@@ -206,7 +206,7 @@ def test_equipment_profile_stores_network_connection_and_switches_default(db):
             manufacturer="АТОЛ",
             model="ТТ42 / HPRT XT100",
             connection_type=EquipmentConnection.RAW_TCP,
-            host="192.168.10.204",
+            host="192.0.2.204",
             port=9100,
             driver_code="tspl_bitmap_47x25",
             parameters={"label_width_mm": 47, "label_height_mm": 25},

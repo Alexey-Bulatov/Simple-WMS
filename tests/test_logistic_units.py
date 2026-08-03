@@ -389,6 +389,59 @@ def test_logistic_unit_api_lifecycle(db):
         app.dependency_overrides.clear()
 
 
+def test_universal_cards_resolve_units_locations_and_history(db):
+    warehouse, receiving, storage, _ = warehouse_layout(db)
+    unit = create_named_unit(db, "PALLET", "PLT-CARD-001")
+    accept_logistic_unit(
+        db,
+        unit.uid,
+        LogisticUnitAcceptRequest(
+            location_code=receiving.code,
+            actor="receiver",
+        ),
+    )
+    close_logistic_unit(db, unit.uid, LogisticUnitActionRequest(actor="receiver"))
+    place_logistic_unit(
+        db,
+        unit.uid,
+        LogisticUnitLocationRequest(
+            location_code=storage.code,
+            actor="storekeeper",
+        ),
+    )
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            resolved = client.get(f"/api/cards/resolve/{unit.uid.lower()}")
+            assert resolved.status_code == 200
+            assert resolved.json() == {
+                "kind": "unit",
+                "code": unit.uid,
+                "url": f"/cards?kind=unit&code={unit.uid}",
+            }
+
+            events = client.get(f"/api/logistic-units/{unit.uid}/events")
+            assert events.status_code == 200
+            assert events.json()[0]["operation"] == "logistic_unit_placed"
+
+            location = client.get(f"/api/cards/locations/{storage.code}")
+            assert location.status_code == 200
+            assert location.json()["logistic_units"][0]["uid"] == unit.uid
+
+            listed = client.get(
+                "/api/logistic-units",
+                params={"warehouse_code": warehouse.code},
+            )
+            assert listed.status_code == 200
+            assert [row["uid"] for row in listed.json()] == [unit.uid]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_accept_place_and_move_logistic_unit(db):
     _, receiving, first, second = warehouse_layout(db)
     unit = create_named_unit(db, "IBC", "IBC-FLOW-001")

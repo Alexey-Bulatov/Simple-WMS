@@ -831,6 +831,7 @@ def api_list_logistic_units(
     type_id: int | None = Query(default=None),
     unit_status: LogisticUnitStatus | None = Query(default=None, alias="status"),
     parent_uid: str | None = Query(default=None),
+    warehouse_code: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     query = select(LogisticUnit)
@@ -841,6 +842,19 @@ def api_list_logistic_units(
     if parent_uid is not None:
         parent = get_logistic_unit(db, parent_uid)
         query = query.where(LogisticUnit.parent_unit_id == parent.id)
+    if warehouse_code is not None:
+        warehouse = db.scalar(
+            select(Warehouse).where(
+                func.upper(Warehouse.code) == warehouse_code.strip().upper()
+            )
+        )
+        if warehouse is None:
+            raise not_found("warehouse")
+        query = query.where(
+            LogisticUnit.current_location_id.in_(
+                select(Location.id).where(Location.warehouse_id == warehouse.id)
+            )
+        )
     return [
         logistic_unit_payload(db, item)
         for item in db.scalars(query.order_by(LogisticUnit.created_at.desc(), LogisticUnit.uid))
@@ -850,6 +864,26 @@ def api_list_logistic_units(
 @router.get("/logistic-units/{uid}", response_model=LogisticUnitRead)
 def api_get_logistic_unit(uid: str, db: Session = Depends(get_db)) -> dict:
     return logistic_unit_payload(db, get_logistic_unit(db, uid))
+
+
+@router.get("/logistic-units/{uid}/events", response_model=list[EventRead])
+def api_logistic_unit_events(
+    uid: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[OperationEvent]:
+    unit = get_logistic_unit(db, uid)
+    return list(
+        db.scalars(
+            select(OperationEvent)
+            .where(
+                OperationEvent.object_type == "logistic_unit",
+                OperationEvent.object_uid == unit.uid,
+            )
+            .order_by(OperationEvent.created_at.desc())
+            .limit(limit)
+        )
+    )
 
 
 @router.post("/logistic-units/{uid}/accept", response_model=LogisticUnitRead)
@@ -1995,7 +2029,15 @@ def api_list_events(
 
 @router.get("/cards/resolve/{code}")
 def api_resolve_card(code: str, db: Session = Depends(get_db)) -> dict:
-    normalized = code.strip()
+    normalized = code.strip().upper()
+    if db.scalar(
+        select(LogisticUnit.id).where(func.upper(LogisticUnit.uid) == normalized)
+    ):
+        return {
+            "kind": "unit",
+            "code": normalized,
+            "url": f"/cards?kind=unit&code={normalized}",
+        }
     if db.scalar(select(Pallet.id).where(Pallet.pallet_uid == normalized)):
         return {"kind": "pallet", "code": normalized, "url": f"/cards?kind=pallet&code={normalized}"}
     if db.scalar(select(Box.id).where(Box.box_uid == normalized)):
@@ -2115,6 +2157,16 @@ def api_location_card(location_code: str, db: Session = Depends(get_db)) -> dict
             .order_by(Pallet.created_at.desc())
         )
     )
+    logistic_units = list(
+        db.scalars(
+            select(LogisticUnit)
+            .where(
+                LogisticUnit.current_location_id == location.id,
+                LogisticUnit.parent_unit_id.is_(None),
+            )
+            .order_by(LogisticUnit.created_at.desc())
+        )
+    )
     recent_events = db.scalars(select(OperationEvent).order_by(OperationEvent.created_at.desc()).limit(500))
     events = []
     for event in recent_events:
@@ -2135,6 +2187,9 @@ def api_location_card(location_code: str, db: Session = Depends(get_db)) -> dict
                 "batch_number": batch_number(db, pallet.batch_id),
             }
             for pallet in pallets
+        ],
+        "logistic_units": [
+            logistic_unit_payload(db, unit) for unit in logistic_units
         ],
         "events": events,
         "pdf_url": f"/api/locations/{location.code}/label.pdf",

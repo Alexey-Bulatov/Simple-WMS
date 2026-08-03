@@ -1157,157 +1157,66 @@ def test_object_cards_api_returns_pallet_box_and_location_cards(db):
 
         page = client.get(f"/cards?kind=pallet&code={pallet.pallet_uid}")
         assert page.status_code == 200
-        assert "Карточка объекта" in page.text
+        assert "Поиск объекта" in page.text
     finally:
         app.dependency_overrides.clear()
 
 
-def test_terminal_page_contains_compact_workflows():
-    from app.web import terminal_page
+def test_simple_wms_pages_use_universal_operator_shell():
+    from app.universal_web import cards_page, root, tasks, terminal_page, work_page
 
-    page = terminal_page()
-
-    assert "Эмулятор экрана ТСД" in page
-    assert 'id="modeTasks" class="active"' in page
-    assert 'id="tasksView" class="view active"' in page
-    assert 'id="taskActor"' in page
-    assert 'id="taskWarehouse"' in page
-    assert 'id="taskList"' in page
-    assert 'id="warehouseView"' in page
-    assert 'id="inventoryView"' in page
-    assert 'id="transferView"' in page
-    assert 'id="shippingView"' in page
-    assert 'post("/api/tasks/sync"' in page
-    assert 'query.set("include_unassigned", "true")' in page
-    assert '/start`' in page
-    assert "async function finishActiveTask" in page
-    assert "Следующее:" in page
-    assert 'updated.status === "completed"' in page
-    assert ".app-header.desktop-header { display: none; }" in page
-    assert 'class="device"' in page
-
-
-def test_scan_page_has_warehouse_switch_and_map_link():
-    from app.web import scan_page
-
-    page = scan_page()
-
-    assert 'id="warehouseSelect"' in page
-    assert 'id="warehouseMapLink"' in page
-    assert "Карта склада" in page
-    assert "function switchWarehouse" in page
-
-
-def test_workplace_is_default_and_keeps_technical_mode_available():
-    from app.web import root
-    from app.work_web import tech_page, work_page
-
-    response = root()
-    assert response.status_code in {302, 307}
-    assert response.headers["location"] == "/work"
+    assert root().headers["location"] == "/work"
+    assert tasks().headers["location"] == "/work"
 
     workplace = work_page()
-    assert 'id="workWarehouse"' in workplace
-    assert 'id="moveWarehouse"' in workplace
-    assert 'id="moveWarehouseContext"' in workplace
-    assert "function changeWarehouse" in workplace
-    assert 'id="workActor"' in workplace
-    assert 'data-operation="tasks"' in workplace
-    assert 'data-operation="build"' in workplace
-    assert 'data-operation="place"' in workplace
-    assert 'data-operation="move"' in workplace
-    assert 'data-operation="ship"' in workplace
-    assert 'data-operation="inventory"' in workplace
-    assert 'data-operation="transfer"' in workplace
-    assert 'href="/tech"' in workplace
-    assert 'post("/api/pallets"' in workplace
-    assert '/boxes/${encodeURIComponent(boxUid)}' in workplace
-    assert '/place`' in workplace
-    assert '/move`' in workplace
-    assert 'post("/api/shipments"' in workplace
-    assert '/expedition`' in workplace
-    assert '/load/${encodeURIComponent(palletUid)}`' in workplace
-    assert '/close`' in workplace
-    assert 'post("/api/inventories"' in workplace
-    assert '/scan-location`' in workplace
-    assert '/confirm-location`' in workplace
-    assert '/complete`' in workplace
-    assert 'post("/api/transfers"' in workplace
-    assert '/transfers/${encodeURIComponent(state.transfer.transfer_uid)}/expedition`' in workplace
-    assert '/load/${encodeURIComponent(palletUid)}`' in workplace
-    assert '/dispatch`' in workplace
-    assert '/receive/${encodeURIComponent(palletUid)}`' in workplace
-    assert 'id="placeTransferBtn"' in workplace
-    assert 'post("/api/tasks/sync"' in workplace
-    assert '/tasks/${encodeURIComponent(taskUid)}/start`' in workplace
-    assert '/tasks/${encodeURIComponent(taskUid)}/complete`' in workplace
-    assert 'id="taskPriority"' in workplace
-
-    technical = tech_page()
-    assert "Все функции системы" in technical
-    assert 'href="/tasks"' in technical
-    assert 'href="/work"' in technical
-    assert 'href="/scan"' in technical
-    assert 'href="/catalog"' in technical
+    terminal = terminal_page()
+    cards = cards_page()
+    for page in (workplace, terminal):
+        assert 'id="warehouseSelect"' in page
+        assert 'id="actorInput"' in page
+        assert 'id="taskList"' in page
+        assert 'id="scanInput"' in page
+        assert "/static/universal-console.js" in page
+    assert 'class="terminal-device"' in terminal
+    assert "WMS · Wi-Fi · 87%" in terminal
+    assert "Поиск объекта" in cards
+    assert 'data-card-kind="unit"' in cards
+    assert "/static/universal-cards.js" in cards
 
 
-def test_task_dispatcher_page_has_queue_assignment_and_history():
-    from app.task_web import tasks_page
+def test_operator_javascript_uses_only_universal_warehouse_contracts():
+    from pathlib import Path
 
-    page = tasks_page()
+    static_dir = Path(__file__).parents[1] / "app" / "static"
+    console = (static_dir / "universal-console.js").read_text()
+    cards = (static_dir / "universal-cards.js").read_text()
 
-    assert "Диспетчер заданий" in page
-    assert 'id="warehouseFilter"' in page
-    assert 'id="createForm"' in page
-    assert 'id="taskAssignee"' in page
-    assert 'id="taskList"' in page
-    assert 'id="detailPanel"' in page
-    assert 'id="historyList"' in page
-    assert 'post("/api/tasks"' in page
-    assert '/assign`' in page
-    assert '/${endpoint}`' in page
-    assert '/events?limit=50' in page
+    assert "/api/logistic-tasks/sync" in console
+    assert "/api/logistic-units/" in console
+    assert "/api/logistic-shipments/" in console
+    assert "/api/logistic-transfers/" in console
+    assert "/api/logistic-inventories/" in console
+    assert "/api/tasks" not in console
+    assert "/api/pallets" not in console
+    assert "/api/boxes" not in console
+    assert "/api/logistic-units/" in cards
+    assert "/api/logistic-tasks?object_uid=" in cards
 
 
-def test_pages_use_one_stable_navigation_header():
-    from app.map_web import map_page
-    from app.task_web import tasks_page
-    from app.transfer_web import transfers_page
-    from app.web import cards_page, catalog_page, inventory_page, scan_page, shipments_page, terminal_page
+def test_simple_wms_pages_have_one_stable_navigation():
+    from app.universal_web import cards_page, terminal_page, work_page
 
     pages = {
-        "scan": scan_page(),
+        "work": work_page(),
         "terminal": terminal_page(),
-        "map": map_page(),
-        "transfers": transfers_page(),
-        "shipments": shipments_page(),
-        "inventory": inventory_page(),
-        "catalog": catalog_page(),
         "cards": cards_page(),
-        "tasks": tasks_page(),
     }
-    expected_links = [
-        "/scan",
-        "/transfers",
-        "/shipments",
-        "/inventory",
-        "/tasks",
-        "/work",
-        "/terminal",
-        "/map",
-        "/catalog",
-        "/cards",
-        "/docs",
-    ]
-
+    expected_links = ["/work", "/terminal", "/cards", "/docs"]
     for active, page in pages.items():
-        assert page.count('class="app-header') == 1
-        assert page.count('class="app-nav"') == 1
-        assert f'data-page="{active}"' in page
+        assert page.count('class="product-header') == 1
         assert f'class="active" href="/{active}"' in page
-        assert [page.index(f'href="{href}"') for href in expected_links] == sorted(
-            page.index(f'href="{href}"') for href in expected_links
-        )
+        indexes = [page.index(f'href="{href}"') for href in expected_links]
+        assert indexes == sorted(indexes)
 
 
 def test_map_setup_creates_real_sandbox_warehouse_and_locations(db):

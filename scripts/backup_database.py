@@ -26,14 +26,14 @@ def main() -> None:
     if not url.database:
         raise RuntimeError("DATABASE_URL has no database name")
 
-    backup_dir = Path(os.getenv("WMS_BACKUP_DIR", "/var/backups/wms-pilot"))
+    backup_dir = Path(os.getenv("WMS_BACKUP_DIR", "/var/backups/simple-wms"))
     retention_days = int(os.getenv("WMS_BACKUP_RETENTION_DAYS", "14"))
     if retention_days < 1:
         raise RuntimeError("WMS_BACKUP_RETENTION_DAYS must be positive")
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc)
-    filename = f"wms-pilot-{now:%Y%m%dT%H%M%SZ}.dump"
+    filename = f"simple-wms-{now:%Y%m%dT%H%M%SZ}.dump"
     final_path = backup_dir / filename
     temporary_path = backup_dir / f".{filename}.tmp"
     lock_path = backup_dir / ".backup.lock"
@@ -71,7 +71,7 @@ def main() -> None:
 
         cutoff = now - timedelta(days=retention_days)
         removed = 0
-        for old_backup in backup_dir.glob("wms-pilot-*.dump"):
+        for old_backup in backup_dir.glob("simple-wms-*.dump"):
             if datetime.fromtimestamp(old_backup.stat().st_mtime, timezone.utc) < cutoff:
                 old_backup.unlink()
                 removed += 1

@@ -1,1 +1,1 @@
-"""Operational scripts for WMS Pilot."""
+"""Operational scripts for Simple WMS."""

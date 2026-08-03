@@ -2,16 +2,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import get_settings
 from app.db.session import init_db
-from app.map_web import router as map_web_router
-from app.settings_web import router as settings_web_router
-from app.task_web import router as task_web_router
-from app.transfer_web import router as transfer_web_router
-from app.web import router as web_router
-from app.work_web import router as work_web_router
+from app.universal_web import router as universal_web_router
 
 settings = get_settings()
 
@@ -31,9 +27,5 @@ def health() -> dict[str, str]:
 
 
 app.include_router(router)
-app.include_router(web_router)
-app.include_router(work_web_router)
-app.include_router(map_web_router)
-app.include_router(settings_web_router)
-app.include_router(transfer_web_router)
-app.include_router(task_web_router)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.include_router(universal_web_router)

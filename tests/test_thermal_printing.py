@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app import thermal_printing
 from app.labels import LabelItem
 from app.thermal_printing import (
@@ -51,10 +53,19 @@ def test_print_label_sends_tspl_directly_to_printer_socket(monkeypatch):
             sent.append(payload)
 
     def fake_connection(destination, timeout):
-        assert destination == ("192.168.10.204", 9100)
+        assert destination == ("192.0.2.204", 9100)
         assert timeout == 3
         return FakePrinter()
 
+    monkeypatch.setattr(
+        thermal_printing,
+        "get_settings",
+        lambda: SimpleNamespace(
+            thermal_printer_host="192.0.2.204",
+            thermal_printer_port=9100,
+            thermal_printer_queue="ATOL_TT42",
+        ),
+    )
     monkeypatch.setattr(thermal_printing.socket, "create_connection", fake_connection)
 
     result = print_thermal_label(item)
