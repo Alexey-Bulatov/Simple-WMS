@@ -320,6 +320,9 @@ def create_logistic_shipment(
             "destination": shipment.destination,
         },
     )
+    from app.logistic_tasks import sync_logistic_shipment_tasks
+
+    sync_logistic_shipment_tasks(db, shipment, actor=payload.actor)
     db.commit()
     db.refresh(shipment)
     return shipment
@@ -498,6 +501,9 @@ def close_logistic_shipment(
         reason=payload.reason,
         after={"status": shipment.status.value, "unit_count": len(links)},
     )
+    from app.logistic_tasks import sync_logistic_shipment_tasks
+
+    sync_logistic_shipment_tasks(db, shipment, actor=payload.actor)
     db.commit()
     db.refresh(shipment)
     return shipment
@@ -541,6 +547,9 @@ def create_logistic_transfer(
             "vehicle_number": transfer.vehicle_number,
         },
     )
+    from app.logistic_tasks import sync_logistic_transfer_tasks
+
+    sync_logistic_transfer_tasks(db, transfer, actor=payload.actor)
     db.commit()
     db.refresh(transfer)
     return transfer
@@ -717,6 +726,9 @@ def load_logistic_transfer_unit(
                     "unit_count": len(links),
                 },
             )
+    from app.logistic_tasks import sync_logistic_transfer_tasks
+
+    sync_logistic_transfer_tasks(db, transfer, actor=payload.actor)
     db.commit()
     db.refresh(transfer)
     return transfer
@@ -766,6 +778,9 @@ def dispatch_logistic_transfer(
         reason=payload.reason,
         after={"status": transfer.status.value, "unit_count": len(links)},
     )
+    from app.logistic_tasks import sync_logistic_transfer_tasks
+
+    sync_logistic_transfer_tasks(db, transfer, actor=payload.actor)
     db.commit()
     db.refresh(transfer)
     return transfer
@@ -839,6 +854,9 @@ def receive_logistic_transfer_unit(
             "transfer_uid": transfer.transfer_uid,
         },
     )
+    from app.logistic_tasks import sync_logistic_transfer_tasks
+
+    sync_logistic_transfer_tasks(db, transfer, actor=payload.actor)
     db.commit()
     db.refresh(transfer)
     return transfer

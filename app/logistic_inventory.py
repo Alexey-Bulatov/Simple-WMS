@@ -311,6 +311,9 @@ def start_logistic_inventory(
             "expected_count": len(units),
         },
     )
+    from app.logistic_tasks import sync_logistic_inventory_tasks
+
+    sync_logistic_inventory_tasks(db, inventory, actor=payload.actor)
     commit_or_409(db, "warehouse inventory conflicts with an existing document")
     db.refresh(inventory)
     return inventory
@@ -613,6 +616,9 @@ def complete_logistic_inventory(
             "unresolved_problem_count": payload["unresolved_problem_count"],
         },
     )
+    from app.logistic_tasks import sync_logistic_inventory_tasks
+
+    sync_logistic_inventory_tasks(db, inventory, actor=actor)
     db.commit()
     db.refresh(inventory)
     return inventory

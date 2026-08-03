@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -23,9 +23,11 @@ from app.logistic_tasks import (
 from app.main import app
 from app.models.entities import (
     LogisticShipment,
+    LogisticTask,
     LogisticTransfer,
     LogisticUnit,
     LogisticUnitType,
+    OperationEvent,
 )
 from app.models.enums import (
     LocationKind,
@@ -39,6 +41,7 @@ from app.schemas import (
     LogisticInventoryLocationRequest,
     LogisticInventoryStartRequest,
     LogisticTaskCreate,
+    LogisticUnitAcceptRequest,
     LogisticUnitActionRequest,
     LogisticUnitCreate,
     LogisticUnitLocationRequest,
@@ -47,6 +50,7 @@ from app.schemas import (
     ZoneCreate,
 )
 from app.services import (
+    accept_logistic_unit,
     close_logistic_unit,
     create_location,
     create_logistic_unit,
@@ -122,6 +126,26 @@ def open_unit(db, uid: str) -> LogisticUnit:
     )
 
 
+def receiving_location(db, warehouse) -> object:
+    zone = create_zone(
+        db,
+        ZoneCreate(
+            warehouse_id=warehouse.id,
+            code="RCV",
+            name="Приёмка",
+            kind=LocationKind.RECEIVING,
+        ),
+    )
+    return create_location(
+        db,
+        LocationCreate(
+            warehouse_id=warehouse.id,
+            zone_id=zone.id,
+            code=f"{warehouse.code}-RCV-01",
+            kind=LocationKind.RECEIVING,
+            capacity_pallets=10,
+        ),
+    )
 def closed_unit(db, uid: str) -> LogisticUnit:
     unit = open_unit(db, uid)
     return close_logistic_unit(
@@ -281,6 +305,119 @@ def test_duplicate_active_task_and_cancel_reopen_lifecycle(db):
     assert task.status == TaskStatus.NEW
     assert task.started_at is None
     assert task.completed_at is None
+
+
+def test_unit_operations_generate_and_advance_tasks(db):
+    warehouse, storage, _ = warehouse_layout(db)
+    receiving = receiving_location(db, warehouse)
+    unit = open_unit(db, "PLT-AUTO-001")
+
+    accept_logistic_unit(
+        db,
+        unit.uid,
+        LogisticUnitAcceptRequest(
+            location_code=receiving.code,
+            actor="receiver",
+        ),
+    )
+    build_task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == unit.uid,
+            LogisticTask.task_type == TaskType.BUILD,
+        )
+    )
+    assert build_task is not None
+    assert build_task.status == TaskStatus.NEW
+    assert build_task.parameters["generated_automatically"] is True
+
+    close_logistic_unit(
+        db,
+        unit.uid,
+        LogisticUnitActionRequest(actor="receiver"),
+    )
+    place_task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == unit.uid,
+            LogisticTask.task_type == TaskType.PLACE,
+        )
+    )
+    assert build_task.status == TaskStatus.COMPLETED
+    assert place_task is not None
+    assert place_task.status == TaskStatus.NEW
+
+    place_logistic_unit(
+        db,
+        unit.uid,
+        LogisticUnitLocationRequest(
+            location_code=storage.code,
+            actor="storekeeper",
+        ),
+    )
+    assert place_task.status == TaskStatus.COMPLETED
+    operations = set(
+        db.scalars(
+            select(OperationEvent.operation).where(
+                OperationEvent.object_type == "logistic_task"
+            )
+        )
+    )
+    assert "logistic_task_created_automatically" in operations
+    assert "logistic_task_completed_automatically" in operations
+
+
+def test_logistic_task_sync_is_idempotent_for_existing_documents(db):
+    warehouse, _, _ = warehouse_layout(db)
+    shipment = LogisticShipment(
+        shipment_uid="SHP-AUTO-SYNC",
+        warehouse_id=warehouse.id,
+        customer_name="Получатель",
+        destination="Москва",
+    )
+    db.add(shipment)
+    db.commit()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            for _ in range(2):
+                response = client.post(
+                    "/api/logistic-tasks/sync",
+                    json={"warehouse_code": "WH-A", "actor": "dispatcher"},
+                )
+                assert response.status_code == 200
+                assert [
+                    item["object_uid"]
+                    for item in response.json()
+                    if item["object_uid"] == shipment.shipment_uid
+                ] == [shipment.shipment_uid]
+            shipment.status = ShipmentStatus.COMPLETED
+            db.commit()
+            response = client.post(
+                "/api/logistic-tasks/sync",
+                json={"warehouse_code": "WH-A", "actor": "dispatcher"},
+            )
+            assert response.status_code == 200
+            assert shipment.shipment_uid not in {
+                item["object_uid"] for item in response.json()
+            }
+    finally:
+        app.dependency_overrides.clear()
+
+    count = db.scalar(
+        select(func.count(LogisticTask.id)).where(
+            LogisticTask.object_uid == shipment.shipment_uid
+        )
+    )
+    assert count == 1
+    task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == shipment.shipment_uid
+        )
+    )
+    assert task.status == TaskStatus.COMPLETED
 
 
 def test_inventory_task_waits_for_universal_inventory(db):

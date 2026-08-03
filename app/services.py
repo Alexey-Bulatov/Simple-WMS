@@ -552,6 +552,9 @@ def accept_logistic_unit(
             "accepted_at": item.accepted_at.isoformat(),
         },
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item
@@ -768,6 +771,9 @@ def close_logistic_unit(
         before={"status": LogisticUnitStatus.OPEN.value},
         after={"status": LogisticUnitStatus.CLOSED.value},
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item
@@ -797,6 +803,9 @@ def reopen_logistic_unit(
         before={"status": LogisticUnitStatus.CLOSED.value},
         after={"status": LogisticUnitStatus.OPEN.value},
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item
@@ -841,6 +850,9 @@ def hold_logistic_unit(
             "status_before_hold": item.status_before_hold,
         },
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item
@@ -882,6 +894,9 @@ def release_logistic_unit(
         before={"status": before_status.value},
         after={"status": restored_status.value},
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item
@@ -932,6 +947,9 @@ def place_logistic_unit(
             "location_code": location.code,
         },
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item
@@ -977,6 +995,9 @@ def move_logistic_unit(
         },
         after={"location_id": location.id, "location_code": location.code},
     )
+    from app.logistic_tasks import sync_logistic_unit_tasks
+
+    sync_logistic_unit_tasks(db, item, actor=payload.actor)
     db.commit()
     db.refresh(item)
     return item

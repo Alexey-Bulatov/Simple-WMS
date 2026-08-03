@@ -20,11 +20,18 @@ from app.logistic_documents import (
     stage_logistic_transfer,
 )
 from app.main import app
-from app.models.entities import LogisticUnit, LogisticUnitType, OperationEvent
+from app.models.entities import (
+    LogisticTask,
+    LogisticUnit,
+    LogisticUnitType,
+    OperationEvent,
+)
 from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     ShipmentStatus,
+    TaskStatus,
+    TaskType,
     TransferKind,
     TransferStatus,
 )
@@ -132,6 +139,14 @@ def test_logistic_shipment_requires_complete_loading(db):
             actor="dispatcher",
         ),
     )
+    shipment_task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == shipment.shipment_uid,
+            LogisticTask.task_type == TaskType.SHIP,
+        )
+    )
+    assert shipment_task is not None
+    assert shipment_task.status == TaskStatus.NEW
 
     for unit in (first, second):
         reserve_unit_for_logistic_shipment(
@@ -176,6 +191,7 @@ def test_logistic_shipment_requires_complete_loading(db):
     assert first.status == LogisticUnitStatus.SHIPPED
     assert second.status == LogisticUnitStatus.SHIPPED
     assert first.current_location_id is None
+    assert shipment_task.status == TaskStatus.COMPLETED
     operations = set(
         db.scalars(
             select(OperationEvent.operation).where(
@@ -204,6 +220,14 @@ def test_logistic_transfer_finishes_at_destination_receiving(db):
             actor="dispatcher",
         ),
     )
+    dispatch_task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == transfer.transfer_uid,
+            LogisticTask.task_type == TaskType.TRANSFER,
+        )
+    )
+    assert dispatch_task is not None
+    assert dispatch_task.parameters["phase"] == "dispatch"
 
     reserve_unit_for_logistic_transfer(
         db,
@@ -228,6 +252,15 @@ def test_logistic_transfer_finishes_at_destination_receiving(db):
         transfer.transfer_uid,
         LogisticDocumentActionRequest(actor="loader"),
     )
+    receive_task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == transfer.transfer_uid,
+            LogisticTask.status == TaskStatus.NEW,
+        )
+    )
+    assert dispatch_task.status == TaskStatus.COMPLETED
+    assert receive_task is not None
+    assert receive_task.parameters["phase"] == "receive"
 
     with pytest.raises(
         HTTPException,
@@ -248,6 +281,7 @@ def test_logistic_transfer_finishes_at_destination_receiving(db):
     )
 
     assert transfer.status == TransferStatus.COMPLETED
+    assert receive_task.status == TaskStatus.COMPLETED
     assert transfer.dispatched_at is not None
     assert transfer.completed_at is not None
     assert unit.status == LogisticUnitStatus.CLOSED

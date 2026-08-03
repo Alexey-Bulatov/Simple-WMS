@@ -288,6 +288,9 @@ def validate_document_task(
 def create_logistic_task(
     db: Session,
     payload: LogisticTaskCreate,
+    *,
+    commit: bool = True,
+    automatic: bool = False,
 ) -> LogisticTask:
     warehouse = db.scalar(
         select(Warehouse)
@@ -321,13 +324,17 @@ def create_logistic_task(
             parameters=parameters,
         )
     duplicate = db.scalar(
-        select(LogisticTask.id).where(
+        select(LogisticTask).where(
             LogisticTask.task_type == payload.task_type,
             LogisticTask.object_uid == object_uid,
             LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
         )
     )
     if duplicate is not None:
+        if not automatic and (duplicate.parameters or {}).get(
+            "generated_automatically"
+        ):
+            return duplicate
         raise bad_request("object already has an active task of this type")
     task = LogisticTask(
         task_uid=generate_logistic_task_uid(db),
@@ -345,7 +352,11 @@ def create_logistic_task(
     db.add(task)
     create_event(
         db,
-        operation="logistic_task_created",
+        operation=(
+            "logistic_task_created_automatically"
+            if automatic
+            else "logistic_task_created"
+        ),
         object_type="logistic_task",
         object_uid=task.task_uid,
         actor=payload.actor,
@@ -359,8 +370,11 @@ def create_logistic_task(
             "assigned_to": task.assigned_to,
         },
     )
-    commit_or_409(db, "logistic task identifier conflicts with existing data")
-    db.refresh(task)
+    if commit:
+        commit_or_409(db, "logistic task identifier conflicts with existing data")
+        db.refresh(task)
+    else:
+        db.flush()
     return task
 
 
@@ -469,6 +483,432 @@ def task_operation_is_complete(db: Session, task: LogisticTask) -> bool:
             }
         return transfer.status == TransferStatus.COMPLETED
     return False
+
+
+def active_logistic_task(
+    db: Session,
+    *,
+    task_type: TaskType,
+    object_uid: str,
+    phase: str | None = None,
+) -> LogisticTask | None:
+    tasks = list(
+        db.scalars(
+            select(LogisticTask)
+            .where(
+                LogisticTask.task_type == task_type,
+                LogisticTask.object_uid == object_uid.strip().upper(),
+                LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+            )
+            .order_by(LogisticTask.created_at)
+        )
+    )
+    if phase is None:
+        return tasks[0] if tasks else None
+    return next(
+        (
+            task
+            for task in tasks
+            if str((task.parameters or {}).get("phase") or "") == phase
+        ),
+        None,
+    )
+
+
+def complete_logistic_task_automatically(
+    db: Session,
+    task: LogisticTask,
+    *,
+    actor: str,
+) -> LogisticTask:
+    if task.status not in ACTIVE_TASK_STATUSES:
+        return task
+    before = {"status": task.status.value, "assigned_to": task.assigned_to}
+    task.status = TaskStatus.COMPLETED
+    task.completed_at = utcnow()
+    create_event(
+        db,
+        operation="logistic_task_completed_automatically",
+        object_type="logistic_task",
+        object_uid=task.task_uid,
+        actor=actor,
+        before=before,
+        after={
+            "status": task.status.value,
+            "assigned_to": task.assigned_to,
+            "object_status": task_object_status(db, task),
+        },
+    )
+    return task
+
+
+def cancel_logistic_task_automatically(
+    db: Session,
+    task: LogisticTask,
+    *,
+    actor: str,
+) -> LogisticTask:
+    if task.status not in ACTIVE_TASK_STATUSES:
+        return task
+    before = {"status": task.status.value, "assigned_to": task.assigned_to}
+    task.status = TaskStatus.CANCELLED
+    task.completed_at = utcnow()
+    create_event(
+        db,
+        operation="logistic_task_cancelled_automatically",
+        object_type="logistic_task",
+        object_uid=task.task_uid,
+        actor=actor,
+        before=before,
+        after={"status": task.status.value},
+    )
+    return task
+
+
+def ensure_logistic_task(
+    db: Session,
+    *,
+    warehouse_code: str,
+    task_type: TaskType,
+    object_uid: str,
+    actor: str,
+    priority: TaskPriority = TaskPriority.NORMAL,
+    title: str | None = None,
+    parameters: dict | None = None,
+) -> LogisticTask:
+    db.flush()
+    normalized_parameters = dict(parameters or {})
+    phase = (
+        str(normalized_parameters.get("phase") or "") or None
+        if task_type == TaskType.TRANSFER
+        else None
+    )
+    existing = active_logistic_task(
+        db,
+        task_type=task_type,
+        object_uid=object_uid,
+        phase=phase,
+    )
+    if existing is not None:
+        return existing
+    normalized_parameters["generated_automatically"] = True
+    return create_logistic_task(
+        db,
+        LogisticTaskCreate(
+            warehouse_code=warehouse_code,
+            task_type=task_type,
+            priority=priority,
+            title=title,
+            object_uid=object_uid,
+            parameters=normalized_parameters,
+            actor=actor,
+        ),
+        commit=False,
+        automatic=True,
+    )
+
+
+def sync_logistic_unit_tasks(
+    db: Session,
+    unit: LogisticUnit,
+    *,
+    actor: str,
+) -> None:
+    if unit.parent_unit_id is not None:
+        return
+    db.flush()
+    location = (
+        db.get(Location, unit.current_location_id)
+        if unit.current_location_id is not None
+        else None
+    )
+    warehouse = db.get(Warehouse, location.warehouse_id) if location else None
+    for task in list(
+        db.scalars(
+            select(LogisticTask).where(
+                LogisticTask.object_type == "logistic_unit",
+                LogisticTask.object_uid == unit.uid,
+                LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+            )
+        )
+    ):
+        if task_operation_is_complete(db, task):
+            complete_logistic_task_automatically(db, task, actor=actor)
+    if unit.status in {
+        LogisticUnitStatus.BLOCKED,
+        LogisticUnitStatus.QUARANTINE,
+        LogisticUnitStatus.DISASSEMBLED,
+    }:
+        for task in list(
+            db.scalars(
+                select(LogisticTask).where(
+                    LogisticTask.object_type == "logistic_unit",
+                    LogisticTask.object_uid == unit.uid,
+                    LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+                )
+            )
+        ):
+            cancel_logistic_task_automatically(db, task, actor=actor)
+        return
+    if warehouse is None:
+        return
+    if unit.status == LogisticUnitStatus.OPEN:
+        place_task = active_logistic_task(
+            db,
+            task_type=TaskType.PLACE,
+            object_uid=unit.uid,
+        )
+        if place_task is not None:
+            cancel_logistic_task_automatically(db, place_task, actor=actor)
+        ensure_logistic_task(
+            db,
+            warehouse_code=warehouse.code,
+            task_type=TaskType.BUILD,
+            object_uid=unit.uid,
+            actor=actor,
+            title=f"Завершить формирование {unit.uid}",
+        )
+    elif (
+        unit.status == LogisticUnitStatus.CLOSED
+        and location.kind != LocationKind.STORAGE
+    ):
+        ensure_logistic_task(
+            db,
+            warehouse_code=warehouse.code,
+            task_type=TaskType.PLACE,
+            object_uid=unit.uid,
+            actor=actor,
+            priority=TaskPriority.HIGH,
+            title=f"Разместить {unit.uid}",
+        )
+
+
+def sync_logistic_shipment_tasks(
+    db: Session,
+    shipment: LogisticShipment,
+    *,
+    actor: str,
+) -> None:
+    db.flush()
+    task = active_logistic_task(
+        db,
+        task_type=TaskType.SHIP,
+        object_uid=shipment.shipment_uid,
+    )
+    if shipment.status == ShipmentStatus.COMPLETED:
+        if task is not None:
+            complete_logistic_task_automatically(db, task, actor=actor)
+        return
+    if shipment.status == ShipmentStatus.CANCELLED:
+        if task is not None:
+            cancel_logistic_task_automatically(db, task, actor=actor)
+        return
+    warehouse = db.get(Warehouse, shipment.warehouse_id)
+    if warehouse is not None:
+        ensure_logistic_task(
+            db,
+            warehouse_code=warehouse.code,
+            task_type=TaskType.SHIP,
+            object_uid=shipment.shipment_uid,
+            actor=actor,
+            priority=TaskPriority.HIGH,
+            title=f"Обработать отгрузку {shipment.shipment_uid}",
+        )
+
+
+def sync_logistic_inventory_tasks(
+    db: Session,
+    inventory: LogisticInventory,
+    *,
+    actor: str,
+) -> None:
+    db.flush()
+    task = active_logistic_task(
+        db,
+        task_type=TaskType.INVENTORY,
+        object_uid=inventory.inventory_uid,
+    )
+    if inventory.status == InventoryStatus.COMPLETED:
+        if task is not None:
+            complete_logistic_task_automatically(db, task, actor=actor)
+        return
+    warehouse = db.get(Warehouse, inventory.warehouse_id)
+    if warehouse is not None:
+        ensure_logistic_task(
+            db,
+            warehouse_code=warehouse.code,
+            task_type=TaskType.INVENTORY,
+            object_uid=inventory.inventory_uid,
+            actor=actor,
+            title=f"Провести инвентаризацию {inventory.inventory_uid}",
+        )
+
+
+def sync_logistic_transfer_tasks(
+    db: Session,
+    transfer: LogisticTransfer,
+    *,
+    actor: str,
+) -> None:
+    db.flush()
+    dispatch_task = active_logistic_task(
+        db,
+        task_type=TaskType.TRANSFER,
+        object_uid=transfer.transfer_uid,
+        phase="dispatch",
+    )
+    receive_task = active_logistic_task(
+        db,
+        task_type=TaskType.TRANSFER,
+        object_uid=transfer.transfer_uid,
+        phase="receive",
+    )
+    if transfer.status == TransferStatus.CANCELLED:
+        for task in (dispatch_task, receive_task):
+            if task is not None:
+                cancel_logistic_task_automatically(db, task, actor=actor)
+        return
+    source = db.get(Warehouse, transfer.source_warehouse_id)
+    destination = db.get(Warehouse, transfer.destination_warehouse_id)
+    if transfer.status in {
+        TransferStatus.DRAFT,
+        TransferStatus.RESERVED,
+        TransferStatus.EXPEDITION,
+        TransferStatus.LOADING,
+    }:
+        if source is not None:
+            ensure_logistic_task(
+                db,
+                warehouse_code=source.code,
+                task_type=TaskType.TRANSFER,
+                object_uid=transfer.transfer_uid,
+                actor=actor,
+                title=f"Подготовить передачу {transfer.transfer_uid}",
+                parameters={"phase": "dispatch"},
+            )
+        return
+    if dispatch_task is not None:
+        complete_logistic_task_automatically(db, dispatch_task, actor=actor)
+    if transfer.status in {TransferStatus.IN_TRANSIT, TransferStatus.RECEIVING}:
+        if destination is not None:
+            ensure_logistic_task(
+                db,
+                warehouse_code=destination.code,
+                task_type=TaskType.TRANSFER,
+                object_uid=transfer.transfer_uid,
+                actor=actor,
+                priority=TaskPriority.HIGH,
+                title=f"Принять передачу {transfer.transfer_uid}",
+                parameters={"phase": "receive"},
+            )
+    elif transfer.status == TransferStatus.COMPLETED and receive_task is not None:
+        complete_logistic_task_automatically(db, receive_task, actor=actor)
+
+
+def sync_logistic_tasks(
+    db: Session,
+    *,
+    warehouse_code: str,
+    actor: str,
+) -> list[LogisticTask]:
+    warehouse = db.scalar(
+        select(Warehouse).where(
+            Warehouse.code == warehouse_code.strip().upper()
+        )
+    )
+    if warehouse is None:
+        raise not_found("warehouse")
+    active_tasks = list(
+        db.scalars(
+            select(LogisticTask).where(
+                LogisticTask.warehouse_id == warehouse.id,
+                LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+            )
+        )
+    )
+    for task in active_tasks:
+        if task.object_type == "logistic_unit":
+            sync_logistic_unit_tasks(
+                db,
+                get_task_unit(db, task.object_uid),
+                actor=actor,
+            )
+        elif task.object_type == "logistic_shipment":
+            sync_logistic_shipment_tasks(
+                db,
+                get_task_shipment(db, task.object_uid),
+                actor=actor,
+            )
+        elif task.object_type == "logistic_inventory":
+            sync_logistic_inventory_tasks(
+                db,
+                get_task_inventory(db, task.object_uid),
+                actor=actor,
+            )
+        elif task.object_type == "logistic_transfer":
+            sync_logistic_transfer_tasks(
+                db,
+                get_task_transfer(db, task.object_uid),
+                actor=actor,
+            )
+    location_ids = select(Location.id).where(Location.warehouse_id == warehouse.id)
+    units = list(
+        db.scalars(
+            select(LogisticUnit).where(
+                LogisticUnit.parent_unit_id.is_(None),
+                LogisticUnit.current_location_id.in_(location_ids),
+                LogisticUnit.status.in_(
+                    {LogisticUnitStatus.OPEN, LogisticUnitStatus.CLOSED}
+                ),
+            )
+        )
+    )
+    for unit in units:
+        sync_logistic_unit_tasks(db, unit, actor=actor)
+    for shipment in db.scalars(
+        select(LogisticShipment).where(
+            LogisticShipment.warehouse_id == warehouse.id,
+            LogisticShipment.status.in_(
+                {
+                    ShipmentStatus.DRAFT,
+                    ShipmentStatus.RESERVED,
+                    ShipmentStatus.EXPEDITION,
+                    ShipmentStatus.LOADING,
+                }
+            ),
+        )
+    ):
+        sync_logistic_shipment_tasks(db, shipment, actor=actor)
+    for inventory in db.scalars(
+        select(LogisticInventory).where(
+            LogisticInventory.warehouse_id == warehouse.id,
+            LogisticInventory.status == InventoryStatus.OPEN,
+        )
+    ):
+        sync_logistic_inventory_tasks(db, inventory, actor=actor)
+    for transfer in db.scalars(
+        select(LogisticTransfer).where(
+            LogisticTransfer.status.not_in(
+                {TransferStatus.COMPLETED, TransferStatus.CANCELLED}
+            ),
+            (
+                (LogisticTransfer.source_warehouse_id == warehouse.id)
+                | (LogisticTransfer.destination_warehouse_id == warehouse.id)
+            ),
+        )
+    ):
+        sync_logistic_transfer_tasks(db, transfer, actor=actor)
+    db.commit()
+    return list(
+        db.scalars(
+            select(LogisticTask)
+            .where(
+                LogisticTask.warehouse_id == warehouse.id,
+                LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+            )
+            .order_by(LogisticTask.created_at)
+        )
+    )
 
 
 def complete_logistic_task(

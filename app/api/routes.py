@@ -221,6 +221,7 @@ from app.logistic_tasks import (
     logistic_task_payload,
     reopen_logistic_task,
     start_logistic_task,
+    sync_logistic_tasks,
 )
 from app.models.enums import (
     InventoryLineStatus,
@@ -1440,6 +1441,29 @@ def api_list_logistic_tasks(
     tasks.sort(
         key=lambda task: (
             status_order.get(task.status, 9),
+            priority_order.get(task.priority.value, 9),
+            task.created_at,
+        )
+    )
+    return [logistic_task_payload(db, task) for task in tasks]
+
+
+@router.post(
+    "/logistic-tasks/sync",
+    response_model=list[LogisticTaskRead],
+)
+def api_sync_logistic_tasks(
+    payload: TaskSyncRequest,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    tasks = sync_logistic_tasks(
+        db,
+        warehouse_code=payload.warehouse_code,
+        actor=payload.actor,
+    )
+    priority_order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+    tasks.sort(
+        key=lambda task: (
             priority_order.get(task.priority.value, 9),
             task.created_at,
         )
