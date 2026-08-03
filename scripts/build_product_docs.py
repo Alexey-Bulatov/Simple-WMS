@@ -14,7 +14,7 @@ from docx.shared import Cm, Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC_PATH = ROOT / "ТЗ" / "Техническое задание WMS.docx"
+SPEC_PATH = ROOT / "ТЗ" / "Спецификация Simple WMS 0.1.docx"
 TERMS_PATH = ROOT / "ТЗ" / "Термины и определения.docx"
 
 FONT = "Arial"
@@ -260,7 +260,7 @@ def configure_document(doc: Document, running_label: str) -> None:
     core.author = "Simple WMS"
     core.subject = "Продуктовая спецификация автономной складской системы"
     core.keywords = "WMS, склад, адресное хранение, 1С, интеграция"
-    core.comments = "Сформировано из продуктового ТЗ Simple WMS"
+    core.comments = "Сформировано из спецификации Simple WMS 0.1"
 
 
 def add_cover(
@@ -482,13 +482,13 @@ def add_requirement(doc: Document, code: str, title: str, text: str) -> None:
 
 def build_spec() -> None:
     doc = Document()
-    configure_document(doc, "Simple WMS | Продуктовая спецификация")
+    configure_document(doc, "Simple WMS | Спецификация 0.1")
     add_cover(
         doc,
-        kicker="Техническое задание",
-        title="Simple WMS",
+        kicker="Спецификация",
+        title="Simple WMS 0.1",
         subtitle="Автономная система адресного складского управления",
-        status="Базовое продуктовое ТЗ",
+        status="Рабочая спецификация Alpha",
         version="0.1 Alpha",
     )
 
@@ -1346,14 +1346,14 @@ def build_terms() -> None:
         kicker="Справочный документ",
         title="Термины и определения",
         subtitle="Единый словарь продукта Simple WMS",
-        status="Приложение к продуктовому ТЗ",
+        status="Приложение к спецификации Simple WMS 0.1",
         version="0.1 Alpha",
     )
 
     add_heading(doc, "Назначение словаря")
     add_paragraph(
         doc,
-        "Документ устанавливает единое значение терминов, используемых в продуктовом ТЗ, интерфейсе, "
+        "Документ устанавливает единое значение терминов, используемых в спецификации, интерфейсе, "
         "API, документации и обсуждении доработок Simple WMS. Термины конкретного заказчика могут "
         "добавляться отдельным приложением без изменения общих понятий продукта."
     )

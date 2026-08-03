@@ -1163,7 +1163,7 @@ def test_object_cards_api_returns_pallet_box_and_location_cards(db):
 
 
 def test_simple_wms_pages_use_universal_operator_shell():
-    from app.universal_web import cards_page, root, tasks, terminal_page, work_page
+    from app.universal_web import cards_page, demo_page, root, tasks, terminal_page, work_page
 
     assert root().headers["location"] == "/work"
     assert tasks().headers["location"] == "/work"
@@ -1171,6 +1171,7 @@ def test_simple_wms_pages_use_universal_operator_shell():
     workplace = work_page()
     terminal = terminal_page()
     cards = cards_page()
+    demo = demo_page()
     for page in (workplace, terminal):
         assert 'id="warehouseSelect"' in page
         assert 'id="actorInput"' in page
@@ -1182,6 +1183,8 @@ def test_simple_wms_pages_use_universal_operator_shell():
     assert "Поиск объекта" in cards
     assert 'data-card-kind="unit"' in cards
     assert "/static/universal-cards.js" in cards
+    assert "Демонстрационный склад" in demo
+    assert "/static/universal-demo.js" in demo
 
 
 def test_operator_javascript_uses_only_universal_warehouse_contracts():
@@ -1190,6 +1193,7 @@ def test_operator_javascript_uses_only_universal_warehouse_contracts():
     static_dir = Path(__file__).parents[1] / "app" / "static"
     console = (static_dir / "universal-console.js").read_text()
     cards = (static_dir / "universal-cards.js").read_text()
+    demo = (static_dir / "universal-demo.js").read_text()
 
     assert "/api/logistic-tasks/sync" in console
     assert "/api/logistic-units/" in console
@@ -1201,17 +1205,20 @@ def test_operator_javascript_uses_only_universal_warehouse_contracts():
     assert "/api/boxes" not in console
     assert "/api/logistic-units/" in cards
     assert "/api/logistic-tasks?object_uid=" in cards
+    assert "/api/demo/logistic-units" in demo
+    assert "/api/demo/pallets" not in demo
 
 
 def test_simple_wms_pages_have_one_stable_navigation():
-    from app.universal_web import cards_page, terminal_page, work_page
+    from app.universal_web import cards_page, demo_page, terminal_page, work_page
 
     pages = {
         "work": work_page(),
         "terminal": terminal_page(),
         "cards": cards_page(),
+        "demo": demo_page(),
     }
-    expected_links = ["/work", "/terminal", "/cards", "/docs"]
+    expected_links = ["/work", "/terminal", "/cards", "/demo", "/docs"]
     for active, page in pages.items():
         assert page.count('class="product-header') == 1
         assert f'class="active" href="/{active}"' in page

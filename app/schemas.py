@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.constants import DEFAULT_UNIT, DEFAULT_WAREHOUSE_CODE, DEFAULT_WAREHOUSE_NAME
 from app.models.enums import (
@@ -404,6 +404,27 @@ class DemoPalletsRequest(BaseModel):
     actor: str = "demo-generator"
 
 
+class DemoLogisticUnitsRequest(BaseModel):
+    warehouse_code: str = Field(default=DEFAULT_WAREHOUSE_CODE, min_length=1, max_length=32)
+    warehouse_name: str = Field(default=DEFAULT_WAREHOUSE_NAME, min_length=1, max_length=160)
+    storage_locations: int = Field(default=10, ge=1, le=80)
+    batch_id: int | None = None
+    quantity: int = Field(default=5, ge=1, le=50)
+    parent_type_code: str = Field(default="PALLET", min_length=1, max_length=32)
+    child_type_code: str | None = Field(default="BOX", max_length=32)
+    child_units_per_parent: int = Field(default=4, ge=1, le=40)
+    content_uom_code: str = Field(default="PCS", min_length=1, max_length=32)
+    content_quantity: Decimal = Field(default=Decimal("24"), gt=0, max_digits=20, decimal_places=6)
+    place_to_empty_locations: bool = True
+    actor: str = Field(default="demo-generator", min_length=1, max_length=80)
+
+    @field_validator("child_type_code")
+    @classmethod
+    def normalize_optional_code(cls, value: str | None) -> str | None:
+        normalized = (value or "").strip().upper()
+        return normalized or None
+
+
 class DemoGenerateRead(BaseModel):
     created_products: int = 0
     created_batches: int = 0
@@ -414,9 +435,18 @@ class DemoGenerateRead(BaseModel):
     created_pallets: int = 0
     placed_pallets: int = 0
     waiting_pallets: int = 0
-    product_ids: list[int] = []
-    batch_ids: list[int] = []
-    pallet_uids: list[str] = []
+    created_logistic_units: int = 0
+    created_child_units: int = 0
+    placed_logistic_units: int = 0
+    waiting_logistic_units: int = 0
+    product_ids: list[int] = Field(default_factory=list)
+    batch_ids: list[int] = Field(default_factory=list)
+    pallet_uids: list[str] = Field(default_factory=list)
+    logistic_unit_uids: list[str] = Field(default_factory=list)
+    parent_type_code: str | None = None
+    child_type_code: str | None = None
+    content_uom_code: str | None = None
+    content_quantity: Decimal | None = None
 
 
 class PalletRead(BaseModel):

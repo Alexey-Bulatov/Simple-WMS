@@ -14,6 +14,7 @@ from app.core.constants import (
     TRANSFER_CODE_PREFIX,
 )
 from app.db.session import get_db
+from app.demo import generate_demo_logistic_units
 from app.labels import LabelItem, build_labels_pdf
 from app.thermal_printing import ThermalPrintError, print_thermal_label
 from app.imports import apply_import, parse_import_file, validate_import_rows
@@ -51,6 +52,7 @@ from app.schemas import (
     BoxTraceRead,
     DemoCatalogRequest,
     DemoGenerateRead,
+    DemoLogisticUnitsRequest,
     DemoPalletsRequest,
     EquipmentProfileCreate,
     EquipmentProfileRead,
@@ -1727,6 +1729,14 @@ def api_generate_demo_catalog(payload: DemoCatalogRequest, db: Session = Depends
 @router.post("/demo/pallets", response_model=DemoGenerateRead)
 def api_generate_demo_pallets(payload: DemoPalletsRequest, db: Session = Depends(get_db)) -> dict:
     return generate_demo_pallets(db, payload)
+
+
+@router.post("/demo/logistic-units", response_model=DemoGenerateRead)
+def api_generate_demo_logistic_units(
+    payload: DemoLogisticUnitsRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    return generate_demo_logistic_units(db, payload)
 
 
 @router.post("/import/preview/{kind}")

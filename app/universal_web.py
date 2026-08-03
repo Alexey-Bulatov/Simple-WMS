@@ -10,6 +10,7 @@ def navigation(active: str) -> str:
         ("work", "/work", "Рабочее место"),
         ("terminal", "/terminal", "ТСД"),
         ("cards", "/cards", "Поиск"),
+        ("demo", "/demo", "Демо"),
         ("api", "/docs", "API"),
     )
     return "".join(
@@ -100,3 +101,38 @@ def cards_page() -> str:
     <main class="cards-page-main"><aside class="search-panel"><span class="eyebrow">Прослеживаемость</span><h1>Поиск объекта</h1><div id="cardMessage" class="message">Отсканируйте единицу или ячейку.</div><label for="cardCode">Код</label><input id="cardCode" class="scan-input mono" autocomplete="off" autofocus placeholder="PLT-... / WH01-..."><div class="segmented"><button class="active" data-card-kind="auto" type="button">Авто</button><button data-card-kind="unit" type="button">Единица</button><button data-card-kind="location" type="button">Ячейка</button></div><button id="openCard" class="primary" type="button">Открыть</button><div class="quick-head"><b>Быстрый список</b><select id="cardWarehouse"></select></div><div class="segmented"><button id="listUnits" class="active" type="button">Единицы</button><button id="listLocations" type="button">Ячейки</button></div><div id="quickList" class="quick-list"></div></aside><section id="cardView" class="card-view"><div class="empty-operation"><div class="empty-symbol">i</div><h2>Карточка не выбрана</h2><p>Здесь будут состав, местонахождение, задания и история.</p></div></section></main>
     """
     return document("Карточки Simple WMS", "cards-page", body, "/static/universal-cards.js")
+
+
+@router.get("/demo", response_class=HTMLResponse, include_in_schema=False)
+def demo_page() -> str:
+    body = f"""
+    <header class="product-header"><a class="brand" href="/work">Simple WMS</a><nav>{navigation("demo")}</nav></header>
+    <main class="demo-page-main">
+      <section class="demo-form-panel">
+        <div class="panel-head"><div><span class="eyebrow">Подготовка контура</span><h1>Демонстрационный склад</h1></div></div>
+        <form id="demoForm" class="demo-form">
+          <div class="form-grid">
+            <label><span>Код склада</span><input id="demoWarehouseCode" class="mono" value="WH01" maxlength="32" required></label>
+            <label><span>Название склада</span><input id="demoWarehouseName" value="Основной демонстрационный склад" maxlength="160" required></label>
+            <label><span>Ячеек хранения</span><input id="demoStorageLocations" type="number" value="10" min="1" max="80" required></label>
+            <label><span>Внешних единиц</span><input id="demoQuantity" type="number" value="5" min="1" max="50" required></label>
+            <label><span>Внешняя единица</span><select id="demoParentType" required></select></label>
+            <label><span>Вложенная тара</span><select id="demoChildType"></select></label>
+            <label><span>Вложенных единиц</span><input id="demoChildren" type="number" value="4" min="1" max="40" required></label>
+            <label><span>Единица содержимого</span><select id="demoContentUom" required></select></label>
+            <label><span>Количество в единице</span><input id="demoContentQuantity" type="number" value="24" min="0.000001" step="0.000001" required></label>
+            <label><span>Автор операции</span><input id="demoActor" value="demo-generator" maxlength="80" required></label>
+          </div>
+          <label class="check-row"><input id="demoPlace" type="checkbox" checked><span>Разместить в свободные ячейки</span></label>
+          <button id="generateDemo" class="primary" type="submit">Сформировать данные</button>
+        </form>
+      </section>
+      <section class="demo-result-panel">
+        <div class="panel-head"><div><span class="eyebrow">Результат запуска</span><h2>Состояние генератора</h2></div></div>
+        <div id="demoMessage" class="message">Данные ещё не формировались.</div>
+        <div id="demoFacts" class="facts demo-facts"></div>
+        <div class="demo-result-list"><h3>Созданные логистические единицы</h3><div id="demoUnits" class="data-list"><div class="data-row">Список появится после запуска.</div></div></div>
+      </section>
+    </main>
+    """
+    return document("Демо-данные Simple WMS", "demo-page", body, "/static/universal-demo.js")
