@@ -35,8 +35,6 @@ def run() -> None:
                     code="ICE-VAN-080",
                     name="Эскимо ванильное 80 г",
                     unit=DEFAULT_UNIT,
-                    quantity_per_box=24,
-                    boxes_per_pallet=120,
                     shelf_life_days=365,
                 ),
             )
@@ -57,8 +55,6 @@ def run() -> None:
                     code="ICE-CHO-100",
                     name="Мороженое шоколадное 100 г",
                     unit=DEFAULT_UNIT,
-                    quantity_per_box=20,
-                    boxes_per_pallet=96,
                     shelf_life_days=365,
                 ),
             )
@@ -89,9 +85,9 @@ def run() -> None:
                     warehouse_id=warehouse.id,
                     zone_id=receiving.id,
                     code=f"{warehouse.code}{CODE_SEPARATOR}{RECEIVING_ZONE_CODE}{CODE_SEPARATOR}{RECEIVING_LOCATION_SUFFIX}",
-                    name="Приемка палет 1",
+                    name="Приемка логистических единиц",
                     kind=LocationKind.RECEIVING,
-                    capacity_pallets=4,
+                    capacity_units=4,
                 ),
             )
             for idx in range(1, 6):
@@ -101,9 +97,9 @@ def run() -> None:
                         warehouse_id=warehouse.id,
                         zone_id=storage.id,
                         code=f"{warehouse.code}{CODE_SEPARATOR}{STORAGE_ZONE_CODE}{CODE_SEPARATOR}{STORAGE_LOCATION_PATTERN.format(index=idx)}",
-                        name=f"Палетоместо {idx}",
+                        name=f"Место хранения {idx}",
                         kind=LocationKind.STORAGE,
-                        capacity_pallets=1,
+                        capacity_units=1,
                     ),
                 )
     finally:

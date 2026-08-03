@@ -8,17 +8,14 @@ from sqlalchemy.pool import StaticPool
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.entities import (
-    Box,
     LogisticUnit,
     LogisticUnitContent,
     OperationEvent,
-    Pallet,
-    Product,
 )
 from app.models.enums import LogisticUnitStatus
 
 
-def test_universal_demo_generator_is_additive_and_ignores_legacy_tables():
+def test_universal_demo_generator_is_additive_and_supports_direct_content():
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -126,8 +123,6 @@ def test_universal_demo_generator_is_additive_and_ignores_legacy_tables():
             assert "not allowed" in incompatible.json()["detail"]
 
         assert db.scalar(select(func.count(LogisticUnit.id))) == 10
-        assert db.scalar(select(func.count(Box.id))) == 0
-        assert db.scalar(select(func.count(Pallet.id))) == 0
 
         parents = list(
             db.scalars(
@@ -154,8 +149,7 @@ def test_universal_demo_generator_is_additive_and_ignores_legacy_tables():
                     LogisticUnitContent.logistic_unit_id == child.id
                 )
             )
-            product = db.get(Product, content.product_id)
-            assert content.quantity == product.quantity_per_box
+            assert content.quantity == Decimal("24")
 
         ibc_parent = next(parent for parent in parents if parent.type.code == "IBC")
         ibc_content = db.scalar(

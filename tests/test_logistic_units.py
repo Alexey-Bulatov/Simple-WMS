@@ -141,7 +141,7 @@ def warehouse_layout(db, *, warehouse_code: str = "WH-T", capacity: int = 1):
             zone_id=receiving_zone.id,
             code=f"{warehouse_code}-RCV-01",
             kind=LocationKind.RECEIVING,
-            capacity_pallets=10,
+            capacity_units=10,
         ),
     )
     first = create_location(
@@ -151,7 +151,7 @@ def warehouse_layout(db, *, warehouse_code: str = "WH-T", capacity: int = 1):
             zone_id=storage_zone.id,
             code=f"{warehouse_code}-ST-01",
             kind=LocationKind.STORAGE,
-            capacity_pallets=capacity,
+            capacity_units=capacity,
         ),
     )
     second = create_location(
@@ -161,7 +161,7 @@ def warehouse_layout(db, *, warehouse_code: str = "WH-T", capacity: int = 1):
             zone_id=storage_zone.id,
             code=f"{warehouse_code}-ST-02",
             kind=LocationKind.STORAGE,
-            capacity_pallets=capacity,
+            capacity_units=capacity,
         ),
     )
     return warehouse, receiving, first, second

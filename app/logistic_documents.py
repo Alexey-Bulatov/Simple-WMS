@@ -386,7 +386,7 @@ def stage_logistic_shipment(
     ):
         raise bad_request("expedition location must belong to the shipment warehouse")
     occupied = logistic_location_occupied_count(db, location.id)
-    if occupied + len(links) > location.capacity_pallets:
+    if occupied + len(links) > location.capacity_units:
         raise bad_request("expedition location capacity is already reached")
     now = utcnow()
     for link in links:
@@ -613,7 +613,7 @@ def stage_logistic_transfer(
     ):
         raise bad_request("transfer-out location must belong to the source warehouse")
     occupied = logistic_location_occupied_count(db, location.id)
-    if occupied + len(links) > location.capacity_pallets:
+    if occupied + len(links) > location.capacity_units:
         raise bad_request("transfer-out location capacity is already reached")
     now = utcnow()
     for link in links:
@@ -812,7 +812,7 @@ def receive_logistic_transfer_unit(
         or location.warehouse_id != transfer.destination_warehouse_id
     ):
         raise bad_request("transfer-in location must belong to the destination warehouse")
-    if logistic_location_occupied_count(db, location.id) >= location.capacity_pallets:
+    if logistic_location_occupied_count(db, location.id) >= location.capacity_units:
         raise bad_request("transfer-in location capacity is already reached")
     unit.status = LogisticUnitStatus.CLOSED
     unit.current_location_id = location.id

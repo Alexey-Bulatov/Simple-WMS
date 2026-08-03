@@ -6,15 +6,16 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import get_settings
-from app.db.session import init_db
+from app.db.session import get_db, init_db
 from app.universal_web import router as universal_web_router
 
 settings = get_settings()
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    init_db()
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    if get_db not in application.dependency_overrides:
+        init_db()
     yield
 
 

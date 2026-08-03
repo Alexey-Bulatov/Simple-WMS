@@ -25,10 +25,6 @@ HEADER_ALIASES = {
     "название": "name",
     "единица": "unit",
     "ед": "unit",
-    "в коробке": "quantity_per_box",
-    "шт в коробке": "quantity_per_box",
-    "коробок в палете": "boxes_per_pallet",
-    "кор пал": "boxes_per_pallet",
     "срок годности": "shelf_life_days",
     "товар": "product_code",
     "код товара": "product_code",
@@ -42,7 +38,7 @@ HEADER_ALIASES = {
     "зона": "zone_code",
     "код зоны": "zone_code",
     "тип": "kind",
-    "вместимость": "capacity_pallets",
+    "вместимость": "capacity_units",
 }
 KIND_ALIASES = {
     "хранение": LocationKind.STORAGE,
@@ -163,8 +159,6 @@ def normalize_product_row(row: dict[str, Any]) -> dict[str, Any]:
         "code": code,
         "name": name,
         "unit": str(row.get("unit") or DEFAULT_UNIT),
-        "quantity_per_box": as_int(row.get("quantity_per_box"), 1),
-        "boxes_per_pallet": as_int(row.get("boxes_per_pallet"), 1),
         "shelf_life_days": as_int(row.get("shelf_life_days"), 365) if row.get("shelf_life_days") not in ("", None) else None,
     }
 
@@ -222,7 +216,7 @@ def normalize_location_row(row: dict[str, Any], db: Session) -> dict[str, Any]:
         "code": code,
         "name": str(row.get("name") or code),
         "kind": kind,
-        "capacity_pallets": as_int(row.get("capacity_pallets"), 1),
+        "capacity_units": as_int(row.get("capacity_units"), 1),
     }
 
 
@@ -263,7 +257,7 @@ def apply_import(kind: str, rows: list[dict[str, Any]], db: Session) -> dict:
                     code=data["code"],
                     name=data["name"],
                     kind=data["kind"],
-                    capacity_pallets=data["capacity_pallets"],
+                    capacity_units=data["capacity_units"],
                 ),
             )
         created += 1

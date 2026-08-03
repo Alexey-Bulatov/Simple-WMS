@@ -102,7 +102,7 @@ def warehouse_layout(
             zone_id=storage_zone.id,
             code=f"{code}-ST-01",
             kind=LocationKind.STORAGE,
-            capacity_pallets=capacity,
+            capacity_units=capacity,
         ),
     )
     second = create_location(
@@ -112,7 +112,7 @@ def warehouse_layout(
             zone_id=storage_zone.id,
             code=f"{code}-ST-02",
             kind=LocationKind.STORAGE,
-            capacity_pallets=capacity,
+            capacity_units=capacity,
         ),
     )
     receiving = create_location(
@@ -122,7 +122,7 @@ def warehouse_layout(
             zone_id=receiving_zone.id,
             code=f"{code}-RCV-01",
             kind=LocationKind.RECEIVING,
-            capacity_pallets=10,
+            capacity_units=10,
         ),
     )
     return warehouse, first, second, receiving

@@ -54,35 +54,6 @@ class UserRole(StrEnum):
     ADMIN = "admin"
 
 
-class BoxStatus(StrEnum):
-    LABEL_CREATED = "label_created"
-    ACCEPTED_FROM_PRODUCTION = "accepted_from_production"
-    IN_OPEN_PALLET = "in_open_pallet"
-    IN_CLOSED_PALLET = "in_closed_pallet"
-    BLOCKED = "blocked"
-    QUARANTINE = "quarantine"
-    DAMAGED = "damaged"
-    WRITTEN_OFF = "written_off"
-    SHIPPED = "shipped"
-
-
-class PalletStatus(StrEnum):
-    OPEN = "open"
-    CLOSED = "closed"
-    WAITING_PLACEMENT = "waiting_placement"
-    AVAILABLE = "available"
-    RESERVED = "reserved"
-    PICKING = "picking"
-    EXPEDITION = "expedition"
-    LOADED = "loaded"
-    IN_TRANSIT = "in_transit"
-    QUARANTINE = "quarantine"
-    BLOCKED = "blocked"
-    DISASSEMBLED = "disassembled"
-    WRITTEN_OFF = "written_off"
-    SHIPPED = "shipped"
-
-
 class ShipmentStatus(StrEnum):
     DRAFT = "draft"
     RESERVED = "reserved"

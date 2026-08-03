@@ -7,17 +7,16 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
-    Batch,
-    Box,
-    InventoryLine,
-    InventorySession,
+    LogisticInventory,
+    LogisticInventoryLine,
+    LogisticInventoryLocation,
+    LogisticShipmentUnit,
+    LogisticTransferUnit,
+    LogisticUnit,
     Location,
     OperationEvent,
-    Pallet,
-    Product,
     Warehouse,
     WarehouseMapItem,
-    WarehouseTransferPallet,
     Zone,
 )
 from app.models.enums import LocationKind
@@ -83,36 +82,43 @@ def _event(
 
 
 def _location_reference_reason(db: Session, location: Location) -> str | None:
-    if db.scalar(select(Pallet.id).where(Pallet.current_location_id == location.id).limit(1)):
-        return "в ячейке находится палета"
+    if db.scalar(select(LogisticUnit.id).where(LogisticUnit.current_location_id == location.id).limit(1)):
+        return "в ячейке находится логистическая единица"
     if db.scalar(
-        select(InventorySession.id)
-        .where(
-            or_(
-                InventorySession.location_id == location.id,
-                InventorySession.current_location_id == location.id,
-            )
-        )
+        select(LogisticInventory.id)
+        .where(LogisticInventory.current_location_id == location.id)
         .limit(1)
     ):
         return "ячейка участвует в инвентаризации"
     if db.scalar(
-        select(InventoryLine.id)
+        select(LogisticInventoryLocation.id)
+        .where(LogisticInventoryLocation.location_id == location.id)
+        .limit(1)
+    ):
+        return "ячейка входит в обход инвентаризации"
+    if db.scalar(
+        select(LogisticInventoryLine.id)
         .where(
             or_(
-                InventoryLine.expected_location_id == location.id,
-                InventoryLine.actual_location_id == location.id,
+                LogisticInventoryLine.expected_location_id == location.id,
+                LogisticInventoryLine.actual_location_id == location.id,
             )
         )
         .limit(1)
     ):
         return "ячейка присутствует в строках инвентаризации"
     if db.scalar(
-        select(WarehouseTransferPallet.id)
-        .where(WarehouseTransferPallet.source_location_id == location.id)
+        select(LogisticTransferUnit.id)
+        .where(LogisticTransferUnit.source_location_id == location.id)
         .limit(1)
     ):
         return "ячейка присутствует в истории межскладского перемещения"
+    if db.scalar(
+        select(LogisticShipmentUnit.id)
+        .where(LogisticShipmentUnit.source_location_id == location.id)
+        .limit(1)
+    ):
+        return "ячейка присутствует в истории отгрузки"
     return None
 
 
@@ -248,7 +254,7 @@ def _create_row(
             code=code,
             name=f"{label}, место {index}",
             kind=LocationKind.STORAGE,
-            capacity_pallets=1,
+            capacity_units=1,
             is_active=True,
         )
         db.add(location)
@@ -471,15 +477,15 @@ def ensure_demo_maps(db: Session, *, actor: str = "map-setup") -> list[dict]:
     return [{"code": wh01.code, "name": wh01.name}, {"code": wh02.code, "name": wh02.name}]
 
 
-def _location_state(pallets: list[Pallet]) -> str:
-    statuses = {_value(pallet.status) for pallet in pallets}
+def _location_state(units: list[LogisticUnit]) -> str:
+    statuses = {_value(unit.status) for unit in units}
     if statuses & {"blocked", "quarantine", "written_off"}:
         return "problem"
     if statuses & {"expedition", "loaded", "in_transit"}:
         return "expedition"
     if statuses & {"reserved", "picking"}:
         return "reserved"
-    return "occupied" if pallets else "empty"
+    return "occupied" if units else "empty"
 
 
 def warehouse_map_payload(db: Session, warehouse_code: str) -> dict:
@@ -493,31 +499,13 @@ def warehouse_map_payload(db: Session, warehouse_code: str) -> dict:
     )
     locations = list(db.scalars(select(Location).where(Location.warehouse_id == warehouse.id)))
     location_ids = [location.id for location in locations]
-    pallets = list(
-        db.scalars(select(Pallet).where(Pallet.current_location_id.in_(location_ids)))
+    units = list(
+        db.scalars(select(LogisticUnit).where(LogisticUnit.current_location_id.in_(location_ids)))
     ) if location_ids else []
-    pallets_by_location: dict[int, list[Pallet]] = defaultdict(list)
-    for pallet in pallets:
-        if pallet.current_location_id:
-            pallets_by_location[pallet.current_location_id].append(pallet)
-    pallet_ids = [pallet.id for pallet in pallets]
-    box_counts = dict(
-        db.execute(
-            select(Box.current_pallet_id, func.count(Box.id))
-            .where(Box.current_pallet_id.in_(pallet_ids))
-            .group_by(Box.current_pallet_id)
-        ).all()
-    ) if pallet_ids else {}
-    product_ids = {pallet.product_id for pallet in pallets if pallet.product_id}
-    batch_ids = {pallet.batch_id for pallet in pallets if pallet.batch_id}
-    products = {
-        product.id: product
-        for product in db.scalars(select(Product).where(Product.id.in_(product_ids)))
-    } if product_ids else {}
-    batches = {
-        batch.id: batch
-        for batch in db.scalars(select(Batch).where(Batch.id.in_(batch_ids)))
-    } if batch_ids else {}
+    units_by_location: dict[int, list[LogisticUnit]] = defaultdict(list)
+    for unit in units:
+        if unit.current_location_id:
+            units_by_location[unit.current_location_id].append(unit)
     location_map = {location.id: location for location in locations}
     placed_location_ids = {item.location_id for item in items if item.location_id}
     result_items = []
@@ -538,30 +526,31 @@ def warehouse_map_payload(db: Session, warehouse_code: str) -> dict:
         }
         if item.location_id and item.location_id in location_map:
             location = location_map[item.location_id]
-            location_pallets = pallets_by_location.get(location.id, [])
+            location_units = units_by_location.get(location.id, [])
             payload["location"] = {
                 "id": location.id,
                 "code": location.code,
                 "name": location.name,
                 "kind": _value(location.kind),
-                "capacity_pallets": location.capacity_pallets,
-                "state": _location_state(location_pallets),
-                "pallets": [
+                "capacity_units": location.capacity_units,
+                "state": _location_state(location_units),
+                "units": [
                     {
-                        "pallet_uid": pallet.pallet_uid,
-                        "status": _value(pallet.status),
-                        "box_count": box_counts.get(pallet.id, 0),
-                        "product_name": products.get(pallet.product_id).name if pallet.product_id in products else "-",
-                        "batch_number": batches.get(pallet.batch_id).batch_number if pallet.batch_id in batches else "-",
+                        "uid": unit.uid,
+                        "type_code": unit.type.code,
+                        "type_name": unit.type.name,
+                        "status": _value(unit.status),
+                        "child_count": len(unit.child_units),
+                        "content_count": len(unit.contents),
                     }
-                    for pallet in location_pallets
+                    for unit in location_units
                 ],
             }
         result_items.append(payload)
-    occupied_ids = {location_id for location_id, rows in pallets_by_location.items() if rows}
+    occupied_ids = {location_id for location_id, rows in units_by_location.items() if rows}
     problem_ids = {
         location_id
-        for location_id, rows in pallets_by_location.items()
+        for location_id, rows in units_by_location.items()
         if _location_state(rows) == "problem"
     }
     return {
@@ -578,7 +567,7 @@ def warehouse_map_payload(db: Session, warehouse_code: str) -> dict:
             "occupied": len(occupied_ids),
             "empty": len(locations) - len(occupied_ids),
             "problems": len(problem_ids),
-            "pallets": len(pallets),
+            "logistic_units": len(units),
         },
         "items": result_items,
         "unplaced_locations": [
@@ -635,7 +624,7 @@ def create_map_location(db: Session, warehouse_code: str, payload: WarehouseMapL
         code=code,
         name=payload.label,
         kind=LocationKind.STORAGE,
-        capacity_pallets=1,
+        capacity_units=1,
         is_active=True,
     )
     db.add(location)
@@ -791,7 +780,7 @@ def delete_map_item(db: Session, warehouse_code: str, item_id: int, *, actor: st
 def reset_sandbox_map(db: Session, warehouse_code: str, *, actor: str) -> dict:
     warehouse = _warehouse(db, warehouse_code)
     _assert_sandbox(warehouse)
-    if db.scalar(select(InventorySession.id).where(InventorySession.warehouse_id == warehouse.id).limit(1)):
+    if db.scalar(select(LogisticInventory.id).where(LogisticInventory.warehouse_id == warehouse.id).limit(1)):
         raise HTTPException(status_code=409, detail="Сброс невозможен: по WH02 уже проводилась инвентаризация")
     locations = list(db.scalars(select(Location).where(Location.warehouse_id == warehouse.id)))
     for location in locations:

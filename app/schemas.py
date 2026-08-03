@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.constants import DEFAULT_UNIT, DEFAULT_WAREHOUSE_CODE, DEFAULT_WAREHOUSE_NAME
 from app.models.enums import (
-    BoxStatus,
     EquipmentConnection,
     EquipmentKind,
     InventoryLineStatus,
@@ -15,7 +14,6 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     MeasurementDimension,
-    PalletStatus,
     ShipmentStatus,
     TransferKind,
     TransferStatus,
@@ -256,8 +254,6 @@ class ProductCreate(BaseModel):
     name: str = Field(min_length=1, max_length=240)
     unit: str = DEFAULT_UNIT
     base_uom_id: int | None = None
-    quantity_per_box: int = Field(default=1, ge=1)
-    boxes_per_pallet: int = Field(default=1, ge=1)
     shelf_life_days: int | None = Field(default=None, ge=1)
 
 
@@ -315,7 +311,7 @@ class LocationCreate(BaseModel):
     code: str = Field(min_length=1, max_length=120)
     name: str | None = None
     kind: LocationKind = LocationKind.STORAGE
-    capacity_pallets: int = Field(default=1, ge=1)
+    capacity_units: int = Field(default=1, ge=1)
 
 
 class LocationRead(LocationCreate):
@@ -370,37 +366,10 @@ class WarehouseMapActionRequest(BaseModel):
     actor: str = "map-editor"
 
 
-class BoxRead(BaseModel):
-    id: int
-    box_uid: str
-    product_id: int
-    batch_id: int
-    status: BoxStatus
-    current_pallet_id: int | None
-    created_at: datetime
-    accepted_at: datetime | None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class GenerateBoxesRequest(BaseModel):
-    batch_id: int
-    quantity: int = Field(ge=1, le=10000)
-    actor: str = "system"
-
-
 class DemoCatalogRequest(BaseModel):
     warehouse_code: str = Field(default=DEFAULT_WAREHOUSE_CODE, min_length=1, max_length=32)
     warehouse_name: str = Field(default=DEFAULT_WAREHOUSE_NAME, min_length=1, max_length=160)
     storage_locations: int = Field(default=10, ge=1, le=80)
-    actor: str = "demo-generator"
-
-
-class DemoPalletsRequest(BaseModel):
-    batch_id: int | None = None
-    quantity: int = Field(default=5, ge=1, le=50)
-    boxes_per_pallet: int = Field(default=4, ge=1, le=40)
-    place_to_empty_locations: bool = True
     actor: str = "demo-generator"
 
 
@@ -431,68 +400,17 @@ class DemoGenerateRead(BaseModel):
     created_warehouses: int = 0
     created_zones: int = 0
     created_locations: int = 0
-    created_boxes: int = 0
-    created_pallets: int = 0
-    placed_pallets: int = 0
-    waiting_pallets: int = 0
     created_logistic_units: int = 0
     created_child_units: int = 0
     placed_logistic_units: int = 0
     waiting_logistic_units: int = 0
     product_ids: list[int] = Field(default_factory=list)
     batch_ids: list[int] = Field(default_factory=list)
-    pallet_uids: list[str] = Field(default_factory=list)
     logistic_unit_uids: list[str] = Field(default_factory=list)
     parent_type_code: str | None = None
     child_type_code: str | None = None
     content_uom_code: str | None = None
     content_quantity: Decimal | None = None
-
-
-class PalletRead(BaseModel):
-    id: int
-    pallet_uid: str
-    product_id: int | None
-    batch_id: int | None
-    status: PalletStatus
-    current_location_id: int | None
-    is_mixed: bool
-    created_at: datetime
-    closed_at: datetime | None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PalletSummaryRead(BaseModel):
-    id: int
-    pallet_uid: str
-    product_id: int | None
-    batch_id: int | None
-    status: PalletStatus
-    current_location_id: int | None
-    current_location_code: str | None
-    box_count: int
-    created_at: datetime
-    closed_at: datetime | None
-
-
-class PalletActionRequest(BaseModel):
-    actor: str = "system"
-    reason: str | None = None
-
-
-class PalletStatusRequest(PalletActionRequest):
-    reason: str
-
-
-class PlacePalletRequest(PalletActionRequest):
-    location_code: str = Field(min_length=1, max_length=120)
-
-
-class BoxTraceRead(BaseModel):
-    box: BoxRead
-    pallet: PalletSummaryRead | None
-    location_code: str | None
 
 
 class EventRead(BaseModel):
@@ -507,89 +425,6 @@ class EventRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class ShipmentCreate(BaseModel):
-    customer_name: str = Field(default="Демо-клиент", min_length=1, max_length=160)
-    destination: str = Field(default="Тестовая точка доставки", min_length=1, max_length=160)
-    planned_date: date | None = None
-    actor: str = "system"
-
-
-class ShipmentRead(BaseModel):
-    id: int
-    shipment_uid: str
-    customer_name: str
-    destination: str
-    status: ShipmentStatus
-    planned_date: date | None
-    created_at: datetime
-    closed_at: datetime | None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ShipmentSummaryRead(ShipmentRead):
-    pallet_count: int
-    loaded_count: int
-
-
-class ShipmentPalletRead(BaseModel):
-    pallet: PalletSummaryRead
-    shipment_pallet_status: str
-    reserved_at: datetime
-    moved_to_expedition_at: datetime | None
-    loaded_at: datetime | None
-
-
-class ShipmentActionRequest(BaseModel):
-    actor: str = "system"
-    reason: str | None = None
-
-
-class TransferCreate(BaseModel):
-    source_warehouse_code: str = Field(min_length=1, max_length=32)
-    destination_warehouse_code: str = Field(min_length=1, max_length=32)
-    transfer_kind: TransferKind = TransferKind.TRANSPORT
-    planned_date: date | None = None
-    vehicle_number: str | None = Field(default=None, max_length=80)
-    actor: str = "system"
-
-
-class TransferActionRequest(BaseModel):
-    actor: str = "system"
-    reason: str | None = None
-
-
-class TransferRead(BaseModel):
-    id: int
-    transfer_uid: str
-    source_warehouse_id: int
-    source_warehouse_code: str
-    source_warehouse_name: str
-    destination_warehouse_id: int
-    destination_warehouse_code: str
-    destination_warehouse_name: str
-    transfer_kind: TransferKind
-    status: TransferStatus
-    planned_date: date | None
-    vehicle_number: str | None
-    created_at: datetime
-    dispatched_at: datetime | None
-    completed_at: datetime | None
-    pallet_count: int
-    loaded_count: int
-    received_count: int
-
-
-class TransferPalletRead(BaseModel):
-    pallet: PalletSummaryRead
-    transfer_pallet_status: str
-    source_location_code: str | None
-    reserved_at: datetime
-    moved_to_expedition_at: datetime | None
-    loaded_at: datetime | None
-    received_at: datetime | None
 
 
 class LogisticDocumentUnitRequest(BaseModel):
@@ -787,92 +622,6 @@ class LogisticTaskRead(BaseModel):
     completed_at: datetime | None
 
 
-class InventoryStartRequest(BaseModel):
-    warehouse_code: str | None = Field(default=None, max_length=32)
-    location_code: str | None = Field(default=None, max_length=120)
-    actor: str = "system"
-
-
-class InventoryLocationScanRequest(BaseModel):
-    location_code: str = Field(min_length=1, max_length=120)
-    actor: str = "system"
-
-
-class InventoryScanRequest(BaseModel):
-    pallet_uid: str = Field(min_length=1, max_length=40)
-    actor: str = "system"
-
-
-class InventoryResolveRequest(BaseModel):
-    actor: str = "system"
-    reason: str | None = None
-
-
-class InventoryRead(BaseModel):
-    id: int
-    inventory_uid: str
-    warehouse_id: int | None
-    warehouse_code: str | None
-    location_id: int | None
-    location_code: str | None
-    current_location_id: int | None
-    current_location_code: str | None
-    status: InventoryStatus
-    actor: str
-    created_at: datetime
-    completed_at: datetime | None
-    expected_count: int
-    scanned_count: int
-    missing_count: int
-    extra_count: int
-    wrong_location_count: int
-
-
-class InventoryLineRead(BaseModel):
-    line_id: int
-    pallet: PalletSummaryRead
-    status: InventoryLineStatus
-    expected_location_code: str | None
-    actual_location_code: str | None
-    scanned_at: datetime | None
-    resolution_action: str | None = None
-    resolution_actor: str | None = None
-    resolved_at: datetime | None = None
-
-
-class InventoryProgressLocationRead(BaseModel):
-    location_id: int
-    location_code: str
-    status: str
-    expected_count: int
-    scanned_count: int
-    problem_count: int
-
-
-class InventoryProgressRead(BaseModel):
-    inventory_uid: str
-    warehouse_code: str | None
-    total_locations: int
-    checked_locations: int
-    unchecked_locations: int
-    progress_percent: float
-    unchecked_locations_list: list[InventoryProgressLocationRead]
-    unchecked_pallets: list[PalletSummaryRead]
-    problem_lines: list[InventoryLineRead]
-
-
-class TaskCreate(BaseModel):
-    warehouse_code: str = Field(min_length=1, max_length=32)
-    task_type: TaskType
-    priority: TaskPriority = TaskPriority.NORMAL
-    title: str | None = Field(default=None, max_length=200)
-    description: str | None = Field(default=None, max_length=500)
-    object_type: str | None = Field(default=None, max_length=40)
-    object_uid: str | None = Field(default=None, max_length=120)
-    assigned_to: str | None = Field(default=None, max_length=80)
-    actor: str = "system"
-
-
 class TaskActionRequest(BaseModel):
     actor: str = "system"
 
@@ -885,23 +634,3 @@ class TaskAssignRequest(BaseModel):
 class TaskSyncRequest(BaseModel):
     warehouse_code: str = Field(min_length=1, max_length=32)
     actor: str = "system"
-
-
-class TaskRead(BaseModel):
-    id: int
-    task_uid: str
-    warehouse_id: int
-    warehouse_code: str
-    warehouse_name: str
-    task_type: TaskType
-    status: TaskStatus
-    priority: TaskPriority
-    title: str
-    description: str | None
-    object_type: str | None
-    object_uid: str | None
-    assigned_to: str | None
-    created_by: str
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None

@@ -103,7 +103,7 @@ def warehouse_layout(db, code: str) -> dict:
                 zone_id=zone.id,
                 code=f"{code}-{suffix}-01",
                 kind=kind,
-                capacity_pallets=10,
+                capacity_units=10,
             ),
         )
     return result

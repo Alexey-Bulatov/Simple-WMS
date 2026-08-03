@@ -66,7 +66,7 @@ def _empty_storage_locations(db: Session, warehouse_id: int) -> list[Location]:
     return [
         location
         for location in locations
-        if logistic_location_occupied_count(db, location.id) < location.capacity_pallets
+        if logistic_location_occupied_count(db, location.id) < location.capacity_units
     ]
 
 
@@ -108,8 +108,6 @@ def _batch_for_content_unit(
                 name=f"Демонстрационный товар, {content_uom.name.lower()}",
                 unit=content_uom.symbol,
                 base_uom_id=content_uom.id,
-                quantity_per_box=1,
-                boxes_per_pallet=1000,
                 shelf_life_days=365,
             ),
         )
@@ -206,15 +204,10 @@ def generate_demo_logistic_units(
 
     result = {
         **catalog,
-        "created_boxes": 0,
-        "created_pallets": 0,
-        "placed_pallets": 0,
-        "waiting_pallets": 0,
         "created_logistic_units": 0,
         "created_child_units": 0,
         "placed_logistic_units": 0,
         "waiting_logistic_units": 0,
-        "pallet_uids": [],
         "logistic_unit_uids": [],
         "parent_type_code": parent_type.code,
         "child_type_code": child_type.code if child_type else None,
@@ -302,9 +295,6 @@ def generate_demo_logistic_units(
             LogisticUnitActionRequest(actor=payload.actor, reason="demo generation"),
         )
         result["created_logistic_units"] += 1
-        if parent_type.code == "PALLET":
-            result["created_pallets"] += 1
-            result["pallet_uids"].append(parent.uid)
         result["logistic_unit_uids"].append(parent.uid)
 
         if free_locations:
@@ -318,12 +308,8 @@ def generate_demo_logistic_units(
                 ),
             )
             result["placed_logistic_units"] += 1
-            if parent_type.code == "PALLET":
-                result["placed_pallets"] += 1
         else:
             result["waiting_logistic_units"] += 1
-            if parent_type.code == "PALLET":
-                result["waiting_pallets"] += 1
 
     create_event(
         db,

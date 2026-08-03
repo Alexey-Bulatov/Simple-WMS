@@ -22,13 +22,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.constants import DEFAULT_UNIT
 from app.db.session import Base
 from app.models.enums import (
-    BoxStatus,
     InventoryLineStatus,
     InventoryLocationStatus,
     InventoryStatus,
     LocationKind,
     LogisticUnitStatus,
-    PalletStatus,
     ShipmentStatus,
     TransferKind,
     TransferStatus,
@@ -223,8 +221,6 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(240))
     unit: Mapped[str] = mapped_column(String(32), default=DEFAULT_UNIT)
     base_uom_id: Mapped[int | None] = mapped_column(ForeignKey("units_of_measure.id"), nullable=True, index=True)
-    quantity_per_box: Mapped[int] = mapped_column(Integer, default=1)
-    boxes_per_pallet: Mapped[int] = mapped_column(Integer, default=1)
     shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -309,7 +305,7 @@ class Location(Base):
     code: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     kind: Mapped[LocationKind] = mapped_column(Enum(LocationKind), default=LocationKind.STORAGE)
-    capacity_pallets: Mapped[int] = mapped_column(Integer, default=1)
+    capacity_units: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     zone: Mapped[Zone] = relationship(back_populates="locations")
@@ -603,170 +599,6 @@ class WarehouseMapItem(Base):
     rotation: Mapped[int] = mapped_column(Integer, default=0)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
-
-
-class Pallet(Base):
-    __tablename__ = "pallets"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    pallet_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
-    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"), nullable=True)
-    status: Mapped[PalletStatus] = mapped_column(Enum(PalletStatus), default=PalletStatus.OPEN, index=True)
-    current_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
-    is_mixed: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    boxes: Mapped[list["PalletBox"]] = relationship(back_populates="pallet")
-
-
-class Box(Base):
-    __tablename__ = "boxes"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    box_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
-    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
-    status: Mapped[BoxStatus] = mapped_column(Enum(BoxStatus), default=BoxStatus.LABEL_CREATED, index=True)
-    current_pallet_id: Mapped[int | None] = mapped_column(ForeignKey("pallets.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class PalletBox(Base):
-    __tablename__ = "pallet_boxes"
-    __table_args__ = (UniqueConstraint("box_id", name="uq_pallet_box_current_box"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    pallet_id: Mapped[int] = mapped_column(ForeignKey("pallets.id"))
-    box_id: Mapped[int] = mapped_column(ForeignKey("boxes.id"))
-    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-    pallet: Mapped[Pallet] = relationship(back_populates="boxes")
-
-
-class Shipment(Base):
-    __tablename__ = "shipments"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    shipment_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    customer_name: Mapped[str] = mapped_column(String(160))
-    destination: Mapped[str] = mapped_column(String(160))
-    status: Mapped[ShipmentStatus] = mapped_column(Enum(ShipmentStatus), default=ShipmentStatus.DRAFT, index=True)
-    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    pallets: Mapped[list["ShipmentPallet"]] = relationship(back_populates="shipment")
-
-
-class ShipmentPallet(Base):
-    __tablename__ = "shipment_pallets"
-    __table_args__ = (
-        UniqueConstraint("shipment_id", "pallet_id", name="uq_shipment_pallet"),
-        UniqueConstraint("pallet_id", name="uq_active_shipment_pallet"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    shipment_id: Mapped[int] = mapped_column(ForeignKey("shipments.id"))
-    pallet_id: Mapped[int] = mapped_column(ForeignKey("pallets.id"))
-    status: Mapped[str] = mapped_column(String(40), default="reserved", index=True)
-    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    moved_to_expedition_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    shipment: Mapped[Shipment] = relationship(back_populates="pallets")
-
-
-class WarehouseTransfer(Base):
-    __tablename__ = "warehouse_transfers"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    transfer_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    source_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
-    destination_warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
-    transfer_kind: Mapped[TransferKind] = mapped_column(
-        Enum(TransferKind, native_enum=False, length=32),
-        default=TransferKind.TRANSPORT,
-        index=True,
-    )
-    status: Mapped[TransferStatus] = mapped_column(Enum(TransferStatus), default=TransferStatus.DRAFT, index=True)
-    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    vehicle_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    pallets: Mapped[list["WarehouseTransferPallet"]] = relationship(back_populates="transfer")
-
-
-class WarehouseTransferPallet(Base):
-    __tablename__ = "warehouse_transfer_pallets"
-    __table_args__ = (UniqueConstraint("transfer_id", "pallet_id", name="uq_transfer_pallet"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    transfer_id: Mapped[int] = mapped_column(ForeignKey("warehouse_transfers.id"), index=True)
-    pallet_id: Mapped[int] = mapped_column(ForeignKey("pallets.id"), index=True)
-    source_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
-    status: Mapped[str] = mapped_column(String(40), default="reserved", index=True)
-    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    moved_to_expedition_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    transfer: Mapped[WarehouseTransfer] = relationship(back_populates="pallets")
-
-
-class InventorySession(Base):
-    __tablename__ = "inventory_sessions"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    inventory_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
-    location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
-    current_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
-    status: Mapped[InventoryStatus] = mapped_column(Enum(InventoryStatus), default=InventoryStatus.OPEN, index=True)
-    actor: Mapped[str] = mapped_column(String(80), default="system")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    lines: Mapped[list["InventoryLine"]] = relationship(back_populates="inventory")
-
-
-class InventoryLine(Base):
-    __tablename__ = "inventory_lines"
-    __table_args__ = (UniqueConstraint("inventory_id", "pallet_id", name="uq_inventory_pallet"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    inventory_id: Mapped[int] = mapped_column(ForeignKey("inventory_sessions.id"))
-    pallet_id: Mapped[int] = mapped_column(ForeignKey("pallets.id"))
-    expected_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
-    actual_location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), nullable=True)
-    status: Mapped[InventoryLineStatus] = mapped_column(Enum(InventoryLineStatus), default=InventoryLineStatus.EXPECTED, index=True)
-    scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    inventory: Mapped[InventorySession] = relationship(back_populates="lines")
-
-
-class WarehouseTask(Base):
-    __tablename__ = "warehouse_tasks"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    task_uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
-    task_type: Mapped[TaskType] = mapped_column(Enum(TaskType), index=True)
-    status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.NEW, index=True)
-    priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), default=TaskPriority.NORMAL, index=True)
-    title: Mapped[str] = mapped_column(String(200))
-    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    object_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
-    object_uid: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
-    assigned_to: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
-    created_by: Mapped[str] = mapped_column(String(80), default="system")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class OperationEvent(Base):

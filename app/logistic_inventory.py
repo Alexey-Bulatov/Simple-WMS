@@ -432,7 +432,7 @@ def scan_logistic_inventory_unit(
     finish_location = (
         payload.finish_location
         if payload.finish_location is not None
-        else location.capacity_pallets == 1
+        else location.capacity_units == 1
     )
     if finish_location:
         db.flush()
@@ -717,7 +717,7 @@ def ensure_resolution_location_capacity(
     occupied = logistic_location_occupied_count(db, location.id)
     if unit.current_location_id == location.id:
         occupied -= 1
-    if occupied >= location.capacity_pallets:
+    if occupied >= location.capacity_units:
         raise bad_request("location capacity is already reached")
 
 

@@ -99,7 +99,7 @@ def warehouse_layout(db, code: str = "WH-A") -> tuple:
             zone_id=zone.id,
             code=f"{code}-ST-01",
             kind=LocationKind.STORAGE,
-            capacity_pallets=10,
+            capacity_units=10,
         ),
     )
     second = create_location(
@@ -109,7 +109,7 @@ def warehouse_layout(db, code: str = "WH-A") -> tuple:
             zone_id=zone.id,
             code=f"{code}-ST-02",
             kind=LocationKind.STORAGE,
-            capacity_pallets=10,
+            capacity_units=10,
         ),
     )
     return warehouse, first, second
@@ -143,7 +143,7 @@ def receiving_location(db, warehouse) -> object:
             zone_id=zone.id,
             code=f"{warehouse.code}-RCV-01",
             kind=LocationKind.RECEIVING,
-            capacity_pallets=10,
+            capacity_units=10,
         ),
     )
 def closed_unit(db, uid: str) -> LogisticUnit:
