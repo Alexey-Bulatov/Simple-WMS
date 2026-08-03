@@ -305,17 +305,97 @@ class ZoneRead(ZoneCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AisleCreate(BaseModel):
+    zone_id: int
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=160)
+    sort_order: int = 0
+
+
+class AisleRead(AisleCreate):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RackCreate(BaseModel):
+    aisle_id: int
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=160)
+    sort_order: int = 0
+
+
+class RackRead(RackCreate):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RackSectionCreate(BaseModel):
+    rack_id: int
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=160)
+    sort_order: int = 0
+
+
+class RackSectionRead(RackSectionCreate):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RackLevelCreate(BaseModel):
+    section_id: int
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=160)
+    sort_order: int = 0
+    elevation_mm: int | None = Field(default=None, ge=0)
+
+
+class RackLevelRead(RackLevelCreate):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class LocationCreate(BaseModel):
     warehouse_id: int
     zone_id: int
-    code: str = Field(min_length=1, max_length=120)
+    aisle_id: int | None = None
+    rack_id: int | None = None
+    section_id: int | None = None
+    level_id: int | None = None
+    position_code: str | None = Field(default=None, min_length=1, max_length=32)
+    code: str | None = Field(default=None, min_length=1, max_length=120)
     name: str | None = None
     kind: LocationKind = LocationKind.STORAGE
     capacity_units: int = Field(default=1, ge=1)
 
+    @model_validator(mode="after")
+    def validate_address(self):
+        address = (
+            self.aisle_id,
+            self.rack_id,
+            self.section_id,
+            self.level_id,
+            self.position_code,
+        )
+        if any(value is not None for value in address) and not all(
+            value is not None for value in address
+        ):
+            raise ValueError("structured location requires aisle, rack, section, level and position")
+        if not all(value is not None for value in address) and self.code is None:
+            raise ValueError("code is required for a zone-level location")
+        return self
+
 
 class LocationRead(LocationCreate):
     id: int
+    code: str
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
@@ -399,6 +479,10 @@ class DemoGenerateRead(BaseModel):
     created_batches: int = 0
     created_warehouses: int = 0
     created_zones: int = 0
+    created_aisles: int = 0
+    created_racks: int = 0
+    created_sections: int = 0
+    created_levels: int = 0
     created_locations: int = 0
     created_logistic_units: int = 0
     created_child_units: int = 0

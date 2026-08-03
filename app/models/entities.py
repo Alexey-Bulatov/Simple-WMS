@@ -293,15 +293,98 @@ class Zone(Base):
     kind: Mapped[LocationKind] = mapped_column(Enum(LocationKind), default=LocationKind.STORAGE)
 
     warehouse: Mapped[Warehouse] = relationship(back_populates="zones")
+    aisles: Mapped[list["Aisle"]] = relationship(back_populates="zone")
     locations: Mapped[list["Location"]] = relationship(back_populates="zone")
+
+
+class Aisle(Base):
+    __tablename__ = "aisles"
+    __table_args__ = (UniqueConstraint("zone_id", "code", name="uq_aisle_zone_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    zone_id: Mapped[int] = mapped_column(ForeignKey("zones.id"), index=True)
+    code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    zone: Mapped[Zone] = relationship(back_populates="aisles")
+    racks: Mapped[list["Rack"]] = relationship(back_populates="aisle")
+
+
+class Rack(Base):
+    __tablename__ = "racks"
+    __table_args__ = (UniqueConstraint("aisle_id", "code", name="uq_rack_aisle_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    aisle_id: Mapped[int] = mapped_column(ForeignKey("aisles.id"), index=True)
+    code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    aisle: Mapped[Aisle] = relationship(back_populates="racks")
+    sections: Mapped[list["RackSection"]] = relationship(back_populates="rack")
+
+
+class RackSection(Base):
+    __tablename__ = "rack_sections"
+    __table_args__ = (UniqueConstraint("rack_id", "code", name="uq_rack_section_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rack_id: Mapped[int] = mapped_column(ForeignKey("racks.id"), index=True)
+    code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    rack: Mapped[Rack] = relationship(back_populates="sections")
+    levels: Mapped[list["RackLevel"]] = relationship(back_populates="section")
+
+
+class RackLevel(Base):
+    __tablename__ = "rack_levels"
+    __table_args__ = (
+        UniqueConstraint("section_id", "code", name="uq_rack_level_code"),
+        CheckConstraint(
+            "elevation_mm IS NULL OR elevation_mm >= 0",
+            name="ck_rack_level_elevation",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    section_id: Mapped[int] = mapped_column(ForeignKey("rack_sections.id"), index=True)
+    code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    elevation_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    section: Mapped[RackSection] = relationship(back_populates="levels")
+    locations: Mapped[list["Location"]] = relationship(back_populates="level")
 
 
 class Location(Base):
     __tablename__ = "locations"
+    __table_args__ = (
+        UniqueConstraint("level_id", "position_code", name="uq_location_level_position"),
+        CheckConstraint(
+            "(aisle_id IS NULL AND rack_id IS NULL AND section_id IS NULL "
+            "AND level_id IS NULL AND position_code IS NULL) OR "
+            "(aisle_id IS NOT NULL AND rack_id IS NOT NULL AND section_id IS NOT NULL "
+            "AND level_id IS NOT NULL AND position_code IS NOT NULL)",
+            name="ck_location_complete_address",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"))
     zone_id: Mapped[int] = mapped_column(ForeignKey("zones.id"))
+    aisle_id: Mapped[int | None] = mapped_column(ForeignKey("aisles.id"), nullable=True, index=True)
+    rack_id: Mapped[int | None] = mapped_column(ForeignKey("racks.id"), nullable=True, index=True)
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("rack_sections.id"), nullable=True, index=True)
+    level_id: Mapped[int | None] = mapped_column(ForeignKey("rack_levels.id"), nullable=True, index=True)
+    position_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     code: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     kind: Mapped[LocationKind] = mapped_column(Enum(LocationKind), default=LocationKind.STORAGE)
@@ -309,6 +392,10 @@ class Location(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     zone: Mapped[Zone] = relationship(back_populates="locations")
+    aisle: Mapped[Aisle | None] = relationship()
+    rack: Mapped[Rack | None] = relationship()
+    section: Mapped[RackSection | None] = relationship()
+    level: Mapped[RackLevel | None] = relationship(back_populates="locations")
 
 
 class LogisticShipment(Base):

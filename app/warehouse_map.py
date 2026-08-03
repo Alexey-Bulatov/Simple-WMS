@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
+    Aisle,
     LogisticInventory,
     LogisticInventoryLine,
     LogisticInventoryLocation,
@@ -15,22 +16,30 @@ from app.models.entities import (
     LogisticUnit,
     Location,
     OperationEvent,
+    Rack,
+    RackLevel,
+    RackSection,
     Warehouse,
     WarehouseMapItem,
     Zone,
 )
 from app.models.enums import LocationKind
 from app.schemas import (
+    LocationCreate,
     WarehouseMapItemUpdate,
     WarehouseMapLabelCreate,
     WarehouseMapLocationCreate,
     WarehouseMapRowCreate,
 )
+from app.services import create_location, ensure_address_hierarchy, location_address_payload
 
 CANVAS_WIDTH = 1000
 CANVAS_HEIGHT = 600
 SANDBOX_WAREHOUSE_CODE = "WH02"
 SANDBOX_ZONE_CODE = "ST01"
+DEFAULT_MAP_AISLE_CODE = "A01"
+DEFAULT_MAP_SECTION_CODE = "S01"
+DEFAULT_MAP_LEVEL_CODE = "L01"
 
 
 def _value(value: object) -> str:
@@ -120,6 +129,41 @@ def _location_reference_reason(db: Session, location: Location) -> str | None:
     ):
         return "ячейка присутствует в истории отгрузки"
     return None
+
+
+def _prune_empty_address_branches(db: Session, locations: list[Location]) -> None:
+    level_ids = {location.level_id for location in locations if location.level_id}
+    for level_id in level_ids:
+        if db.scalar(select(Location.id).where(Location.level_id == level_id).limit(1)):
+            continue
+        level = db.get(RackLevel, level_id)
+        if level is None:
+            continue
+        section_id = level.section_id
+        db.delete(level)
+        db.flush()
+        if db.scalar(select(RackLevel.id).where(RackLevel.section_id == section_id).limit(1)):
+            continue
+        section = db.get(RackSection, section_id)
+        if section is None:
+            continue
+        rack_id = section.rack_id
+        db.delete(section)
+        db.flush()
+        if db.scalar(select(RackSection.id).where(RackSection.rack_id == rack_id).limit(1)):
+            continue
+        rack = db.get(Rack, rack_id)
+        if rack is None:
+            continue
+        aisle_id = rack.aisle_id
+        db.delete(rack)
+        db.flush()
+        if db.scalar(select(Rack.id).where(Rack.aisle_id == aisle_id).limit(1)):
+            continue
+        aisle = db.get(Aisle, aisle_id)
+        if aisle is not None:
+            db.delete(aisle)
+            db.flush()
 
 
 def _assert_sandbox(warehouse: Warehouse) -> None:
@@ -229,7 +273,28 @@ def _create_row(
         )
     ):
         raise HTTPException(status_code=409, detail=f"Ряд уже существует: {normalized_row}")
-    codes = [f"{warehouse.code}-{zone.code}-{normalized_row}-P{index:02d}" for index in range(1, location_count + 1)]
+    aisle, address_rack, section, level, _ = ensure_address_hierarchy(
+        db,
+        zone,
+        aisle_code=DEFAULT_MAP_AISLE_CODE,
+        rack_code=normalized_row,
+        section_code=DEFAULT_MAP_SECTION_CODE,
+        level_code=DEFAULT_MAP_LEVEL_CODE,
+    )
+    codes = [
+        "-".join(
+            (
+                warehouse.code,
+                zone.code,
+                aisle.code,
+                address_rack.code,
+                section.code,
+                level.code,
+                f"P{index:02d}",
+            )
+        )
+        for index in range(1, location_count + 1)
+    ]
     existing_code = db.scalar(select(Location.code).where(Location.code.in_(codes)).limit(1))
     if existing_code:
         raise HTTPException(status_code=409, detail=f"Ячейка уже существует: {existing_code}")
@@ -248,17 +313,22 @@ def _create_row(
         is_locked=locked,
     )
     for index, code in enumerate(codes, start=1):
-        location = Location(
-            warehouse_id=warehouse.id,
-            zone_id=zone.id,
-            code=code,
-            name=f"{label}, место {index}",
-            kind=LocationKind.STORAGE,
-            capacity_units=1,
-            is_active=True,
+        location = create_location(
+            db,
+            LocationCreate(
+                warehouse_id=warehouse.id,
+                zone_id=zone.id,
+                aisle_id=aisle.id,
+                rack_id=address_rack.id,
+                section_id=section.id,
+                level_id=level.id,
+                position_code=f"P{index:02d}",
+                code=code,
+                name=f"{label}, место {index}",
+                kind=LocationKind.STORAGE,
+                capacity_units=1,
+            ),
         )
-        db.add(location)
-        db.flush()
         _add_item(
             db,
             warehouse=warehouse,
@@ -532,6 +602,7 @@ def warehouse_map_payload(db: Session, warehouse_code: str) -> dict:
                 "code": location.code,
                 "name": location.name,
                 "kind": _value(location.kind),
+                "address": location_address_payload(location),
                 "capacity_units": location.capacity_units,
                 "state": _location_state(location_units),
                 "units": [
@@ -611,24 +682,41 @@ def create_map_location(db: Session, warehouse_code: str, payload: WarehouseMapL
     _assert_sandbox(warehouse)
     zone = _zone(db, warehouse, payload.zone_code)
     code = payload.code.strip().upper()
-    if not code.startswith(f"{warehouse.code}-"):
+    parts = code.split("-")
+    if len(parts) != 7 or parts[0] != warehouse.code or parts[1] != zone.code:
         raise HTTPException(
             status_code=422,
-            detail=f"Код ячейки учебного склада должен начинаться с {warehouse.code}-",
+            detail=(
+                "Код стеллажной ячейки должен иметь вид "
+                f"{warehouse.code}-{zone.code}-A01-R01-S01-L01-P01"
+            ),
         )
     if db.scalar(select(Location.id).where(Location.code == code)):
         raise HTTPException(status_code=409, detail=f"Ячейка уже существует: {code}")
-    location = Location(
-        warehouse_id=warehouse.id,
-        zone_id=zone.id,
-        code=code,
-        name=payload.label,
-        kind=LocationKind.STORAGE,
-        capacity_units=1,
-        is_active=True,
+    aisle, rack, section, level, _ = ensure_address_hierarchy(
+        db,
+        zone,
+        aisle_code=parts[2],
+        rack_code=parts[3],
+        section_code=parts[4],
+        level_code=parts[5],
     )
-    db.add(location)
-    db.flush()
+    location = create_location(
+        db,
+        LocationCreate(
+            warehouse_id=warehouse.id,
+            zone_id=zone.id,
+            aisle_id=aisle.id,
+            rack_id=rack.id,
+            section_id=section.id,
+            level_id=level.id,
+            position_code=parts[6],
+            code=code,
+            name=payload.label,
+            kind=LocationKind.STORAGE,
+            capacity_units=1,
+        ),
+    )
     _add_item(
         db,
         warehouse=warehouse,
@@ -765,6 +853,8 @@ def delete_map_item(db: Session, warehouse_code: str, item_id: int, *, actor: st
     for location in locations:
         if location:
             db.delete(location)
+    db.flush()
+    _prune_empty_address_branches(db, [location for location in locations if location])
     _event(
         db,
         operation="warehouse_map_item_deleted",
@@ -798,6 +888,7 @@ def reset_sandbox_map(db: Session, warehouse_code: str, *, actor: str) -> dict:
     for location in locations:
         db.delete(location)
     db.flush()
+    _prune_empty_address_branches(db, locations)
     zone = _zone(db, warehouse, SANDBOX_ZONE_CODE)
     _create_sandbox_defaults(db, warehouse, zone)
     _event(

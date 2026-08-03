@@ -27,6 +27,7 @@
     $("demoFacts").innerHTML = [
       fact("Товаров создано", result.created_products),
       fact("Партий создано", result.created_batches),
+      fact("Адресных уровней", (result.created_aisles || 0) + (result.created_racks || 0) + (result.created_sections || 0) + (result.created_levels || 0)),
       fact("Ячеек создано", result.created_locations),
       fact("Единиц создано", result.created_logistic_units),
       fact("Размещено", result.placed_logistic_units),

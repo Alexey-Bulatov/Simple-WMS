@@ -4,20 +4,32 @@ from sqlalchemy import select
 
 from app.core.constants import (
     CODE_SEPARATOR,
+    DEFAULT_AISLE_CODE,
+    DEFAULT_LEVEL_CODE,
+    DEFAULT_RACK_CODE,
+    DEFAULT_SECTION_CODE,
     DEFAULT_UNIT,
     DEFAULT_WAREHOUSE_CODE,
     DEFAULT_WAREHOUSE_NAME,
     RECEIVING_LOCATION_SUFFIX,
     RECEIVING_ZONE_CODE,
     RECEIVING_ZONE_NAME,
-    STORAGE_LOCATION_PATTERN,
+    STORAGE_POSITION_PATTERN,
     STORAGE_ZONE_CODE,
     STORAGE_ZONE_NAME,
 )
 from app.db.session import SessionLocal, init_db
 from app.models.enums import LocationKind, UserRole
 from app.schemas import BatchCreate, LocationCreate, ProductCreate, UserCreate, WarehouseCreate, ZoneCreate
-from app.services import create_batch, create_location, create_product, create_user, create_warehouse, create_zone
+from app.services import (
+    create_batch,
+    create_location,
+    create_product,
+    create_user,
+    create_warehouse,
+    create_zone,
+    ensure_address_hierarchy,
+)
 from app.models.entities import Product, User, Warehouse
 
 
@@ -90,13 +102,37 @@ def run() -> None:
                     capacity_units=4,
                 ),
             )
+            aisle, rack, section, level, _ = ensure_address_hierarchy(
+                db,
+                storage,
+                aisle_code=DEFAULT_AISLE_CODE,
+                rack_code=DEFAULT_RACK_CODE,
+                section_code=DEFAULT_SECTION_CODE,
+                level_code=DEFAULT_LEVEL_CODE,
+            )
             for idx in range(1, 6):
+                position_code = STORAGE_POSITION_PATTERN.format(index=idx)
                 create_location(
                     db,
                     LocationCreate(
                         warehouse_id=warehouse.id,
                         zone_id=storage.id,
-                        code=f"{warehouse.code}{CODE_SEPARATOR}{STORAGE_ZONE_CODE}{CODE_SEPARATOR}{STORAGE_LOCATION_PATTERN.format(index=idx)}",
+                        aisle_id=aisle.id,
+                        rack_id=rack.id,
+                        section_id=section.id,
+                        level_id=level.id,
+                        position_code=position_code,
+                        code=CODE_SEPARATOR.join(
+                            (
+                                warehouse.code,
+                                STORAGE_ZONE_CODE,
+                                aisle.code,
+                                rack.code,
+                                section.code,
+                                level.code,
+                                position_code,
+                            )
+                        ),
                         name=f"Место хранения {idx}",
                         kind=LocationKind.STORAGE,
                         capacity_units=1,

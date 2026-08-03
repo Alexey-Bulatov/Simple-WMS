@@ -15,6 +15,7 @@ from app.labels import LabelItem, build_labels_pdf
 from app.thermal_printing import ThermalPrintError, print_thermal_label
 from app.imports import apply_import, parse_import_file, validate_import_rows
 from app.models.entities import (
+    Aisle,
     Batch,
     EquipmentProfile,
     LogisticInventory,
@@ -26,12 +27,17 @@ from app.models.entities import (
     Location,
     OperationEvent,
     Product,
+    Rack,
+    RackLevel,
+    RackSection,
     UnitOfMeasure,
     User,
     Warehouse,
     Zone,
 )
 from app.schemas import (
+    AisleCreate,
+    AisleRead,
     BatchCreate,
     BatchRead,
     DemoCatalogRequest,
@@ -70,6 +76,12 @@ from app.schemas import (
     LocationRead,
     ProductCreate,
     ProductRead,
+    RackCreate,
+    RackLevelCreate,
+    RackLevelRead,
+    RackRead,
+    RackSectionCreate,
+    RackSectionRead,
     TaskActionRequest,
     TaskAssignRequest,
     TaskSyncRequest,
@@ -93,11 +105,15 @@ from app.services import (
     add_logistic_unit_content,
     close_logistic_unit,
     create_batch,
+    create_aisle,
     create_equipment_profile,
     create_location,
     create_logistic_unit,
     create_logistic_unit_type,
     create_product,
+    create_rack,
+    create_rack_level,
+    create_rack_section,
     create_user,
     create_unit_of_measure,
     create_warehouse,
@@ -110,6 +126,7 @@ from app.services import (
     get_logistic_unit,
     hold_logistic_unit,
     logistic_unit_payload,
+    location_address_payload,
     move_logistic_unit,
     place_logistic_unit,
     release_logistic_unit,
@@ -429,6 +446,7 @@ def api_universal_location_card(
                 "name": zone.name,
                 "kind": zone.kind,
             } if zone else None,
+            "address": location_address_payload(location),
         },
         "logistic_units": [logistic_unit_payload(db, unit) for unit in units],
         "events": [
@@ -1346,6 +1364,198 @@ def api_create_zone(payload: ZoneCreate, db: Session = Depends(get_db)) -> Zone:
 @router.get("/zones", response_model=list[ZoneRead])
 def api_list_zones(db: Session = Depends(get_db)) -> list[Zone]:
     return list(db.scalars(select(Zone).order_by(Zone.code)))
+
+
+@router.post("/aisles", response_model=AisleRead)
+def api_create_aisle(payload: AisleCreate, db: Session = Depends(get_db)) -> Aisle:
+    return create_aisle(db, payload)
+
+
+@router.get("/aisles", response_model=list[AisleRead])
+def api_list_aisles(db: Session = Depends(get_db)) -> list[Aisle]:
+    return list(db.scalars(select(Aisle).order_by(Aisle.zone_id, Aisle.sort_order, Aisle.code)))
+
+
+@router.post("/racks", response_model=RackRead)
+def api_create_rack(payload: RackCreate, db: Session = Depends(get_db)) -> Rack:
+    return create_rack(db, payload)
+
+
+@router.get("/racks", response_model=list[RackRead])
+def api_list_racks(db: Session = Depends(get_db)) -> list[Rack]:
+    return list(db.scalars(select(Rack).order_by(Rack.aisle_id, Rack.sort_order, Rack.code)))
+
+
+@router.post("/rack-sections", response_model=RackSectionRead)
+def api_create_rack_section(
+    payload: RackSectionCreate,
+    db: Session = Depends(get_db),
+) -> RackSection:
+    return create_rack_section(db, payload)
+
+
+@router.get("/rack-sections", response_model=list[RackSectionRead])
+def api_list_rack_sections(db: Session = Depends(get_db)) -> list[RackSection]:
+    return list(
+        db.scalars(
+            select(RackSection).order_by(
+                RackSection.rack_id,
+                RackSection.sort_order,
+                RackSection.code,
+            )
+        )
+    )
+
+
+@router.post("/rack-levels", response_model=RackLevelRead)
+def api_create_rack_level(
+    payload: RackLevelCreate,
+    db: Session = Depends(get_db),
+) -> RackLevel:
+    return create_rack_level(db, payload)
+
+
+@router.get("/rack-levels", response_model=list[RackLevelRead])
+def api_list_rack_levels(db: Session = Depends(get_db)) -> list[RackLevel]:
+    return list(
+        db.scalars(
+            select(RackLevel).order_by(
+                RackLevel.section_id,
+                RackLevel.sort_order,
+                RackLevel.code,
+            )
+        )
+    )
+
+
+@router.get("/warehouses/{warehouse_code}/address-tree")
+def api_warehouse_address_tree(
+    warehouse_code: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    warehouse = db.scalar(
+        select(Warehouse).where(func.upper(Warehouse.code) == warehouse_code.strip().upper())
+    )
+    if warehouse is None:
+        raise not_found("warehouse")
+    zones = list(
+        db.scalars(select(Zone).where(Zone.warehouse_id == warehouse.id).order_by(Zone.code))
+    )
+    zone_ids = [zone.id for zone in zones]
+    aisles = list(
+        db.scalars(
+            select(Aisle)
+            .where(Aisle.zone_id.in_(zone_ids))
+            .order_by(Aisle.zone_id, Aisle.sort_order, Aisle.code)
+        )
+    ) if zone_ids else []
+    aisle_ids = [aisle.id for aisle in aisles]
+    racks = list(
+        db.scalars(
+            select(Rack)
+            .where(Rack.aisle_id.in_(aisle_ids))
+            .order_by(Rack.aisle_id, Rack.sort_order, Rack.code)
+        )
+    ) if aisle_ids else []
+    rack_ids = [rack.id for rack in racks]
+    sections = list(
+        db.scalars(
+            select(RackSection)
+            .where(RackSection.rack_id.in_(rack_ids))
+            .order_by(RackSection.rack_id, RackSection.sort_order, RackSection.code)
+        )
+    ) if rack_ids else []
+    section_ids = [section.id for section in sections]
+    levels = list(
+        db.scalars(
+            select(RackLevel)
+            .where(RackLevel.section_id.in_(section_ids))
+            .order_by(RackLevel.section_id, RackLevel.sort_order, RackLevel.code)
+        )
+    ) if section_ids else []
+    locations = list(
+        db.scalars(
+            select(Location)
+            .where(Location.zone_id.in_(zone_ids))
+            .order_by(Location.zone_id, Location.level_id, Location.position_code, Location.code)
+        )
+    ) if zone_ids else []
+
+    def group_by(rows: list, key: str) -> dict[int, list]:
+        result: dict[int, list] = {}
+        for row in rows:
+            value = getattr(row, key)
+            if value is not None:
+                result.setdefault(value, []).append(row)
+        return result
+
+    aisles_by_zone = group_by(aisles, "zone_id")
+    racks_by_aisle = group_by(racks, "aisle_id")
+    sections_by_rack = group_by(sections, "rack_id")
+    levels_by_section = group_by(levels, "section_id")
+    positions_by_level = group_by(
+        [location for location in locations if location.level_id is not None],
+        "level_id",
+    )
+    zone_locations_by_zone = group_by(
+        [location for location in locations if location.level_id is None],
+        "zone_id",
+    )
+    result_zones = []
+    for zone in zones:
+        aisle_rows = []
+        for aisle in aisles_by_zone.get(zone.id, []):
+            rack_rows = []
+            for rack in racks_by_aisle.get(aisle.id, []):
+                section_rows = []
+                for section in sections_by_rack.get(rack.id, []):
+                    level_rows = []
+                    for level in levels_by_section.get(section.id, []):
+                        level_rows.append(
+                            {
+                                "id": level.id,
+                                "code": level.code,
+                                "name": level.name,
+                                "elevation_mm": level.elevation_mm,
+                                "positions": [
+                                    {
+                                        "id": location.id,
+                                        "code": location.code,
+                                        "position_code": location.position_code,
+                                        "name": location.name,
+                                        "capacity_units": location.capacity_units,
+                                        "is_active": location.is_active,
+                                    }
+                                    for location in positions_by_level.get(level.id, [])
+                                ],
+                            }
+                        )
+                    section_rows.append(
+                        {"id": section.id, "code": section.code, "name": section.name, "levels": level_rows}
+                    )
+                rack_rows.append(
+                    {"id": rack.id, "code": rack.code, "name": rack.name, "sections": section_rows}
+                )
+            aisle_rows.append(
+                {"id": aisle.id, "code": aisle.code, "name": aisle.name, "racks": rack_rows}
+            )
+        result_zones.append(
+            {
+                "id": zone.id,
+                "code": zone.code,
+                "name": zone.name,
+                "kind": zone.kind,
+                "zone_locations": [
+                    {"id": location.id, "code": location.code, "name": location.name}
+                    for location in zone_locations_by_zone.get(zone.id, [])
+                ],
+                "aisles": aisle_rows,
+            }
+        )
+    return {
+        "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
+        "zones": result_zones,
+    }
 
 
 @router.post("/locations", response_model=LocationRead)

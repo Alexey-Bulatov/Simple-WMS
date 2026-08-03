@@ -37,7 +37,8 @@
   function locationCard(card) {
     const location = card.location;
     const units = (card.logistic_units || []).map((unit) => row(link("unit", unit.uid), unit.type_name, statusLabels[unit.status] || unit.status)).join("") || row("Ячейка пуста");
-    $("cardView").innerHTML = `<div class="card-hero"><span class="eyebrow">Ячейка</span><div class="card-code mono">${esc(location.code)}</div><div class="facts">${fact("Тип", location.kind_label)}${fact("Склад", location.warehouse?.code)}${fact("Зона", location.zone?.code)}${fact("Вместимость", location.capacity_units)}</div></div><div class="card-sections"><section class="card-section wide"><h3>Логистические единицы</h3><div class="data-list">${units}</div></section><section class="card-section wide"><h3>История движений</h3><div class="data-list">${eventsHtml(card.events)}</div></section></div>`;
+    const address = [location.address?.aisle, location.address?.rack, location.address?.section, location.address?.level, location.address?.position].filter(Boolean).join(" / ") || "На уровне зоны";
+    $("cardView").innerHTML = `<div class="card-hero"><span class="eyebrow">Ячейка</span><div class="card-code mono">${esc(location.code)}</div><div class="facts">${fact("Тип", location.kind_label)}${fact("Склад", location.warehouse?.code)}${fact("Зона", location.zone?.code)}${fact("Адрес", address)}${fact("Вместимость", location.capacity_units)}</div></div><div class="card-sections"><section class="card-section wide"><h3>Логистические единицы</h3><div class="data-list">${units}</div></section><section class="card-section wide"><h3>История движений</h3><div class="data-list">${eventsHtml(card.events)}</div></section></div>`;
   }
   async function openCard() {
     const raw = $("cardCode").value.trim();

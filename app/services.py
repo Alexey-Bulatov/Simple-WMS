@@ -12,17 +12,22 @@ from sqlalchemy.orm import Session
 from app.core.constants import (
     BOX_CODE_PREFIX,
     CODE_SEPARATOR,
+    DEFAULT_AISLE_CODE,
     DEFAULT_CITY,
+    DEFAULT_LEVEL_CODE,
+    DEFAULT_RACK_CODE,
+    DEFAULT_SECTION_CODE,
     DEFAULT_UNIT,
     PALLET_CODE_PREFIX,
     RECEIVING_LOCATION_SUFFIX,
     RECEIVING_ZONE_CODE,
     RECEIVING_ZONE_NAME,
-    STORAGE_LOCATION_PATTERN,
+    STORAGE_POSITION_PATTERN,
     STORAGE_ZONE_CODE,
     STORAGE_ZONE_NAME,
 )
 from app.models.entities import (
+    Aisle,
     Batch,
     EquipmentProfile,
     LogisticUnit,
@@ -32,6 +37,9 @@ from app.models.entities import (
     Location,
     OperationEvent,
     Product,
+    Rack,
+    RackLevel,
+    RackSection,
     UnitOfMeasure,
     User,
     Warehouse,
@@ -44,6 +52,7 @@ from app.models.enums import (
     MeasurementDimension,
 )
 from app.schemas import (
+    AisleCreate,
     BatchCreate,
     DemoCatalogRequest,
     EquipmentProfileCreate,
@@ -59,6 +68,9 @@ from app.schemas import (
     LogisticUnitTypeCreate,
     LocationCreate,
     ProductCreate,
+    RackCreate,
+    RackLevelCreate,
+    RackSectionCreate,
     UserCreate,
     UnitOfMeasureCreate,
     WarehouseCreate,
@@ -1172,7 +1184,9 @@ def seed_batch_dates() -> tuple[date, date]:
 
 
 def create_warehouse(db: Session, payload: WarehouseCreate) -> Warehouse:
-    warehouse = Warehouse(**payload.model_dump())
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    warehouse = Warehouse(**data)
     db.add(warehouse)
     commit_or_409(db, "warehouse already exists")
     db.refresh(warehouse)
@@ -1183,11 +1197,127 @@ def create_zone(db: Session, payload: ZoneCreate) -> Zone:
     warehouse = db.get(Warehouse, payload.warehouse_id)
     if warehouse is None:
         raise not_found("warehouse")
-    zone = Zone(**payload.model_dump())
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    zone = Zone(**data)
     db.add(zone)
     commit_or_409(db, "zone already exists in this warehouse")
     db.refresh(zone)
     return zone
+
+
+def create_aisle(db: Session, payload: AisleCreate) -> Aisle:
+    zone = db.get(Zone, payload.zone_id)
+    if zone is None:
+        raise not_found("zone")
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    aisle = Aisle(**data)
+    db.add(aisle)
+    commit_or_409(db, "aisle already exists in this zone")
+    db.refresh(aisle)
+    return aisle
+
+
+def create_rack(db: Session, payload: RackCreate) -> Rack:
+    aisle = db.get(Aisle, payload.aisle_id)
+    if aisle is None:
+        raise not_found("aisle")
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    rack = Rack(**data)
+    db.add(rack)
+    commit_or_409(db, "rack already exists in this aisle")
+    db.refresh(rack)
+    return rack
+
+
+def create_rack_section(db: Session, payload: RackSectionCreate) -> RackSection:
+    rack = db.get(Rack, payload.rack_id)
+    if rack is None:
+        raise not_found("rack")
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    section = RackSection(**data)
+    db.add(section)
+    commit_or_409(db, "section already exists in this rack")
+    db.refresh(section)
+    return section
+
+
+def create_rack_level(db: Session, payload: RackLevelCreate) -> RackLevel:
+    section = db.get(RackSection, payload.section_id)
+    if section is None:
+        raise not_found("rack section")
+    data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    level = RackLevel(**data)
+    db.add(level)
+    commit_or_409(db, "level already exists in this section")
+    db.refresh(level)
+    return level
+
+
+def ensure_address_hierarchy(
+    db: Session,
+    zone: Zone,
+    *,
+    aisle_code: str,
+    rack_code: str,
+    section_code: str,
+    level_code: str,
+) -> tuple[Aisle, Rack, RackSection, RackLevel, dict[str, int]]:
+    codes = [value.strip().upper() for value in (aisle_code, rack_code, section_code, level_code)]
+    if any(not value for value in codes):
+        raise bad_request("address hierarchy codes must not be empty")
+    aisle_code, rack_code, section_code, level_code = codes
+    created = {"created_aisles": 0, "created_racks": 0, "created_sections": 0, "created_levels": 0}
+    aisle = db.scalar(select(Aisle).where(Aisle.zone_id == zone.id, Aisle.code == aisle_code))
+    if aisle is None:
+        aisle = create_aisle(
+            db,
+            AisleCreate(zone_id=zone.id, code=aisle_code, name=f"Проход {aisle_code}"),
+        )
+        created["created_aisles"] += 1
+    rack = db.scalar(select(Rack).where(Rack.aisle_id == aisle.id, Rack.code == rack_code))
+    if rack is None:
+        rack = create_rack(
+            db,
+            RackCreate(aisle_id=aisle.id, code=rack_code, name=f"Стеллаж {rack_code}"),
+        )
+        created["created_racks"] += 1
+    section = db.scalar(
+        select(RackSection).where(RackSection.rack_id == rack.id, RackSection.code == section_code)
+    )
+    if section is None:
+        section = create_rack_section(
+            db,
+            RackSectionCreate(rack_id=rack.id, code=section_code, name=f"Секция {section_code}"),
+        )
+        created["created_sections"] += 1
+    level = db.scalar(
+        select(RackLevel).where(RackLevel.section_id == section.id, RackLevel.code == level_code)
+    )
+    if level is None:
+        level = create_rack_level(
+            db,
+            RackLevelCreate(section_id=section.id, code=level_code, name=f"Ярус {level_code}"),
+        )
+        created["created_levels"] += 1
+    return aisle, rack, section, level, created
+
+
+def location_address_payload(location: Location) -> dict:
+    return {
+        "warehouse": location.zone.warehouse.code,
+        "zone": location.zone.code,
+        "aisle": location.aisle.code if location.aisle else None,
+        "rack": location.rack.code if location.rack else None,
+        "section": location.section.code if location.section else None,
+        "level": location.level.code if location.level else None,
+        "position": location.position_code,
+        "structured": location.level_id is not None,
+    }
 
 
 def create_location(db: Session, payload: LocationCreate) -> Location:
@@ -1199,7 +1329,41 @@ def create_location(db: Session, payload: LocationCreate) -> Location:
         raise not_found("zone")
     if zone.warehouse_id != warehouse.id:
         raise bad_request("zone belongs to another warehouse")
-    location = Location(**payload.model_dump())
+    data = payload.model_dump()
+    if payload.level_id is not None:
+        aisle = db.get(Aisle, payload.aisle_id)
+        rack = db.get(Rack, payload.rack_id)
+        section = db.get(RackSection, payload.section_id)
+        level = db.get(RackLevel, payload.level_id)
+        if aisle is None or rack is None or section is None or level is None:
+            raise not_found("address hierarchy node")
+        if aisle.zone_id != zone.id:
+            raise bad_request("aisle belongs to another zone")
+        if rack.aisle_id != aisle.id:
+            raise bad_request("rack belongs to another aisle")
+        if section.rack_id != rack.id:
+            raise bad_request("section belongs to another rack")
+        if level.section_id != section.id:
+            raise bad_request("level belongs to another section")
+        position_code = payload.position_code.strip().upper()
+        canonical_code = CODE_SEPARATOR.join(
+            (
+                warehouse.code,
+                zone.code,
+                aisle.code,
+                rack.code,
+                section.code,
+                level.code,
+                position_code,
+            )
+        )
+        if payload.code and payload.code.strip().upper() != canonical_code:
+            raise bad_request(f"location code must match structured address: {canonical_code}")
+        data["position_code"] = position_code
+        data["code"] = canonical_code
+    else:
+        data["code"] = payload.code.strip().upper()
+    location = Location(**data)
     db.add(location)
     commit_or_409(db, "location already exists")
     db.refresh(location)
@@ -1212,6 +1376,10 @@ def ensure_demo_catalog(db: Session, payload: DemoCatalogRequest) -> dict:
         "created_batches": 0,
         "created_warehouses": 0,
         "created_zones": 0,
+        "created_aisles": 0,
+        "created_racks": 0,
+        "created_sections": 0,
+        "created_levels": 0,
         "created_locations": 0,
         "product_ids": [],
         "batch_ids": [],
@@ -1253,6 +1421,17 @@ def ensure_demo_catalog(db: Session, payload: DemoCatalogRequest) -> dict:
         )
         created["created_zones"] += 1
 
+    aisle, rack, section, level, address_created = ensure_address_hierarchy(
+        db,
+        storage,
+        aisle_code=DEFAULT_AISLE_CODE,
+        rack_code=DEFAULT_RACK_CODE,
+        section_code=DEFAULT_SECTION_CODE,
+        level_code=DEFAULT_LEVEL_CODE,
+    )
+    for key, value in address_created.items():
+        created[key] += value
+
     receiving_code = f"{warehouse.code}{CODE_SEPARATOR}{RECEIVING_ZONE_CODE}{CODE_SEPARATOR}{RECEIVING_LOCATION_SUFFIX}"
     if db.scalar(select(Location.id).where(Location.code == receiving_code)) is None:
         create_location(
@@ -1269,13 +1448,29 @@ def ensure_demo_catalog(db: Session, payload: DemoCatalogRequest) -> dict:
         created["created_locations"] += 1
 
     for idx in range(1, payload.storage_locations + 1):
-        code = f"{warehouse.code}{CODE_SEPARATOR}{STORAGE_ZONE_CODE}{CODE_SEPARATOR}{STORAGE_LOCATION_PATTERN.format(index=idx)}"
+        position_code = STORAGE_POSITION_PATTERN.format(index=idx)
+        code = CODE_SEPARATOR.join(
+            (
+                warehouse.code,
+                storage.code,
+                aisle.code,
+                rack.code,
+                section.code,
+                level.code,
+                position_code,
+            )
+        )
         if db.scalar(select(Location.id).where(Location.code == code)) is None:
             create_location(
                 db,
                 LocationCreate(
                     warehouse_id=warehouse.id,
                     zone_id=storage.id,
+                    aisle_id=aisle.id,
+                    rack_id=rack.id,
+                    section_id=section.id,
+                    level_id=level.id,
+                    position_code=position_code,
                     code=code,
                     name=f"Место хранения {idx}",
                     kind=LocationKind.STORAGE,

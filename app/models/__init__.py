@@ -1,4 +1,5 @@
 from app.models.entities import (
+    Aisle,
     Batch,
     EquipmentProfile,
     LogisticUnit,
@@ -16,6 +17,9 @@ from app.models.entities import (
     Location,
     OperationEvent,
     Product,
+    Rack,
+    RackLevel,
+    RackSection,
     User,
     UnitOfMeasure,
     Warehouse,
@@ -24,6 +28,7 @@ from app.models.entities import (
 )
 
 __all__ = [
+    "Aisle",
     "Batch",
     "EquipmentProfile",
     "LogisticUnit",
@@ -41,6 +46,9 @@ __all__ = [
     "Location",
     "OperationEvent",
     "Product",
+    "Rack",
+    "RackLevel",
+    "RackSection",
     "User",
     "UnitOfMeasure",
     "Warehouse",

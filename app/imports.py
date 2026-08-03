@@ -14,7 +14,14 @@ from app.core.constants import DEFAULT_CITY, DEFAULT_UNIT
 from app.models.entities import Batch, Location, Product, Warehouse, Zone
 from app.models.enums import LocationKind
 from app.schemas import BatchCreate, LocationCreate, ProductCreate, WarehouseCreate, ZoneCreate
-from app.services import create_batch, create_location, create_product, create_warehouse, create_zone
+from app.services import (
+    create_batch,
+    create_location,
+    create_product,
+    create_warehouse,
+    create_zone,
+    ensure_address_hierarchy,
+)
 
 
 IMPORT_KINDS = {"products", "batches", "locations"}
@@ -37,6 +44,16 @@ HEADER_ALIASES = {
     "код склада": "warehouse_code",
     "зона": "zone_code",
     "код зоны": "zone_code",
+    "проход": "aisle_code",
+    "код прохода": "aisle_code",
+    "стеллаж": "rack_code",
+    "код стеллажа": "rack_code",
+    "секция": "section_code",
+    "код секции": "section_code",
+    "ярус": "level_code",
+    "код яруса": "level_code",
+    "позиция": "position_code",
+    "код позиции": "position_code",
     "тип": "kind",
     "вместимость": "capacity_units",
 }
@@ -194,15 +211,26 @@ def normalize_location_kind(value: Any) -> LocationKind:
 
 
 def normalize_location_row(row: dict[str, Any], db: Session) -> dict[str, Any]:
-    code = str(row.get("code", "")).strip()
-    warehouse_code = str(row.get("warehouse_code", "")).strip()
-    zone_code = str(row.get("zone_code", "")).strip()
-    if not code:
-        raise ValueError("нет кода ячейки")
+    code = str(row.get("code", "")).strip().upper()
+    warehouse_code = str(row.get("warehouse_code", "")).strip().upper()
+    zone_code = str(row.get("zone_code", "")).strip().upper()
     if not warehouse_code:
         raise ValueError("нет кода склада")
     if not zone_code:
         raise ValueError("нет кода зоны")
+    address_codes = {
+        "aisle_code": str(row.get("aisle_code", "")).strip().upper(),
+        "rack_code": str(row.get("rack_code", "")).strip().upper(),
+        "section_code": str(row.get("section_code", "")).strip().upper(),
+        "level_code": str(row.get("level_code", "")).strip().upper(),
+        "position_code": str(row.get("position_code", "")).strip().upper(),
+    }
+    if any(address_codes.values()) and not all(address_codes.values()):
+        raise ValueError("для стеллажной ячейки нужны проход, стеллаж, секция, ярус и позиция")
+    if not code and all(address_codes.values()):
+        code = "-".join((warehouse_code, zone_code, *address_codes.values()))
+    if not code:
+        raise ValueError("нет кода ячейки")
     kind = normalize_location_kind(row.get("kind"))
     warehouse = db.scalar(select(Warehouse).where(Warehouse.code == warehouse_code))
     zone = db.scalar(select(Zone).where(Zone.code == zone_code, Zone.warehouse_id == warehouse.id)) if warehouse else None
@@ -213,6 +241,7 @@ def normalize_location_row(row: dict[str, Any], db: Session) -> dict[str, Any]:
         "zone_id": zone.id if zone else None,
         "zone_code": zone_code,
         "zone_name": str(row.get("zone_name") or zone_code),
+        **address_codes,
         "code": code,
         "name": str(row.get("name") or code),
         "kind": kind,
@@ -249,11 +278,29 @@ def apply_import(kind: str, rows: list[dict[str, Any]], db: Session) -> dict:
             zone = db.scalar(select(Zone).where(Zone.warehouse_id == warehouse.id, Zone.code == data["zone_code"]))
             if zone is None:
                 zone = create_zone(db, ZoneCreate(warehouse_id=warehouse.id, code=data["zone_code"], name=data["zone_name"], kind=data["kind"]))
+            address = {}
+            if data["aisle_code"]:
+                aisle, rack, section, level, _ = ensure_address_hierarchy(
+                    db,
+                    zone,
+                    aisle_code=data["aisle_code"],
+                    rack_code=data["rack_code"],
+                    section_code=data["section_code"],
+                    level_code=data["level_code"],
+                )
+                address = {
+                    "aisle_id": aisle.id,
+                    "rack_id": rack.id,
+                    "section_id": section.id,
+                    "level_id": level.id,
+                    "position_code": data["position_code"],
+                }
             create_location(
                 db,
                 LocationCreate(
                     warehouse_id=warehouse.id,
                     zone_id=zone.id,
+                    **address,
                     code=data["code"],
                     name=data["name"],
                     kind=data["kind"],

@@ -55,9 +55,17 @@ def test_demo_catalog_generator_is_idempotent(db):
 
     assert first["created_products"] == 3
     assert first["created_batches"] == 3
+    assert first["created_aisles"] == 1
+    assert first["created_racks"] == 1
+    assert first["created_sections"] == 1
+    assert first["created_levels"] == 1
     assert first["created_locations"] == 4
     assert second["created_products"] == 0
     assert second["created_batches"] == 0
+    assert second["created_aisles"] == 0
+    assert second["created_racks"] == 0
+    assert second["created_sections"] == 0
+    assert second["created_levels"] == 0
     assert second["created_locations"] == 0
 
 
@@ -192,6 +200,8 @@ def test_map_uses_universal_logistic_units(client, db):
     mapped_location = db.scalar(
         select(Location).where(Location.code.like("WH02-ST01-%"))
     )
+    assert mapped_location.level_id is not None
+    assert len(mapped_location.code.split("-")) == 7
     placed = client.post(
         f"/api/logistic-units/{generated.json()['logistic_unit_uids'][0]}/place",
         json={
@@ -212,6 +222,7 @@ def test_map_uses_universal_logistic_units(client, db):
     ]
     assert locations[0]["units"][0]["type_code"] == "PALLET"
     assert locations[0]["units"][0]["child_count"] == 2
+    assert locations[0]["address"]["structured"] is True
 
     warehouse = db.scalar(select(Warehouse).where(Warehouse.code == "WH02"))
     assert warehouse is not None
