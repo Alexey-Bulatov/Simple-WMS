@@ -42,6 +42,7 @@ from app.services import (
     logistic_location_occupied_count,
     not_found,
 )
+from app.stock import remove_logistic_unit_stock_positions
 
 
 ACTIVE_SHIPMENT_STATUSES = {
@@ -476,6 +477,7 @@ def close_logistic_shipment(
         unit = db.get(LogisticUnit, link.logistic_unit_id)
         if unit is None or unit.status != LogisticUnitStatus.LOADED:
             raise bad_request("all shipment units must have loaded status")
+        remove_logistic_unit_stock_positions(db, unit.id)
         unit.status = LogisticUnitStatus.SHIPPED
         link.status = "shipped"
         create_event(

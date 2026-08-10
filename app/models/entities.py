@@ -10,12 +10,14 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -273,6 +275,126 @@ class Batch(Base):
     operation_status: Mapped[str] = mapped_column(String(40), default="allowed")
 
     product: Mapped[Product] = relationship(back_populates="batches")
+
+
+class StockOwner(Base):
+    __tablename__ = "stock_owners"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StockPosition(Base):
+    __tablename__ = "stock_positions"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_stock_position_quantity"),
+        CheckConstraint(
+            "serial_number IS NULL OR quantity = 1",
+            name="ck_stock_position_serial_quantity",
+        ),
+        CheckConstraint(
+            "((logistic_unit_id IS NOT NULL AND location_id IS NULL) OR "
+            "(logistic_unit_id IS NULL AND location_id IS NOT NULL))",
+            name="ck_stock_position_single_holder",
+        ),
+        Index(
+            "uq_stock_position_unit_batch",
+            "logistic_unit_id",
+            "product_id",
+            "batch_id",
+            "owner_id",
+            "quality_status",
+            unique=True,
+            sqlite_where=text(
+                "logistic_unit_id IS NOT NULL AND batch_id IS NOT NULL AND serial_number IS NULL"
+            ),
+            postgresql_where=text(
+                "logistic_unit_id IS NOT NULL AND batch_id IS NOT NULL AND serial_number IS NULL"
+            ),
+        ),
+        Index(
+            "uq_stock_position_unit_no_batch",
+            "logistic_unit_id",
+            "product_id",
+            "owner_id",
+            "quality_status",
+            unique=True,
+            sqlite_where=text(
+                "logistic_unit_id IS NOT NULL AND batch_id IS NULL AND serial_number IS NULL"
+            ),
+            postgresql_where=text(
+                "logistic_unit_id IS NOT NULL AND batch_id IS NULL AND serial_number IS NULL"
+            ),
+        ),
+        Index(
+            "uq_stock_position_location_batch",
+            "location_id",
+            "product_id",
+            "batch_id",
+            "owner_id",
+            "quality_status",
+            unique=True,
+            sqlite_where=text(
+                "location_id IS NOT NULL AND batch_id IS NOT NULL AND serial_number IS NULL"
+            ),
+            postgresql_where=text(
+                "location_id IS NOT NULL AND batch_id IS NOT NULL AND serial_number IS NULL"
+            ),
+        ),
+        Index(
+            "uq_stock_position_location_no_batch",
+            "location_id",
+            "product_id",
+            "owner_id",
+            "quality_status",
+            unique=True,
+            sqlite_where=text(
+                "location_id IS NOT NULL AND batch_id IS NULL AND serial_number IS NULL"
+            ),
+            postgresql_where=text(
+                "location_id IS NOT NULL AND batch_id IS NULL AND serial_number IS NULL"
+            ),
+        ),
+        Index(
+            "uq_stock_position_product_serial_owner",
+            "product_id",
+            "serial_number",
+            "owner_id",
+            unique=True,
+            sqlite_where=text("serial_number IS NOT NULL"),
+            postgresql_where=text("serial_number IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"), nullable=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("stock_owners.id"), index=True)
+    quality_status: Mapped[str] = mapped_column(String(40), default="released", index=True)
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    logistic_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_units.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    product: Mapped[Product] = relationship()
+    batch: Mapped[Batch | None] = relationship()
+    owner: Mapped[StockOwner] = relationship()
+    logistic_unit: Mapped[LogisticUnit | None] = relationship()
+    location: Mapped["Location | None"] = relationship()
 
 
 class Warehouse(Base):

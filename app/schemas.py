@@ -282,6 +282,53 @@ class ProductPackagingRead(ProductPackagingCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class StockOwnerCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    is_internal: bool = False
+
+
+class StockOwnerRead(StockOwnerCreate):
+    id: int
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StockPositionRead(BaseModel):
+    id: int
+    product_id: int
+    product_code: str
+    product_name: str
+    batch_id: int | None
+    batch_number: str | None
+    owner_id: int
+    owner_code: str
+    owner_name: str
+    quality_status: str
+    serial_number: str | None
+    quantity: Decimal
+    available_quantity: Decimal
+    reserved_quantity: Decimal
+    in_transit_quantity: Decimal
+    blocked_quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    base_uom_symbol: str
+    holder_kind: Literal["logistic_unit", "location"]
+    logistic_unit_id: int | None
+    logistic_unit_uid: str | None
+    root_logistic_unit_uid: str | None
+    holder_status: LogisticUnitStatus | None
+    location_id: int | None
+    location_code: str | None
+    warehouse_id: int | None
+    warehouse_code: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class BatchCreate(BaseModel):
     batch_number: str = Field(min_length=1, max_length=80)
     product_id: int

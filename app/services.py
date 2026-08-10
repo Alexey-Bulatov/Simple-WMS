@@ -41,6 +41,7 @@ from app.models.entities import (
     Rack,
     RackLevel,
     RackSection,
+    StockOwner,
     UnitOfMeasure,
     User,
     Warehouse,
@@ -73,10 +74,16 @@ from app.schemas import (
     RackCreate,
     RackLevelCreate,
     RackSectionCreate,
+    StockOwnerCreate,
     UserCreate,
     UnitOfMeasureCreate,
     WarehouseCreate,
     ZoneCreate,
+)
+from app.stock import (
+    DEFAULT_STOCK_OWNER_CODE,
+    ensure_default_stock_owner,
+    sync_logistic_content_position,
 )
 
 
@@ -158,6 +165,10 @@ def create_user(db: Session, payload: UserCreate) -> User:
 
 def ensure_reference_catalogs(db: Session) -> dict[str, int]:
     changed = False
+    owner = db.scalar(select(StockOwner).where(StockOwner.code == DEFAULT_STOCK_OWNER_CODE))
+    if owner is None:
+        ensure_default_stock_owner(db)
+        changed = True
     units: dict[str, UnitOfMeasure] = {
         unit.code: unit for unit in db.scalars(select(UnitOfMeasure).order_by(UnitOfMeasure.id))
     }
@@ -641,6 +652,10 @@ def add_logistic_unit_content(
         db.add(line)
     else:
         line.quantity += stored_quantity
+    try:
+        sync_logistic_content_position(db, line, before_quantity + stored_quantity)
+    except ValueError as exc:
+        raise bad_request(str(exc)) from exc
     create_event(
         db,
         operation="logistic_unit_content_added",
@@ -678,6 +693,10 @@ def remove_logistic_unit_content(
         raise bad_request("removed quantity exceeds the content line quantity")
     before_quantity = line.quantity
     remaining = line.quantity - payload.quantity
+    try:
+        sync_logistic_content_position(db, line, remaining)
+    except ValueError as exc:
+        raise bad_request(str(exc)) from exc
     if remaining == 0:
         db.delete(line)
     else:
@@ -1244,6 +1263,25 @@ def create_product_packaging(
     commit_or_409(db, "product packaging code or barcode already exists")
     db.refresh(packaging)
     return packaging
+
+
+def create_stock_owner(db: Session, payload: StockOwnerCreate) -> StockOwner:
+    owner = StockOwner(
+        code=payload.code.strip().upper(),
+        name=payload.name.strip(),
+        is_internal=payload.is_internal,
+    )
+    db.add(owner)
+    create_event(
+        db,
+        operation="stock_owner_created",
+        object_type="stock_owner",
+        object_uid=owner.code,
+        after={"name": owner.name, "is_internal": owner.is_internal},
+    )
+    commit_or_409(db, "stock owner code already exists")
+    db.refresh(owner)
+    return owner
 
 
 def create_batch(db: Session, payload: BatchCreate) -> Batch:

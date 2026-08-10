@@ -31,6 +31,8 @@ from app.models.entities import (
     Rack,
     RackLevel,
     RackSection,
+    StockOwner,
+    StockPosition,
     UnitOfMeasure,
     User,
     Warehouse,
@@ -85,6 +87,9 @@ from app.schemas import (
     RackRead,
     RackSectionCreate,
     RackSectionRead,
+    StockOwnerCreate,
+    StockOwnerRead,
+    StockPositionRead,
     TaskActionRequest,
     TaskAssignRequest,
     TaskSyncRequest,
@@ -118,6 +123,7 @@ from app.services import (
     create_rack,
     create_rack_level,
     create_rack_section,
+    create_stock_owner,
     create_user,
     create_unit_of_measure,
     create_warehouse,
@@ -138,6 +144,7 @@ from app.services import (
     remove_logistic_unit_content,
     reopen_logistic_unit,
 )
+from app.stock import stock_position_payload
 from app.logistic_documents import (
     close_logistic_shipment,
     create_logistic_shipment,
@@ -1374,6 +1381,73 @@ def api_get_product_packaging(
     if packaging is None:
         raise not_found("product_packaging")
     return packaging
+
+
+@router.post("/stock-owners", response_model=StockOwnerRead)
+def api_create_stock_owner(
+    payload: StockOwnerCreate,
+    db: Session = Depends(get_db),
+) -> StockOwner:
+    return create_stock_owner(db, payload)
+
+
+@router.get("/stock-owners", response_model=list[StockOwnerRead])
+def api_list_stock_owners(
+    active_only: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> list[StockOwner]:
+    query = select(StockOwner)
+    if active_only:
+        query = query.where(StockOwner.is_active.is_(True))
+    return list(db.scalars(query.order_by(StockOwner.code)))
+
+
+@router.get("/stock-positions", response_model=list[StockPositionRead])
+def api_list_stock_positions(
+    product_id: int | None = Query(default=None),
+    owner_id: int | None = Query(default=None),
+    quality_status: str | None = Query(default=None),
+    serial_number: str | None = Query(default=None),
+    logistic_unit_uid: str | None = Query(default=None),
+    warehouse_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(StockPosition)
+    if product_id is not None:
+        query = query.where(StockPosition.product_id == product_id)
+    if owner_id is not None:
+        query = query.where(StockPosition.owner_id == owner_id)
+    if quality_status is not None:
+        query = query.where(StockPosition.quality_status == quality_status.strip())
+    if serial_number is not None:
+        query = query.where(StockPosition.serial_number == serial_number.strip())
+    if logistic_unit_uid is not None:
+        unit_id = db.scalar(
+            select(LogisticUnit.id).where(
+                LogisticUnit.uid == logistic_unit_uid.strip().upper()
+            )
+        )
+        if unit_id is None:
+            return []
+        query = query.where(StockPosition.logistic_unit_id == unit_id)
+    payloads = [
+        stock_position_payload(db, position)
+        for position in db.scalars(query.order_by(StockPosition.id))
+    ]
+    if warehouse_id is not None:
+        payloads = [item for item in payloads if item["warehouse_id"] == warehouse_id]
+    return payloads
+
+
+@router.get("/stock-positions/{position_id}", response_model=StockPositionRead)
+def api_get_stock_position(
+    position_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    position = db.get(StockPosition, position_id)
+    if position is None:
+        raise not_found("stock_position")
+    return stock_position_payload(db, position)
 
 
 @router.post("/batches", response_model=BatchRead)
