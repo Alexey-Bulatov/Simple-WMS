@@ -332,13 +332,13 @@ def test_logistic_unit_api_lifecycle(db):
                 json={
                     "product_id": product.id,
                     "batch_id": batch.id,
-                    "quantity": "2.5",
+                    "quantity": "2",
                     "uom_id": pieces.id,
                     "actor": "api-test",
                 },
             )
             assert content.status_code == 200
-            assert content.json()["contents"][0]["quantity"] == "2.500000"
+            assert content.json()["contents"][0]["quantity"] == "2.000000"
 
             closed = client.post(
                 "/api/logistic-units/BOX-API-001/close",

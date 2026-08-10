@@ -27,6 +27,7 @@ from app.models.entities import (
     Location,
     OperationEvent,
     Product,
+    ProductPackaging,
     Rack,
     RackLevel,
     RackSection,
@@ -75,6 +76,8 @@ from app.schemas import (
     LocationCreate,
     LocationRead,
     ProductCreate,
+    ProductPackagingCreate,
+    ProductPackagingRead,
     ProductRead,
     RackCreate,
     RackLevelCreate,
@@ -111,6 +114,7 @@ from app.services import (
     create_logistic_unit,
     create_logistic_unit_type,
     create_product,
+    create_product_packaging,
     create_rack,
     create_rack_level,
     create_rack_section,
@@ -1334,6 +1338,42 @@ def api_create_product(payload: ProductCreate, db: Session = Depends(get_db)) ->
 @router.get("/products", response_model=list[ProductRead])
 def api_list_products(db: Session = Depends(get_db)) -> list[Product]:
     return list(db.scalars(select(Product).order_by(Product.code)))
+
+
+@router.post("/product-packagings", response_model=ProductPackagingRead)
+def api_create_product_packaging(
+    payload: ProductPackagingCreate,
+    db: Session = Depends(get_db),
+) -> ProductPackaging:
+    return create_product_packaging(db, payload)
+
+
+@router.get("/product-packagings", response_model=list[ProductPackagingRead])
+def api_list_product_packagings(
+    product_id: int | None = Query(default=None),
+    barcode: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> list[ProductPackaging]:
+    query = select(ProductPackaging)
+    if product_id is not None:
+        query = query.where(ProductPackaging.product_id == product_id)
+    if barcode is not None:
+        query = query.where(ProductPackaging.barcode == barcode.strip())
+    if active_only:
+        query = query.where(ProductPackaging.is_active.is_(True))
+    return list(db.scalars(query.order_by(ProductPackaging.product_id, ProductPackaging.code)))
+
+
+@router.get("/product-packagings/{packaging_id}", response_model=ProductPackagingRead)
+def api_get_product_packaging(
+    packaging_id: int,
+    db: Session = Depends(get_db),
+) -> ProductPackaging:
+    packaging = db.get(ProductPackaging, packaging_id)
+    if packaging is None:
+        raise not_found("product_packaging")
+    return packaging
 
 
 @router.post("/batches", response_model=BatchRead)

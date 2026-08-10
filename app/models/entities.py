@@ -226,6 +226,38 @@ class Product(Base):
 
     batches: Mapped[list["Batch"]] = relationship(back_populates="product")
     base_uom: Mapped[UnitOfMeasure | None] = relationship()
+    packagings: Mapped[list["ProductPackaging"]] = relationship(
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProductPackaging(Base):
+    __tablename__ = "product_packagings"
+    __table_args__ = (
+        UniqueConstraint("product_id", "code", name="uq_product_packaging_code"),
+        CheckConstraint("quantity > 0", name="ck_product_packaging_quantity"),
+        CheckConstraint("base_quantity > 0", name="ck_product_packaging_base_quantity"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    base_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    barcode: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    product: Mapped[Product] = relationship(back_populates="packagings")
+    uom: Mapped[UnitOfMeasure] = relationship()
 
 
 class Batch(Base):

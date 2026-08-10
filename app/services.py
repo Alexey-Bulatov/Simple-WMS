@@ -37,6 +37,7 @@ from app.models.entities import (
     Location,
     OperationEvent,
     Product,
+    ProductPackaging,
     Rack,
     RackLevel,
     RackSection,
@@ -68,6 +69,7 @@ from app.schemas import (
     LogisticUnitTypeCreate,
     LocationCreate,
     ProductCreate,
+    ProductPackagingCreate,
     RackCreate,
     RackLevelCreate,
     RackSectionCreate,
@@ -260,6 +262,30 @@ def create_unit_of_measure(db: Session, payload: UnitOfMeasureCreate) -> UnitOfM
     commit_or_409(db, "unit of measure already exists")
     db.refresh(unit)
     return unit
+
+
+def convert_product_quantity_to_base(
+    db: Session,
+    product: Product,
+    quantity: Decimal,
+    uom: UnitOfMeasure,
+) -> tuple[Decimal, UnitOfMeasure]:
+    if product.base_uom_id is None:
+        raise bad_request("product base unit is required for quantity conversion")
+    base_uom = db.get(UnitOfMeasure, product.base_uom_id)
+    if base_uom is None or not base_uom.is_active:
+        raise bad_request("product has an invalid base unit")
+    if not uom.is_active:
+        raise bad_request("unit of measure is not active")
+    if base_uom.dimension != uom.dimension:
+        raise bad_request("unit is incompatible with the product base unit")
+
+    converted = quantity * uom.factor_to_base / base_uom.factor_to_base
+    quantum = Decimal("1").scaleb(-base_uom.decimal_precision)
+    normalized = converted.quantize(quantum)
+    if normalized != converted:
+        raise bad_request("converted quantity exceeds product base unit precision")
+    return normalized, base_uom
 
 
 def validate_weight_uom(db: Session, uom_id: int | None, field_name: str) -> None:
@@ -581,17 +607,22 @@ def add_logistic_unit_content(
     uom = db.get(UnitOfMeasure, payload.uom_id)
     if uom is None:
         raise not_found("unit_of_measure")
+    stored_quantity = payload.quantity
+    stored_uom = uom
+    conversion_factor = Decimal("1")
     if product.base_uom_id is not None:
-        base_uom = db.get(UnitOfMeasure, product.base_uom_id)
-        if base_uom is None:
-            raise bad_request("product has an invalid base unit")
-        if base_uom.dimension != uom.dimension:
-            raise bad_request("content unit is incompatible with the product base unit")
+        stored_quantity, stored_uom = convert_product_quantity_to_base(
+            db,
+            product,
+            payload.quantity,
+            uom,
+        )
+        conversion_factor = stored_quantity / payload.quantity
 
     line_query = select(LogisticUnitContent).where(
         LogisticUnitContent.logistic_unit_id == item.id,
         LogisticUnitContent.product_id == product.id,
-        LogisticUnitContent.uom_id == uom.id,
+        LogisticUnitContent.uom_id == stored_uom.id,
     )
     if batch is None:
         line_query = line_query.where(LogisticUnitContent.batch_id.is_(None))
@@ -604,12 +635,12 @@ def add_logistic_unit_content(
             logistic_unit_id=item.id,
             product_id=product.id,
             batch_id=batch.id if batch else None,
-            quantity=payload.quantity,
-            uom_id=uom.id,
+            quantity=stored_quantity,
+            uom_id=stored_uom.id,
         )
         db.add(line)
     else:
-        line.quantity += payload.quantity
+        line.quantity += stored_quantity
     create_event(
         db,
         operation="logistic_unit_content_added",
@@ -620,8 +651,11 @@ def add_logistic_unit_content(
         after={
             "product_code": product.code,
             "batch_number": batch.batch_number if batch else None,
-            "quantity": str(before_quantity + payload.quantity),
-            "uom_code": uom.code,
+            "quantity": str(before_quantity + stored_quantity),
+            "uom_code": stored_uom.code,
+            "source_quantity": str(payload.quantity),
+            "source_uom_code": uom.code,
+            "conversion_factor": str(conversion_factor),
         },
     )
     commit_or_409(db, "logistic unit content conflicts with an existing line")
@@ -1164,6 +1198,52 @@ def create_product(db: Session, payload: ProductCreate) -> Product:
     commit_or_409(db, "product already exists")
     db.refresh(product)
     return product
+
+
+def create_product_packaging(
+    db: Session,
+    payload: ProductPackagingCreate,
+) -> ProductPackaging:
+    product = db.get(Product, payload.product_id)
+    if product is None:
+        raise not_found("product")
+    uom = db.get(UnitOfMeasure, payload.uom_id)
+    if uom is None:
+        raise not_found("unit_of_measure")
+    base_quantity, _ = convert_product_quantity_to_base(
+        db,
+        product,
+        payload.quantity,
+        uom,
+    )
+    code = payload.code.strip().upper()
+    barcode = payload.barcode.strip() if payload.barcode else None
+    packaging = ProductPackaging(
+        product_id=product.id,
+        code=code,
+        name=payload.name.strip(),
+        quantity=payload.quantity,
+        uom_id=uom.id,
+        base_quantity=base_quantity,
+        barcode=barcode,
+    )
+    db.add(packaging)
+    create_event(
+        db,
+        operation="product_packaging_created",
+        object_type="product_packaging",
+        object_uid=f"{product.code}:{code}",
+        after={
+            "product_code": product.code,
+            "quantity": str(payload.quantity),
+            "uom_code": uom.code,
+            "base_quantity": str(base_quantity),
+            "barcode": barcode,
+        },
+    )
+    commit_or_409(db, "product packaging code or barcode already exists")
+    db.refresh(packaging)
+    return packaging
 
 
 def create_batch(db: Session, payload: BatchCreate) -> Batch:

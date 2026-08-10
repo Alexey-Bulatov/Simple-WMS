@@ -264,6 +264,24 @@ class ProductRead(ProductCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProductPackagingCreate(BaseModel):
+    product_id: int
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=160)
+    quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    uom_id: int
+    barcode: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class ProductPackagingRead(ProductPackagingCreate):
+    id: int
+    base_quantity: Decimal
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class BatchCreate(BaseModel):
     batch_number: str = Field(min_length=1, max_length=80)
     product_id: int
