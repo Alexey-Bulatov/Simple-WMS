@@ -82,6 +82,7 @@ from app.schemas import (
 )
 from app.stock import (
     DEFAULT_STOCK_OWNER_CODE,
+    convert_product_quantity_to_base,
     ensure_default_stock_owner,
     sync_logistic_content_position,
 )
@@ -273,30 +274,6 @@ def create_unit_of_measure(db: Session, payload: UnitOfMeasureCreate) -> UnitOfM
     commit_or_409(db, "unit of measure already exists")
     db.refresh(unit)
     return unit
-
-
-def convert_product_quantity_to_base(
-    db: Session,
-    product: Product,
-    quantity: Decimal,
-    uom: UnitOfMeasure,
-) -> tuple[Decimal, UnitOfMeasure]:
-    if product.base_uom_id is None:
-        raise bad_request("product base unit is required for quantity conversion")
-    base_uom = db.get(UnitOfMeasure, product.base_uom_id)
-    if base_uom is None or not base_uom.is_active:
-        raise bad_request("product has an invalid base unit")
-    if not uom.is_active:
-        raise bad_request("unit of measure is not active")
-    if base_uom.dimension != uom.dimension:
-        raise bad_request("unit is incompatible with the product base unit")
-
-    converted = quantity * uom.factor_to_base / base_uom.factor_to_base
-    quantum = Decimal("1").scaleb(-base_uom.decimal_precision)
-    normalized = converted.quantize(quantum)
-    if normalized != converted:
-        raise bad_request("converted quantity exceeds product base unit precision")
-    return normalized, base_uom
 
 
 def validate_weight_uom(db: Session, uom_id: int | None, field_name: str) -> None:

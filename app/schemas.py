@@ -330,6 +330,89 @@ class StockPositionRead(BaseModel):
     updated_at: datetime
 
 
+class StockMovementPost(BaseModel):
+    product_id: int
+    batch_id: int | None = None
+    serial_number: str | None = Field(default=None, max_length=120)
+    owner_id: int
+    source_quality_status: str | None = Field(default=None, min_length=1, max_length=40)
+    destination_quality_status: str | None = Field(default=None, min_length=1, max_length=40)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int
+    source_logistic_unit_id: int | None = None
+    source_location_id: int | None = None
+    destination_logistic_unit_id: int | None = None
+    destination_location_id: int | None = None
+
+    @field_validator("serial_number")
+    @classmethod
+    def normalize_serial_number(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("source_quality_status", "destination_quality_status")
+    @classmethod
+    def normalize_quality_status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_holders(self):
+        source_count = sum(
+            value is not None
+            for value in (self.source_logistic_unit_id, self.source_location_id)
+        )
+        destination_count = sum(
+            value is not None
+            for value in (self.destination_logistic_unit_id, self.destination_location_id)
+        )
+        if source_count > 1 or destination_count > 1:
+            raise ValueError("source and destination must each reference at most one holder")
+        if source_count + destination_count == 0:
+            raise ValueError("movement must reference a source or destination holder")
+        if source_count and not self.source_quality_status:
+            raise ValueError("source_quality_status is required for a source movement")
+        if destination_count and not self.destination_quality_status:
+            raise ValueError("destination_quality_status is required for a destination movement")
+        if not source_count and self.source_quality_status:
+            raise ValueError("source_quality_status requires a source holder")
+        if not destination_count and self.destination_quality_status:
+            raise ValueError("destination_quality_status requires a destination holder")
+        return self
+
+
+class StockDocumentPost(BaseModel):
+    uid: str | None = Field(default=None, min_length=1, max_length=64)
+    document_type: str = Field(min_length=1, max_length=40)
+    reference_type: str | None = Field(default=None, max_length=40)
+    reference_uid: str | None = Field(default=None, max_length=80)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    movements: list[StockMovementPost] = Field(min_length=1)
+
+    @field_validator("uid", "reference_type", "reference_uid", "reason")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("document_type", "idempotency_key", "actor")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
 class StockMovementRead(BaseModel):
     id: int
     document_id: int

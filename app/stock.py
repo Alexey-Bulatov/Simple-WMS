@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from fastapi import HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -54,12 +55,15 @@ def stock_position_identity_query(
     batch_id: int | None,
     owner_id: int,
     quality_status: str,
+    serial_number: str | None = None,
 ):
     query = select(StockPosition).where(
         StockPosition.product_id == product_id,
         StockPosition.owner_id == owner_id,
         StockPosition.quality_status == quality_status,
-        StockPosition.serial_number.is_(None),
+        StockPosition.serial_number == serial_number
+        if serial_number is not None
+        else StockPosition.serial_number.is_(None),
     )
     query = query.where(
         StockPosition.logistic_unit_id == logistic_unit_id
@@ -73,6 +77,45 @@ def stock_position_identity_query(
         else StockPosition.batch_id.is_(None),
     )
     return query
+
+
+def convert_product_quantity_to_base(
+    db: Session,
+    product: Product,
+    quantity: Decimal,
+    uom: UnitOfMeasure,
+) -> tuple[Decimal, UnitOfMeasure]:
+    if product.base_uom_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="product base unit is required for quantity conversion",
+        )
+    base_uom = db.get(UnitOfMeasure, product.base_uom_id)
+    if base_uom is None or not base_uom.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="product has an invalid base unit",
+        )
+    if not uom.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="unit of measure is not active",
+        )
+    if base_uom.dimension != uom.dimension:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="unit is incompatible with the product base unit",
+        )
+
+    converted = quantity * uom.factor_to_base / base_uom.factor_to_base
+    quantum = Decimal("1").scaleb(-base_uom.decimal_precision)
+    normalized = converted.quantize(quantum)
+    if normalized != converted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="converted quantity exceeds product base unit precision",
+        )
+    return normalized, base_uom
 
 
 def sync_logistic_content_position(
