@@ -44,6 +44,13 @@ class LogisticUnitStatus(StrEnum):
     SHIPPED = "shipped"
 
 
+class StockDocumentStatus(StrEnum):
+    DRAFT = "draft"
+    POSTED = "posted"
+    REVERSED = "reversed"
+    CANCELLED = "cancelled"
+
+
 class UserRole(StrEnum):
     PRODUCTION_OPERATOR = "production_operator"
     RECEIVING_CLERK = "receiving_clerk"

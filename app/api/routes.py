@@ -32,6 +32,8 @@ from app.models.entities import (
     RackLevel,
     RackSection,
     StockOwner,
+    StockDocument,
+    StockMovement,
     StockPosition,
     UnitOfMeasure,
     User,
@@ -89,6 +91,9 @@ from app.schemas import (
     RackSectionRead,
     StockOwnerCreate,
     StockOwnerRead,
+    StockDocumentDetailRead,
+    StockDocumentRead,
+    StockMovementRead,
     StockPositionRead,
     TaskActionRequest,
     TaskAssignRequest,
@@ -145,6 +150,7 @@ from app.services import (
     reopen_logistic_unit,
 )
 from app.stock import stock_position_payload
+from app.stock_ledger import stock_document_payload, stock_movement_payload
 from app.logistic_documents import (
     close_logistic_shipment,
     create_logistic_shipment,
@@ -188,6 +194,7 @@ from app.logistic_tasks import (
 from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
+    StockDocumentStatus,
     TaskStatus,
     TaskType,
     TransferKind,
@@ -1448,6 +1455,88 @@ def api_get_stock_position(
     if position is None:
         raise not_found("stock_position")
     return stock_position_payload(db, position)
+
+
+@router.get("/stock-documents", response_model=list[StockDocumentRead])
+def api_list_stock_documents(
+    document_type: str | None = Query(default=None),
+    status: StockDocumentStatus | None = Query(default=None),
+    reference_type: str | None = Query(default=None),
+    reference_uid: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(StockDocument)
+    if document_type is not None:
+        query = query.where(StockDocument.document_type == document_type.strip())
+    if status is not None:
+        query = query.where(StockDocument.status == status)
+    if reference_type is not None:
+        query = query.where(StockDocument.reference_type == reference_type.strip())
+    if reference_uid is not None:
+        query = query.where(StockDocument.reference_uid == reference_uid.strip())
+    documents = db.scalars(
+        query.order_by(StockDocument.created_at.desc(), StockDocument.id.desc()).limit(limit)
+    )
+    return [stock_document_payload(db, document) for document in documents]
+
+
+@router.get("/stock-documents/{document_uid}", response_model=StockDocumentDetailRead)
+def api_get_stock_document(
+    document_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    document = db.scalar(
+        select(StockDocument).where(StockDocument.uid == document_uid.strip().upper())
+    )
+    if document is None:
+        raise not_found("stock_document")
+    return stock_document_payload(db, document, include_movements=True)
+
+
+@router.get("/stock-movements", response_model=list[StockMovementRead])
+def api_list_stock_movements(
+    document_uid: str | None = Query(default=None),
+    product_id: int | None = Query(default=None),
+    batch_id: int | None = Query(default=None),
+    serial_number: str | None = Query(default=None),
+    owner_id: int | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(StockMovement)
+    if document_uid is not None:
+        document_id = db.scalar(
+            select(StockDocument.id).where(
+                StockDocument.uid == document_uid.strip().upper()
+            )
+        )
+        if document_id is None:
+            return []
+        query = query.where(StockMovement.document_id == document_id)
+    if product_id is not None:
+        query = query.where(StockMovement.product_id == product_id)
+    if batch_id is not None:
+        query = query.where(StockMovement.batch_id == batch_id)
+    if serial_number is not None:
+        query = query.where(StockMovement.serial_number == serial_number.strip())
+    if owner_id is not None:
+        query = query.where(StockMovement.owner_id == owner_id)
+    movements = db.scalars(
+        query.order_by(StockMovement.occurred_at.desc(), StockMovement.id.desc()).limit(limit)
+    )
+    return [stock_movement_payload(db, movement) for movement in movements]
+
+
+@router.get("/stock-movements/{movement_id}", response_model=StockMovementRead)
+def api_get_stock_movement(
+    movement_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    movement = db.get(StockMovement, movement_id)
+    if movement is None:
+        raise not_found("stock_movement")
+    return stock_movement_payload(db, movement)
 
 
 @router.post("/batches", response_model=BatchRead)

@@ -15,6 +15,7 @@ from app.models.enums import (
     LogisticUnitStatus,
     MeasurementDimension,
     ShipmentStatus,
+    StockDocumentStatus,
     TransferKind,
     TransferStatus,
     TaskPriority,
@@ -327,6 +328,61 @@ class StockPositionRead(BaseModel):
     warehouse_code: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class StockMovementRead(BaseModel):
+    id: int
+    document_id: int
+    document_uid: str
+    sequence_no: int
+    product_id: int
+    product_code: str
+    batch_id: int | None
+    batch_number: str | None
+    serial_number: str | None
+    owner_id: int
+    owner_code: str
+    source_quality_status: str | None
+    destination_quality_status: str | None
+    quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    input_quantity: Decimal
+    input_uom_id: int
+    input_uom_code: str
+    conversion_factor: Decimal
+    source_logistic_unit_id: int | None
+    source_logistic_unit_uid: str | None
+    source_location_id: int | None
+    source_location_code: str | None
+    destination_logistic_unit_id: int | None
+    destination_logistic_unit_uid: str | None
+    destination_location_id: int | None
+    destination_location_code: str | None
+    occurred_at: datetime
+
+
+class StockDocumentRead(BaseModel):
+    id: int
+    uid: str
+    document_type: str
+    status: StockDocumentStatus
+    reference_type: str | None
+    reference_uid: str | None
+    idempotency_key: str | None
+    reversal_of_id: int | None
+    reversal_of_uid: str | None
+    actor: str
+    reason: str | None
+    attributes: dict[str, Any]
+    movement_count: int
+    created_at: datetime
+    posted_at: datetime | None
+    reversed_at: datetime | None
+
+
+class StockDocumentDetailRead(StockDocumentRead):
+    movements: list[StockMovementRead]
 
 
 class BatchCreate(BaseModel):

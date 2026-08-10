@@ -30,6 +30,7 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     ShipmentStatus,
+    StockDocumentStatus,
     TransferKind,
     TransferStatus,
     TaskPriority,
@@ -395,6 +396,132 @@ class StockPosition(Base):
     owner: Mapped[StockOwner] = relationship()
     logistic_unit: Mapped[LogisticUnit | None] = relationship()
     location: Mapped["Location | None"] = relationship()
+
+
+class StockDocument(Base):
+    __tablename__ = "stock_documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    document_type: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[StockDocumentStatus] = mapped_column(
+        Enum(StockDocumentStatus, native_enum=False, length=24),
+        default=StockDocumentStatus.DRAFT,
+        index=True,
+    )
+    reference_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    reference_uid: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    reversal_of_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    actor: Mapped[str] = mapped_column(String(80), default="system", index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    reversal_of: Mapped["StockDocument | None"] = relationship(
+        remote_side="StockDocument.id",
+        foreign_keys=[reversal_of_id],
+    )
+    movements: Mapped[list["StockMovement"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="StockMovement.sequence_no",
+    )
+
+
+class StockMovement(Base):
+    __tablename__ = "stock_movements"
+    __table_args__ = (
+        UniqueConstraint("document_id", "sequence_no", name="uq_stock_movement_document_sequence"),
+        CheckConstraint("quantity > 0", name="ck_stock_movement_quantity"),
+        CheckConstraint("input_quantity > 0", name="ck_stock_movement_input_quantity"),
+        CheckConstraint("conversion_factor > 0", name="ck_stock_movement_conversion_factor"),
+        CheckConstraint(
+            "serial_number IS NULL OR quantity = 1",
+            name="ck_stock_movement_serial_quantity",
+        ),
+        CheckConstraint(
+            "NOT (source_logistic_unit_id IS NOT NULL AND source_location_id IS NOT NULL)",
+            name="ck_stock_movement_single_source",
+        ),
+        CheckConstraint(
+            "NOT (destination_logistic_unit_id IS NOT NULL AND destination_location_id IS NOT NULL)",
+            name="ck_stock_movement_single_destination",
+        ),
+        CheckConstraint(
+            "source_logistic_unit_id IS NOT NULL OR source_location_id IS NOT NULL OR "
+            "destination_logistic_unit_id IS NOT NULL OR destination_location_id IS NOT NULL",
+            name="ck_stock_movement_has_holder",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id"), nullable=True, index=True)
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("stock_owners.id"), index=True)
+    source_quality_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    destination_quality_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    source_logistic_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_units.id"),
+        nullable=True,
+        index=True,
+    )
+    source_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    destination_logistic_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_units.id"),
+        nullable=True,
+        index=True,
+    )
+    destination_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    document: Mapped[StockDocument] = relationship(back_populates="movements")
+    product: Mapped[Product] = relationship()
+    batch: Mapped[Batch | None] = relationship()
+    owner: Mapped[StockOwner] = relationship()
+    base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
+    input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
+    source_logistic_unit: Mapped[LogisticUnit | None] = relationship(
+        foreign_keys=[source_logistic_unit_id]
+    )
+    source_location: Mapped["Location | None"] = relationship(foreign_keys=[source_location_id])
+    destination_logistic_unit: Mapped[LogisticUnit | None] = relationship(
+        foreign_keys=[destination_logistic_unit_id]
+    )
+    destination_location: Mapped["Location | None"] = relationship(
+        foreign_keys=[destination_location_id]
+    )
 
 
 class Warehouse(Base):
