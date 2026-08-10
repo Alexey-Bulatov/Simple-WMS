@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections.abc import Callable
 from decimal import Decimal
 from uuid import uuid4
 
@@ -285,7 +286,12 @@ def _apply_movement(
     )
 
 
-def post_stock_document(db: Session, payload: StockDocumentPost) -> StockDocument:
+def post_stock_document(
+    db: Session,
+    payload: StockDocumentPost,
+    *,
+    before_commit: Callable[[StockDocument], None] | None = None,
+) -> StockDocument:
     idempotency_key = payload.idempotency_key.strip()
     command_hash = _command_hash(payload)
     try:
@@ -336,6 +342,10 @@ def post_stock_document(db: Session, payload: StockDocumentPost) -> StockDocumen
 
         for sequence_no, movement in enumerate(payload.movements, start=1):
             _apply_movement(db, document, sequence_no, movement, products[movement.product_id])
+            db.flush()
+
+        if before_commit is not None:
+            before_commit(document)
             db.flush()
 
         document.status = StockDocumentStatus.POSTED

@@ -8,7 +8,6 @@ from app.models.entities import (
     Batch,
     Location,
     LogisticUnit,
-    LogisticUnitContent,
     Product,
     StockOwner,
     StockPosition,
@@ -116,49 +115,6 @@ def convert_product_quantity_to_base(
             detail="converted quantity exceeds product base unit precision",
         )
     return normalized, base_uom
-
-
-def sync_logistic_content_position(
-    db: Session,
-    line: LogisticUnitContent,
-    quantity: Decimal,
-) -> StockPosition | None:
-    product = db.get(Product, line.product_id)
-    if product is None or product.base_uom_id is None:
-        raise ValueError("stock position requires a product base unit")
-    if line.uom_id != product.base_uom_id:
-        raise ValueError("stock position quantity must use the product base unit")
-
-    batch = db.get(Batch, line.batch_id) if line.batch_id is not None else None
-    quality_status = batch.quality_status if batch is not None else "released"
-    owner = ensure_default_stock_owner(db)
-    position = db.scalar(
-        stock_position_identity_query(
-            logistic_unit_id=line.logistic_unit_id,
-            location_id=None,
-            product_id=line.product_id,
-            batch_id=line.batch_id,
-            owner_id=owner.id,
-            quality_status=quality_status,
-        )
-    )
-    if quantity <= 0:
-        if position is not None:
-            db.delete(position)
-        return None
-    if position is None:
-        position = StockPosition(
-            logistic_unit_id=line.logistic_unit_id,
-            product_id=line.product_id,
-            batch_id=line.batch_id,
-            owner_id=owner.id,
-            quality_status=quality_status,
-            quantity=quantity,
-        )
-        db.add(position)
-    else:
-        position.quantity = quantity
-    return position
 
 
 def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> None:

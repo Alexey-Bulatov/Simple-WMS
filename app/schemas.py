@@ -130,12 +130,14 @@ class LogisticUnitContentCreate(BaseModel):
     quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=6)
     uom_id: int
     actor: str = Field(default="system", min_length=1, max_length=80)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class LogisticUnitContentRemoveRequest(BaseModel):
     quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=6)
     actor: str = Field(default="system", min_length=1, max_length=80)
     reason: str | None = Field(default=None, max_length=500)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class LogisticUnitChildRequest(BaseModel):

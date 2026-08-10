@@ -41,6 +41,7 @@ from app.models.entities import (
     Rack,
     RackLevel,
     RackSection,
+    StockDocument,
     StockOwner,
     UnitOfMeasure,
     User,
@@ -74,6 +75,8 @@ from app.schemas import (
     RackCreate,
     RackLevelCreate,
     RackSectionCreate,
+    StockDocumentPost,
+    StockMovementPost,
     StockOwnerCreate,
     UserCreate,
     UnitOfMeasureCreate,
@@ -84,8 +87,8 @@ from app.stock import (
     DEFAULT_STOCK_OWNER_CODE,
     convert_product_quantity_to_base,
     ensure_default_stock_owner,
-    sync_logistic_content_position,
 )
+from app.stock_ledger import post_stock_document
 
 
 DEFAULT_UNITS_OF_MEASURE = (
@@ -122,6 +125,10 @@ def not_found(name: str) -> HTTPException:
 
 def bad_request(message: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+def conflict(message: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
 
 
 def create_event(
@@ -574,16 +581,82 @@ def require_open_logistic_unit(item: LogisticUnit) -> None:
         raise bad_request("logistic unit must be open for composition changes")
 
 
+def _content_idempotency_key(value: str | None) -> str:
+    if value is None:
+        return f"content:{uuid4().hex}"
+    normalized = value.strip()
+    if not normalized:
+        raise bad_request("idempotency key must not be blank")
+    return normalized
+
+
+def _existing_content_document(
+    db: Session,
+    idempotency_key: str | None,
+) -> StockDocument | None:
+    if idempotency_key is None:
+        return None
+    return db.scalar(
+        select(StockDocument).where(
+            StockDocument.idempotency_key == _content_idempotency_key(idempotency_key)
+        )
+    )
+
+
+def _validate_existing_content_addition(
+    document: StockDocument,
+    item: LogisticUnit,
+    payload: LogisticUnitContentCreate,
+) -> None:
+    movement = document.movements[0] if len(document.movements) == 1 else None
+    if not (
+        document.document_type == "logistic_unit_content_add"
+        and document.reference_type == "logistic_unit"
+        and document.reference_uid == item.uid
+        and document.actor == payload.actor.strip()
+        and movement is not None
+        and movement.product_id == payload.product_id
+        and movement.batch_id == payload.batch_id
+        and movement.input_quantity == payload.quantity
+        and movement.input_uom_id == payload.uom_id
+        and movement.destination_logistic_unit_id == item.id
+        and movement.source_logistic_unit_id is None
+        and movement.source_location_id is None
+    ):
+        raise conflict("idempotency key belongs to another content command")
+
+
+def _validate_existing_content_removal(
+    document: StockDocument,
+    item: LogisticUnit,
+    content_id: int,
+    payload: LogisticUnitContentRemoveRequest,
+) -> None:
+    movement = document.movements[0] if len(document.movements) == 1 else None
+    reason = payload.reason.strip() if payload.reason else None
+    reason = reason or None
+    if not (
+        document.document_type == "logistic_unit_content_remove"
+        and document.reference_type == "logistic_unit"
+        and document.reference_uid == item.uid
+        and document.actor == payload.actor.strip()
+        and document.reason == reason
+        and (document.attributes or {}).get("content_id") == content_id
+        and movement is not None
+        and movement.input_quantity == payload.quantity
+        and movement.source_logistic_unit_id == item.id
+        and movement.destination_logistic_unit_id is None
+        and movement.destination_location_id is None
+    ):
+        raise conflict("idempotency key belongs to another content command")
+
+
 def add_logistic_unit_content(
     db: Session,
     uid: str,
     payload: LogisticUnitContentCreate,
 ) -> LogisticUnit:
     item = get_logistic_unit(db, uid)
-    require_open_logistic_unit(item)
-    unit_type = db.get(LogisticUnitType, item.type_id)
-    if unit_type is None or not unit_type.can_contain_goods:
-        raise bad_request("logistic unit type cannot contain goods directly")
     product = db.get(Product, payload.product_id)
     if product is None:
         raise not_found("product")
@@ -606,51 +679,82 @@ def add_logistic_unit_content(
             uom,
         )
         conversion_factor = stored_quantity / payload.quantity
+    owner = ensure_default_stock_owner(db)
+    idempotency_key = _content_idempotency_key(payload.idempotency_key)
+    existing = _existing_content_document(db, payload.idempotency_key)
+    if existing is not None:
+        _validate_existing_content_addition(existing, item, payload)
+        return item
 
-    line_query = select(LogisticUnitContent).where(
-        LogisticUnitContent.logistic_unit_id == item.id,
-        LogisticUnitContent.product_id == product.id,
-        LogisticUnitContent.uom_id == stored_uom.id,
-    )
-    if batch is None:
-        line_query = line_query.where(LogisticUnitContent.batch_id.is_(None))
-    else:
-        line_query = line_query.where(LogisticUnitContent.batch_id == batch.id)
-    line = db.scalar(line_query)
-    before_quantity = line.quantity if line else Decimal("0")
-    if line is None:
-        line = LogisticUnitContent(
-            logistic_unit_id=item.id,
-            product_id=product.id,
-            batch_id=batch.id if batch else None,
-            quantity=stored_quantity,
-            uom_id=stored_uom.id,
-        )
-        db.add(line)
-    else:
-        line.quantity += stored_quantity
-    try:
-        sync_logistic_content_position(db, line, before_quantity + stored_quantity)
-    except ValueError as exc:
-        raise bad_request(str(exc)) from exc
-    create_event(
-        db,
-        operation="logistic_unit_content_added",
-        object_type="logistic_unit",
-        object_uid=item.uid,
+    require_open_logistic_unit(item)
+    unit_type = db.get(LogisticUnitType, item.type_id)
+    if unit_type is None or not unit_type.can_contain_goods:
+        raise bad_request("logistic unit type cannot contain goods directly")
+    quality_status = batch.quality_status if batch is not None else "released"
+    command = StockDocumentPost(
+        document_type="logistic_unit_content_add",
+        reference_type="logistic_unit",
+        reference_uid=item.uid,
+        idempotency_key=idempotency_key,
         actor=payload.actor,
-        before={"quantity": str(before_quantity)},
-        after={
-            "product_code": product.code,
-            "batch_number": batch.batch_number if batch else None,
-            "quantity": str(before_quantity + stored_quantity),
-            "uom_code": stored_uom.code,
-            "source_quantity": str(payload.quantity),
-            "source_uom_code": uom.code,
-            "conversion_factor": str(conversion_factor),
-        },
+        attributes={"operation": "content_add", "logistic_unit_uid": item.uid},
+        movements=[
+            StockMovementPost(
+                product_id=product.id,
+                batch_id=batch.id if batch else None,
+                owner_id=owner.id,
+                destination_quality_status=quality_status,
+                input_quantity=payload.quantity,
+                input_uom_id=uom.id,
+                destination_logistic_unit_id=item.id,
+            )
+        ],
     )
-    commit_or_409(db, "logistic unit content conflicts with an existing line")
+
+    def update_content_projection(document: StockDocument) -> None:
+        line_query = select(LogisticUnitContent).where(
+            LogisticUnitContent.logistic_unit_id == item.id,
+            LogisticUnitContent.product_id == product.id,
+            LogisticUnitContent.uom_id == stored_uom.id,
+        )
+        if batch is None:
+            line_query = line_query.where(LogisticUnitContent.batch_id.is_(None))
+        else:
+            line_query = line_query.where(LogisticUnitContent.batch_id == batch.id)
+        line = db.scalar(line_query.execution_options(populate_existing=True).with_for_update())
+        before_quantity = line.quantity if line else Decimal("0")
+        if line is None:
+            line = LogisticUnitContent(
+                logistic_unit_id=item.id,
+                product_id=product.id,
+                batch_id=batch.id if batch else None,
+                quantity=stored_quantity,
+                uom_id=stored_uom.id,
+            )
+            db.add(line)
+        else:
+            line.quantity += stored_quantity
+        db.flush()
+        document.attributes = {**document.attributes, "content_id": line.id}
+        create_event(
+            db,
+            operation="logistic_unit_content_added",
+            object_type="logistic_unit",
+            object_uid=item.uid,
+            actor=payload.actor,
+            before={"quantity": str(before_quantity)},
+            after={
+                "product_code": product.code,
+                "batch_number": batch.batch_number if batch else None,
+                "quantity": str(before_quantity + stored_quantity),
+                "uom_code": stored_uom.code,
+                "source_quantity": str(payload.quantity),
+                "source_uom_code": uom.code,
+                "conversion_factor": str(conversion_factor),
+            },
+        )
+
+    post_stock_document(db, command, before_commit=update_content_projection)
     db.refresh(item)
     return item
 
@@ -662,33 +766,78 @@ def remove_logistic_unit_content(
     payload: LogisticUnitContentRemoveRequest,
 ) -> LogisticUnit:
     item = get_logistic_unit(db, uid)
+    existing = _existing_content_document(db, payload.idempotency_key)
+    if existing is not None:
+        _validate_existing_content_removal(existing, item, content_id, payload)
+        return item
     require_open_logistic_unit(item)
-    line = db.get(LogisticUnitContent, content_id)
+    line_snapshot = db.get(LogisticUnitContent, content_id)
+    if line_snapshot is None or line_snapshot.logistic_unit_id != item.id:
+        raise not_found("logistic_unit_content")
+    product = db.scalar(
+        select(Product).where(Product.id == line_snapshot.product_id).with_for_update()
+    )
+    if product is None:
+        raise not_found("product")
+    line = db.scalar(
+        select(LogisticUnitContent)
+        .where(LogisticUnitContent.id == content_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
     if line is None or line.logistic_unit_id != item.id:
         raise not_found("logistic_unit_content")
     if payload.quantity > line.quantity:
         raise bad_request("removed quantity exceeds the content line quantity")
+    if line.product_id != product.id:
+        raise conflict("logistic unit content changed during removal")
+    batch = db.get(Batch, line.batch_id) if line.batch_id is not None else None
+    owner = ensure_default_stock_owner(db)
+    quality_status = batch.quality_status if batch is not None else "released"
     before_quantity = line.quantity
     remaining = line.quantity - payload.quantity
-    try:
-        sync_logistic_content_position(db, line, remaining)
-    except ValueError as exc:
-        raise bad_request(str(exc)) from exc
-    if remaining == 0:
-        db.delete(line)
-    else:
-        line.quantity = remaining
-    create_event(
-        db,
-        operation="logistic_unit_content_removed",
-        object_type="logistic_unit",
-        object_uid=item.uid,
+    command = StockDocumentPost(
+        document_type="logistic_unit_content_remove",
+        reference_type="logistic_unit",
+        reference_uid=item.uid,
+        idempotency_key=_content_idempotency_key(payload.idempotency_key),
         actor=payload.actor,
         reason=payload.reason,
-        before={"content_id": content_id, "quantity": str(before_quantity)},
-        after={"content_id": content_id, "quantity": str(remaining)},
+        attributes={
+            "operation": "content_remove",
+            "logistic_unit_uid": item.uid,
+            "content_id": content_id,
+        },
+        movements=[
+            StockMovementPost(
+                product_id=product.id,
+                batch_id=batch.id if batch else None,
+                owner_id=owner.id,
+                source_quality_status=quality_status,
+                input_quantity=payload.quantity,
+                input_uom_id=line.uom_id,
+                source_logistic_unit_id=item.id,
+            )
+        ],
     )
-    db.commit()
+
+    def update_content_projection(_: StockDocument) -> None:
+        if remaining == 0:
+            db.delete(line)
+        else:
+            line.quantity = remaining
+        create_event(
+            db,
+            operation="logistic_unit_content_removed",
+            object_type="logistic_unit",
+            object_uid=item.uid,
+            actor=payload.actor,
+            reason=payload.reason,
+            before={"content_id": content_id, "quantity": str(before_quantity)},
+            after={"content_id": content_id, "quantity": str(remaining)},
+        )
+
+    post_stock_document(db, command, before_commit=update_content_projection)
     db.refresh(item)
     return item
 
