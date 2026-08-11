@@ -57,6 +57,17 @@ class StockReservationStatus(StrEnum):
     CONSUMED = "consumed"
 
 
+class StockReservationKind(StrEnum):
+    QUANTITY = "quantity"
+    LOGISTIC_UNIT = "logistic_unit"
+
+
+class StockReservationResult(StrEnum):
+    FULL = "full"
+    PARTIAL = "partial"
+    NONE = "none"
+
+
 class UserRole(StrEnum):
     PRODUCTION_OPERATOR = "production_operator"
     RECEIVING_CLERK = "receiving_clerk"

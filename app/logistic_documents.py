@@ -42,7 +42,10 @@ from app.services import (
     logistic_location_occupied_count,
     not_found,
 )
-from app.stock import remove_logistic_unit_stock_positions
+from app.stock import (
+    ensure_logistic_unit_stock_is_unreserved,
+    remove_logistic_unit_stock_positions,
+)
 
 
 ACTIVE_SHIPMENT_STATUSES = {
@@ -293,6 +296,7 @@ def require_available_top_level_unit(
     ):
         raise bad_request("logistic unit is not stored at the required warehouse")
     ensure_unit_has_no_active_document(db, unit.id)
+    ensure_logistic_unit_stock_is_unreserved(db, unit.id)
     return unit, location
 
 

@@ -135,7 +135,7 @@ def convert_product_quantity_to_base(
     return normalized, base_uom
 
 
-def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> None:
+def logistic_unit_hierarchy_ids(db: Session, logistic_unit_id: int) -> set[int]:
     unit_ids = {logistic_unit_id}
     frontier = {logistic_unit_id}
     while frontier:
@@ -144,6 +144,14 @@ def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> 
         )
         frontier = child_ids - unit_ids
         unit_ids.update(child_ids)
+    return unit_ids
+
+
+def ensure_logistic_unit_stock_is_unreserved(
+    db: Session,
+    logistic_unit_id: int,
+) -> list[int]:
+    unit_ids = logistic_unit_hierarchy_ids(db, logistic_unit_id)
     position_ids = list(
         db.scalars(
             select(StockPosition.id)
@@ -153,7 +161,7 @@ def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> 
         )
     )
     if not position_ids:
-        return
+        return []
     active_reservation = db.scalar(
         select(StockReservation.id)
         .where(
@@ -167,6 +175,13 @@ def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail="logistic unit stock has an active reservation",
         )
+    return position_ids
+
+
+def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> None:
+    position_ids = ensure_logistic_unit_stock_is_unreserved(db, logistic_unit_id)
+    if not position_ids:
+        return
     db.execute(delete(StockPosition).where(StockPosition.id.in_(position_ids)))
 
 

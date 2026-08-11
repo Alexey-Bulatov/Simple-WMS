@@ -36,6 +36,7 @@ from app.models.entities import (
     StockMovement,
     StockPosition,
     StockReservation,
+    StockReservationRequest,
     UnitOfMeasure,
     User,
     Warehouse,
@@ -100,7 +101,10 @@ from app.schemas import (
     StockReconciliationRead,
     StockReservationConsumeRequest,
     StockReservationCreate,
+    StockReservationLogisticUnitRequest,
+    StockReservationQuantityRequest,
     StockReservationRead,
+    StockReservationRequestRead,
     StockReservationReleaseRequest,
     TaskActionRequest,
     TaskAssignRequest,
@@ -165,9 +169,12 @@ from app.stock_ledger import (
 from app.stock_reconciliation import reconcile_stock_positions
 from app.stock_reservations import (
     consume_stock_reservation,
+    create_logistic_unit_reservation_request,
+    create_quantity_reservation_request,
     create_stock_reservation,
     release_stock_reservation,
     stock_reservation_payload,
+    stock_reservation_request_payload,
 )
 from app.logistic_documents import (
     close_logistic_shipment,
@@ -213,6 +220,8 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     StockDocumentStatus,
+    StockReservationKind,
+    StockReservationResult,
     StockReservationStatus,
     TaskStatus,
     TaskType,
@@ -1483,6 +1492,78 @@ def api_create_stock_reservation(
 ) -> dict:
     reservation = create_stock_reservation(db, payload)
     return stock_reservation_payload(db, reservation)
+
+
+@router.post(
+    "/stock-reservation-requests/quantity",
+    response_model=StockReservationRequestRead,
+)
+def api_create_quantity_stock_reservation_request(
+    payload: StockReservationQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    request = create_quantity_reservation_request(db, payload)
+    return stock_reservation_request_payload(db, request)
+
+
+@router.post(
+    "/stock-reservation-requests/logistic-unit",
+    response_model=StockReservationRequestRead,
+)
+def api_create_logistic_unit_stock_reservation_request(
+    payload: StockReservationLogisticUnitRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    request = create_logistic_unit_reservation_request(db, payload)
+    return stock_reservation_request_payload(db, request)
+
+
+@router.get(
+    "/stock-reservation-requests",
+    response_model=list[StockReservationRequestRead],
+)
+def api_list_stock_reservation_requests(
+    request_kind: StockReservationKind | None = Query(default=None, alias="kind"),
+    request_result: StockReservationResult | None = Query(default=None, alias="result"),
+    reference_type: str | None = Query(default=None),
+    reference_uid: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(StockReservationRequest)
+    if request_kind is not None:
+        query = query.where(StockReservationRequest.kind == request_kind)
+    if request_result is not None:
+        query = query.where(StockReservationRequest.result == request_result)
+    if reference_type is not None:
+        query = query.where(StockReservationRequest.reference_type == reference_type.strip())
+    if reference_uid is not None:
+        query = query.where(StockReservationRequest.reference_uid == reference_uid.strip())
+    requests = db.scalars(
+        query.order_by(
+            StockReservationRequest.created_at.desc(),
+            StockReservationRequest.id.desc(),
+        ).limit(limit)
+    )
+    return [stock_reservation_request_payload(db, request) for request in requests]
+
+
+@router.get(
+    "/stock-reservation-requests/{request_uid}",
+    response_model=StockReservationRequestRead,
+)
+def api_get_stock_reservation_request(
+    request_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    request = db.scalar(
+        select(StockReservationRequest).where(
+            StockReservationRequest.uid == request_uid.strip().upper()
+        )
+    )
+    if request is None:
+        raise not_found("stock_reservation_request")
+    return stock_reservation_request_payload(db, request)
 
 
 @router.get("/stock-reservations", response_model=list[StockReservationRead])

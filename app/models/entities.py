@@ -31,6 +31,8 @@ from app.models.enums import (
     LogisticUnitStatus,
     ShipmentStatus,
     StockDocumentStatus,
+    StockReservationKind,
+    StockReservationResult,
     StockReservationStatus,
     TransferKind,
     TransferStatus,
@@ -399,6 +401,91 @@ class StockPosition(Base):
     location: Mapped["Location | None"] = relationship()
 
 
+class StockReservationRequest(Base):
+    __tablename__ = "stock_reservation_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "((requested_stock_position_id IS NOT NULL AND requested_logistic_unit_id IS NULL) OR "
+            "(requested_stock_position_id IS NULL AND requested_logistic_unit_id IS NOT NULL))",
+            name="ck_stock_reservation_request_single_target",
+        ),
+        CheckConstraint(
+            "requested_quantity IS NULL OR requested_quantity > 0",
+            name="ck_stock_reservation_request_quantity",
+        ),
+        CheckConstraint(
+            "reserved_quantity IS NULL OR reserved_quantity >= 0",
+            name="ck_stock_reservation_request_reserved_quantity",
+        ),
+        CheckConstraint(
+            "input_quantity IS NULL OR input_quantity > 0",
+            name="ck_stock_reservation_request_input_quantity",
+        ),
+        CheckConstraint(
+            "conversion_factor IS NULL OR conversion_factor > 0",
+            name="ck_stock_reservation_request_conversion_factor",
+        ),
+        CheckConstraint(
+            "expected_position_count >= 0 AND allocation_count >= 0",
+            name="ck_stock_reservation_request_counts",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    kind: Mapped[StockReservationKind] = mapped_column(
+        Enum(StockReservationKind, native_enum=False, length=24),
+        index=True,
+    )
+    result: Mapped[StockReservationResult] = mapped_column(
+        Enum(StockReservationResult, native_enum=False, length=24),
+        index=True,
+    )
+    requested_stock_position_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    requested_logistic_unit_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    requested_logistic_unit_uid: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    requested_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    reserved_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    base_uom_id: Mapped[int | None] = mapped_column(
+        ForeignKey("units_of_measure.id"), nullable=True
+    )
+    input_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    input_uom_id: Mapped[int | None] = mapped_column(
+        ForeignKey("units_of_measure.id"), nullable=True
+    )
+    conversion_factor: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    allow_partial: Mapped[bool] = mapped_column(Boolean, default=True)
+    expected_position_count: Mapped[int] = mapped_column(Integer, default=0)
+    allocation_count: Mapped[int] = mapped_column(Integer, default=0)
+    reference_type: Mapped[str] = mapped_column(String(40), index=True)
+    reference_uid: Mapped[str] = mapped_column(String(80), index=True)
+    reference_line_uid: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    command_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(80), default="system", index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    base_uom: Mapped[UnitOfMeasure | None] = relationship(foreign_keys=[base_uom_id])
+    input_uom: Mapped[UnitOfMeasure | None] = relationship(foreign_keys=[input_uom_id])
+    task: Mapped["LogisticTask | None"] = relationship()
+    reservations: Mapped[list["StockReservation"]] = relationship(
+        back_populates="request",
+        foreign_keys="StockReservation.request_id",
+    )
+
+
 class StockReservation(Base):
     __tablename__ = "stock_reservations"
     __table_args__ = (
@@ -418,6 +505,11 @@ class StockReservation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_reservation_requests.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[StockReservationStatus] = mapped_column(
         Enum(StockReservationStatus, native_enum=False, length=24),
         default=StockReservationStatus.ACTIVE,
@@ -503,6 +595,10 @@ class StockReservation(Base):
     location: Mapped["Location | None"] = relationship()
     task: Mapped["LogisticTask | None"] = relationship()
     consumed_by_document: Mapped["StockDocument | None"] = relationship()
+    request: Mapped[StockReservationRequest | None] = relationship(
+        back_populates="reservations",
+        foreign_keys=[request_id],
+    )
 
 
 class StockDocument(Base):

@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.api import routes as api_routes
 from app.db.session import Base, get_db
 from app.main import app
+from app.logistic_documents import require_available_top_level_unit
 from app.models.entities import (
     Location,
     LogisticUnit,
@@ -21,6 +22,7 @@ from app.models.entities import (
     StockOwner,
     StockPosition,
     StockReservation,
+    StockReservationRequest,
     StockMovement,
     UnitOfMeasure,
     Warehouse,
@@ -29,6 +31,8 @@ from app.models.entities import (
 from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
+    StockReservationKind,
+    StockReservationResult,
     StockReservationStatus,
     TaskPriority,
     TaskStatus,
@@ -41,6 +45,8 @@ from app.schemas import (
     StockMovementPost,
     StockReservationConsumeRequest,
     StockReservationCreate,
+    StockReservationLogisticUnitRequest,
+    StockReservationQuantityRequest,
     StockReservationReleaseRequest,
 )
 from app.services import create_product, ensure_reference_catalogs
@@ -48,8 +54,11 @@ from app.stock import remove_logistic_unit_stock_positions, stock_position_paylo
 from app.stock_ledger import post_stock_document, reverse_stock_document
 from app.stock_reservations import (
     consume_stock_reservation,
+    create_logistic_unit_reservation_request,
+    create_quantity_reservation_request,
     create_stock_reservation,
     release_stock_reservation,
+    stock_reservation_request_payload,
 )
 
 
@@ -824,5 +833,288 @@ def test_stock_reservation_api_create_list_get_and_release(db):
                 "/api/stock-reservations/{reservation_uid}/consume"
             ]["post"]["summary"]
             assert "погасить фактическим отбором" in consume_summary
+    finally:
+        app.dependency_overrides.clear()
+
+
+def quantity_request_command(
+    position,
+    pieces,
+    *,
+    key: str,
+    quantity: str,
+    allow_partial: bool = True,
+):
+    return StockReservationQuantityRequest(
+        stock_position_id=position.id,
+        input_quantity=Decimal(quantity),
+        input_uom_id=pieces.id,
+        allow_partial=allow_partial,
+        reference_type="internal_issue",
+        reference_uid="ISSUE-REQUEST-001",
+        reference_line_uid="LINE-001",
+        idempotency_key=key,
+        actor="storekeeper",
+        reason="Распределение строки выдачи",
+    )
+
+
+def create_logistic_unit_stock_context(db):
+    product, pieces, owner, location, first_position = create_stock_context(db, quantity="4")
+    second_product = create_product(
+        db,
+        ProductCreate(
+            code="MASKS",
+            name="Маски",
+            base_uom_id=pieces.id,
+        ),
+    )
+    pallet_type = LogisticUnitType(
+        code="RSV-PALLET",
+        name="Палета для резерва",
+        identifier_prefix="RPL",
+        can_contain_units=True,
+    )
+    box_type = LogisticUnitType(
+        code="RSV-BOX",
+        name="Коробка для резерва",
+        identifier_prefix="RBX",
+    )
+    db.add_all([pallet_type, box_type])
+    db.flush()
+    root = LogisticUnit(
+        uid="RPL-000001",
+        type_id=pallet_type.id,
+        status=LogisticUnitStatus.AVAILABLE,
+        current_location_id=location.id,
+    )
+    child = LogisticUnit(
+        uid="RBX-000001",
+        type_id=box_type.id,
+        status=LogisticUnitStatus.CLOSED,
+        parent_unit=root,
+    )
+    db.add_all([root, child])
+    db.flush()
+    first_position.location_id = None
+    first_position.logistic_unit_id = root.id
+    second_position = StockPosition(
+        product_id=second_product.id,
+        owner_id=owner.id,
+        quality_status="released",
+        quantity=Decimal("7"),
+        logistic_unit_id=child.id,
+    )
+    db.add(second_position)
+    db.commit()
+    return pieces, root, first_position, second_position
+
+
+def logistic_unit_request_command(root, *, key: str):
+    return StockReservationLogisticUnitRequest(
+        logistic_unit_uid=root.uid,
+        reference_type="logistic_shipment",
+        reference_uid="SHIP-LU-001",
+        reference_line_uid="LINE-LU-001",
+        idempotency_key=key,
+        actor="storekeeper",
+        reason="Резерв грузового места целиком",
+    )
+
+
+def test_quantity_request_records_full_partial_and_none_results(db):
+    _, pieces, _, _, position = create_stock_context(db)
+
+    full = create_quantity_reservation_request(
+        db,
+        quantity_request_command(position, pieces, key="request:full", quantity="3"),
+    )
+    repeated = create_quantity_reservation_request(
+        db,
+        quantity_request_command(position, pieces, key="request:full", quantity="3"),
+    )
+    with pytest.raises(HTTPException, match="another reservation request"):
+        create_quantity_reservation_request(
+            db,
+            quantity_request_command(position, pieces, key="request:full", quantity="2"),
+        )
+    partial = create_quantity_reservation_request(
+        db,
+        quantity_request_command(position, pieces, key="request:partial", quantity="4"),
+    )
+    missing = create_quantity_reservation_request(
+        db,
+        quantity_request_command(position, pieces, key="request:none", quantity="1"),
+    )
+
+    assert repeated.id == full.id
+    assert full.result == StockReservationResult.FULL
+    assert full.reserved_quantity == Decimal("3")
+    assert partial.result == StockReservationResult.PARTIAL
+    assert partial.reserved_quantity == Decimal("2")
+    assert missing.result == StockReservationResult.NONE
+    assert missing.reserved_quantity == Decimal("0")
+    assert missing.allocation_count == 0
+    assert db.scalar(select(func.count(StockReservation.id))) == 2
+    assert stock_position_payload(db, position)["available_quantity"] == Decimal("0")
+
+
+def test_quantity_request_can_forbid_partial_reservation(db):
+    _, pieces, _, _, position = create_stock_context(db)
+
+    request = create_quantity_reservation_request(
+        db,
+        quantity_request_command(
+            position,
+            pieces,
+            key="request:no-partial",
+            quantity="6",
+            allow_partial=False,
+        ),
+    )
+
+    assert request.result == StockReservationResult.NONE
+    assert request.reserved_quantity == Decimal("0")
+    assert request.allocation_count == 0
+    assert stock_position_payload(db, position)["available_quantity"] == Decimal("5")
+
+
+def test_request_audit_survives_full_reservation_consumption(db):
+    _, pieces, _, _, position = create_stock_context(db)
+    position_id = position.id
+    request = create_quantity_reservation_request(
+        db,
+        quantity_request_command(position, pieces, key="request:consume-all", quantity="5"),
+    )
+    reservation = db.scalar(
+        select(StockReservation).where(StockReservation.request_id == request.id)
+    )
+
+    consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(key="consume:request-all"),
+    )
+
+    db.refresh(request)
+    assert db.get(StockPosition, position_id) is None
+    assert request.requested_stock_position_id == position_id
+    assert request.result == StockReservationResult.FULL
+    assert stock_reservation_request_payload(db, request)["active_allocation_count"] == 0
+
+
+def test_whole_logistic_unit_reserves_root_and_nested_stock_atomically(db):
+    pieces, root, root_position, child_position = create_logistic_unit_stock_context(db)
+
+    request = create_logistic_unit_reservation_request(
+        db,
+        logistic_unit_request_command(root, key="request:whole-lu"),
+    )
+    payload = stock_reservation_request_payload(db, request)
+
+    assert request.kind == StockReservationKind.LOGISTIC_UNIT
+    assert request.result == StockReservationResult.FULL
+    assert request.expected_position_count == 2
+    assert request.allocation_count == 2
+    assert payload["active_allocation_count"] == 2
+    assert {item["stock_position_id"] for item in payload["reservations"]} == {
+        root_position.id,
+        child_position.id,
+    }
+    assert all(item["request_uid"] == request.uid for item in payload["reservations"])
+    assert stock_position_payload(db, root_position)["available_quantity"] == Decimal("0")
+    assert stock_position_payload(db, child_position)["available_quantity"] == Decimal("0")
+    with pytest.raises(HTTPException, match="active reservation"):
+        require_available_top_level_unit(
+            db,
+            root.uid,
+            db.get(Location, root.current_location_id).warehouse_id,
+        )
+
+    unavailable = create_logistic_unit_reservation_request(
+        db,
+        logistic_unit_request_command(root, key="request:whole-lu-again"),
+    )
+    assert unavailable.result == StockReservationResult.NONE
+    assert unavailable.allocation_count == 0
+    assert db.scalar(
+        select(func.count(StockReservation.id)).where(
+            StockReservation.request_id == unavailable.id
+        )
+    ) == 0
+
+
+def test_whole_logistic_unit_failure_does_not_capture_available_lines(db):
+    pieces, root, root_position, child_position = create_logistic_unit_stock_context(db)
+    create_stock_reservation(
+        db,
+        reserve_command(
+            root_position,
+            pieces,
+            key="reserve:one-line-before-whole",
+            quantity="1",
+            reference_type="logistic_shipment",
+            reference_uid="SHIP-LU-001",
+            reference_line_uid="LINE-LU-001",
+        ),
+    )
+
+    request = create_logistic_unit_reservation_request(
+        db,
+        logistic_unit_request_command(root, key="request:whole-lu-conflict"),
+    )
+
+    assert request.result == StockReservationResult.NONE
+    assert request.allocation_count == 0
+    assert stock_position_payload(db, root_position)["available_quantity"] == Decimal("3")
+    assert stock_position_payload(db, child_position)["available_quantity"] == Decimal("7")
+    assert db.scalar(
+        select(func.count(StockReservation.id)).where(
+            StockReservation.request_id == request.id
+        )
+    ) == 0
+
+
+def test_reservation_request_api_exposes_result_and_allocations(db):
+    _, pieces, _, _, position = create_stock_context(db)
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[api_routes.get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/stock-reservation-requests/quantity",
+                json={
+                    "stock_position_id": position.id,
+                    "input_quantity": "8",
+                    "input_uom_id": pieces.id,
+                    "allow_partial": True,
+                    "reference_type": "internal_issue",
+                    "reference_uid": "ISSUE-API-REQUEST",
+                    "reference_line_uid": "LINE-001",
+                    "idempotency_key": "request:api:partial",
+                    "actor": "api-user",
+                },
+            )
+            assert created.status_code == 200
+            body = created.json()
+            assert body["kind"] == "quantity"
+            assert body["result"] == "partial"
+            assert body["requested_quantity"] == "8.000000"
+            assert body["reserved_quantity"] == "5.000000"
+            assert len(body["reservations"]) == 1
+
+            listed = client.get(
+                "/api/stock-reservation-requests",
+                params={"result": "partial", "reference_uid": "ISSUE-API-REQUEST"},
+            )
+            assert listed.status_code == 200
+            assert [item["uid"] for item in listed.json()] == [body["uid"]]
+            assert client.get(
+                f"/api/stock-reservation-requests/{body['uid']}"
+            ).status_code == 200
     finally:
         app.dependency_overrides.clear()

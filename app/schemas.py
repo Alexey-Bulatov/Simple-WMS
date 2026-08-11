@@ -16,6 +16,8 @@ from app.models.enums import (
     MeasurementDimension,
     ShipmentStatus,
     StockDocumentStatus,
+    StockReservationKind,
+    StockReservationResult,
     StockReservationStatus,
     TransferKind,
     TransferStatus,
@@ -375,6 +377,59 @@ class StockReservationCreate(BaseModel):
         return normalized or None
 
 
+class StockReservationRequestBase(BaseModel):
+    reference_type: str = Field(min_length=1, max_length=40)
+    reference_uid: str = Field(min_length=1, max_length=80)
+    reference_line_uid: str | None = Field(default=None, max_length=80)
+    task_uid: str | None = Field(default=None, max_length=40)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reference_type", "reference_uid", "idempotency_key", "actor")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("reference_line_uid", "reason")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("task_uid")
+    @classmethod
+    def normalize_task_uid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+
+class StockReservationQuantityRequest(StockReservationRequestBase):
+    stock_position_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int = Field(gt=0)
+    allow_partial: bool = True
+
+
+class StockReservationLogisticUnitRequest(StockReservationRequestBase):
+    logistic_unit_uid: str = Field(min_length=1, max_length=64)
+
+    @field_validator("logistic_unit_uid")
+    @classmethod
+    def normalize_logistic_unit_uid(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
 class StockReservationReleaseRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=120)
     actor: str = Field(min_length=1, max_length=80)
@@ -432,6 +487,8 @@ class StockReservationConsumeRequest(BaseModel):
 class StockReservationRead(BaseModel):
     id: int
     uid: str
+    request_id: int | None
+    request_uid: str | None
     status: StockReservationStatus
     stock_position_id: int | None
     product_id: int
@@ -473,6 +530,38 @@ class StockReservationRead(BaseModel):
     consumed_by_document_uid: str | None
     consume_actor: str | None
     consume_reason: str | None
+
+
+class StockReservationRequestRead(BaseModel):
+    id: int
+    uid: str
+    kind: StockReservationKind
+    result: StockReservationResult
+    requested_stock_position_id: int | None
+    requested_logistic_unit_id: int | None
+    requested_logistic_unit_uid: str | None
+    requested_quantity: Decimal | None
+    reserved_quantity: Decimal | None
+    base_uom_id: int | None
+    base_uom_code: str | None
+    input_quantity: Decimal | None
+    input_uom_id: int | None
+    input_uom_code: str | None
+    conversion_factor: Decimal | None
+    allow_partial: bool
+    expected_position_count: int
+    allocation_count: int
+    active_allocation_count: int
+    reference_type: str
+    reference_uid: str
+    reference_line_uid: str | None
+    task_id: int | None
+    task_uid: str | None
+    idempotency_key: str
+    actor: str
+    reason: str | None
+    created_at: datetime
+    reservations: list[StockReservationRead]
 
 
 class StockMovementPost(BaseModel):
