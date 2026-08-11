@@ -1,5 +1,7 @@
 from app.models.entities import (
     Aisle,
+    AuthenticationEvent,
+    AuthenticationSession,
     Batch,
     EquipmentProfile,
     LogisticUnit,
@@ -28,14 +30,19 @@ from app.models.entities import (
     StockReservation,
     StockReservationRequest,
     User,
+    UserAccessPass,
+    UserWarehouseAccess,
     UnitOfMeasure,
     Warehouse,
+    WarehouseWorkstation,
     WarehouseMapItem,
     Zone,
 )
 
 __all__ = [
     "Aisle",
+    "AuthenticationEvent",
+    "AuthenticationSession",
     "Batch",
     "EquipmentProfile",
     "LogisticUnit",
@@ -64,8 +71,11 @@ __all__ = [
     "StockReservation",
     "StockReservationRequest",
     "User",
+    "UserAccessPass",
+    "UserWarehouseAccess",
     "UnitOfMeasure",
     "Warehouse",
+    "WarehouseWorkstation",
     "WarehouseMapItem",
     "Zone",
 ]

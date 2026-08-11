@@ -9,6 +9,7 @@ from app.core.constants import (
     SHIPMENT_CODE_PREFIX,
     TRANSFER_CODE_PREFIX,
 )
+from app.auth import authorize_api_request
 from app.db.session import get_db
 from app.demo import generate_demo_logistic_units
 from app.labels import LabelItem, build_labels_pdf
@@ -38,7 +39,6 @@ from app.models.entities import (
     StockReservation,
     StockReservationRequest,
     UnitOfMeasure,
-    User,
     Warehouse,
     Zone,
 )
@@ -109,8 +109,6 @@ from app.schemas import (
     TaskActionRequest,
     TaskAssignRequest,
     TaskSyncRequest,
-    UserCreate,
-    UserRead,
     UnitOfMeasureCreate,
     UnitOfMeasureRead,
     WarehouseCreate,
@@ -140,7 +138,6 @@ from app.services import (
     create_rack_level,
     create_rack_section,
     create_stock_owner,
-    create_user,
     create_unit_of_measure,
     create_warehouse,
     create_zone,
@@ -237,7 +234,7 @@ from app.warehouse_map import (
     update_map_item,
     warehouse_map_payload,
 )
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(authorize_api_request)])
 
 LOGISTIC_UNIT_STATUS_LABELS = {
     "open": "Открыта",
@@ -500,16 +497,6 @@ def api_universal_location_card(
             for event in location_events
         ],
     }
-
-
-@router.post("/users", response_model=UserRead)
-def api_create_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
-    return create_user(db, payload)
-
-
-@router.get("/users", response_model=list[UserRead])
-def api_list_users(db: Session = Depends(get_db)) -> list[User]:
-    return list(db.scalars(select(User).order_by(User.username)))
 
 
 @router.post("/equipment-profiles", response_model=EquipmentProfileRead)

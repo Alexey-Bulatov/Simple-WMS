@@ -68,6 +68,21 @@ class StockReservationResult(StrEnum):
     NONE = "none"
 
 
+class AuthenticationMethod(StrEnum):
+    PASSWORD = "password"
+    ACCESS_PASS = "access_pass"
+
+
+class AuthenticationEventType(StrEnum):
+    LOGIN_SUCCEEDED = "login_succeeded"
+    LOGIN_FAILED = "login_failed"
+    LOGOUT = "logout"
+    PASSWORD_CHANGED = "password_changed"
+    SESSIONS_REVOKED = "sessions_revoked"
+    ACCESS_PASS_ISSUED = "access_pass_issued"
+    ACCESS_PASS_REVOKED = "access_pass_revoked"
+
+
 class UserRole(StrEnum):
     PRODUCTION_OPERATOR = "production_operator"
     RECEIVING_CLERK = "receiving_clerk"
@@ -76,6 +91,8 @@ class UserRole(StrEnum):
     SENIOR_CLERK = "senior_clerk"
     WAREHOUSE_MANAGER = "warehouse_manager"
     ADMIN = "admin"
+    AUDITOR = "auditor"
+    INTEGRATION = "integration"
 
 
 class ShipmentStatus(StrEnum):

@@ -24,6 +24,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.constants import DEFAULT_UNIT
 from app.db.session import Base
 from app.models.enums import (
+    AuthenticationEventType,
+    AuthenticationMethod,
     InventoryLineStatus,
     InventoryLocationStatus,
     InventoryStatus,
@@ -54,8 +56,158 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(160))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.ADMIN)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    warehouse_accesses: Mapped[list["UserWarehouseAccess"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="UserWarehouseAccess.user_id",
+    )
+    sessions: Mapped[list["AuthenticationSession"]] = relationship(
+        back_populates="user",
+        foreign_keys="AuthenticationSession.user_id",
+    )
+    access_passes: Mapped[list["UserAccessPass"]] = relationship(
+        back_populates="user",
+        foreign_keys="UserAccessPass.user_id",
+    )
+
+
+class UserWarehouseAccess(Base):
+    __tablename__ = "user_warehouse_accesses"
+    __table_args__ = (
+        UniqueConstraint("user_id", "warehouse_id", name="uq_user_warehouse_access"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id", ondelete="CASCADE"), index=True
+    )
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    assigned_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User] = relationship(
+        back_populates="warehouse_accesses",
+        foreign_keys=[user_id],
+    )
+    warehouse: Mapped["Warehouse"] = relationship(foreign_keys=[warehouse_id])
+    assigned_by: Mapped[User | None] = relationship(foreign_keys=[assigned_by_user_id])
+
+
+class WarehouseWorkstation(Base):
+    __tablename__ = "warehouse_workstations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id", ondelete="CASCADE"), index=True
+    )
+    pass_login_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    warehouse: Mapped["Warehouse"] = relationship()
+
+
+class AuthenticationSession(Base):
+    __tablename__ = "authentication_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    authentication_method: Mapped[AuthenticationMethod] = mapped_column(
+        Enum(AuthenticationMethod, native_enum=False, length=24), index=True
+    )
+    workstation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouse_workstations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+    workstation: Mapped[WarehouseWorkstation | None] = relationship()
+
+
+class UserAccessPass(Base):
+    __tablename__ = "user_access_passes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    workstation_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouse_workstations.id", ondelete="CASCADE"), index=True
+    )
+    issued_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+
+    user: Mapped[User] = relationship(
+        back_populates="access_passes",
+        foreign_keys=[user_id],
+    )
+    workstation: Mapped[WarehouseWorkstation] = relationship()
+    issued_by: Mapped[User | None] = relationship(foreign_keys=[issued_by_user_id])
+
+
+class AuthenticationEvent(Base):
+    __tablename__ = "authentication_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_type: Mapped[AuthenticationEventType] = mapped_column(
+        Enum(AuthenticationEventType, native_enum=False, length=32), index=True
+    )
+    authentication_method: Mapped[AuthenticationMethod | None] = mapped_column(
+        Enum(AuthenticationMethod, native_enum=False, length=24),
+        nullable=True,
+        index=True,
+    )
+    username: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    session_uid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    workstation_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    succeeded: Mapped[bool] = mapped_column(Boolean, index=True)
+    reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    user: Mapped[User | None] = relationship()
 
 
 class UnitOfMeasure(Base):

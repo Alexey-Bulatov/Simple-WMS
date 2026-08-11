@@ -12,6 +12,7 @@ def navigation(active: str) -> str:
         ("cards", "/cards", "Поиск"),
         ("demo", "/demo", "Демо"),
         ("api", "/docs", "API"),
+        ("profile", "/profile", "Вход"),
     )
     return "".join(
         f'<a class="{"active" if key == active else ""}" href="{url}">{label}</a>'
@@ -63,7 +64,7 @@ def console_markup() -> str:
 
 
 def document(title: str, body_class: str, body: str, script: str) -> str:
-    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/static/universal.css"></head><body class="{body_class}">{body}<div id="toast" class="toast" hidden></div><script src="{script}" defer></script></body></html>"""
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/static/universal.css"></head><body class="{body_class}">{body}<div id="toast" class="toast" hidden></div><script src="{script}" defer></script><script src="/static/universal-auth-shell.js" defer></script></body></html>"""
 
 
 @router.get("/", include_in_schema=False)
@@ -136,3 +137,63 @@ def demo_page() -> str:
     </main>
     """
     return document("Демо-данные Simple WMS", "demo-page", body, "/static/universal-demo.js")
+
+
+@router.get("/login", response_class=HTMLResponse, include_in_schema=False)
+def login_page() -> str:
+    body = """
+    <main class="auth-stage">
+      <section class="auth-panel">
+        <a class="brand auth-brand" href="/work">Simple WMS</a>
+        <div class="auth-heading"><span class="eyebrow">Рабочая сессия</span><h1>Вход</h1></div>
+        <div class="segmented auth-tabs"><button class="active" data-auth-tab="password" type="button">Логин и пароль</button><button data-auth-tab="pass" type="button">QR / штрихкод</button></div>
+        <form id="passwordLogin" class="auth-form">
+          <label><span>Логин</span><input id="loginUsername" autocomplete="username" required autofocus></label>
+          <label><span>Пароль</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
+          <label><span>Рабочее место</span><input id="loginWorkstation" class="mono" autocomplete="off" placeholder="Необязательно"></label>
+          <button class="primary" type="submit">Войти</button>
+        </form>
+        <form id="passLogin" class="auth-form" hidden>
+          <label><span>Код пропуска</span><input id="loginAccessCode" class="scan-input mono" autocomplete="off" required></label>
+          <label><span>Рабочее место</span><input id="passWorkstation" class="mono" autocomplete="off" required></label>
+          <button class="primary" type="submit">Войти по коду</button>
+        </form>
+        <div id="authMessage" class="message">Введите учётные данные.</div>
+      </section>
+    </main>
+    """
+    return document("Вход в Simple WMS", "auth-page", body, "/static/universal-auth.js")
+
+
+@router.get("/profile", response_class=HTMLResponse, include_in_schema=False)
+def profile_page() -> str:
+    body = f"""
+    <header class="product-header"><a class="brand" href="/work">Simple WMS</a><nav>{navigation("profile")}</nav></header>
+    <main class="profile-main">
+      <section class="profile-panel">
+        <div class="panel-head"><div><span class="eyebrow">Текущая сессия</span><h1 id="profileName">Пользователь</h1><div id="profileLogin" class="mono muted"></div></div><button id="logoutButton" type="button">Выйти</button></div>
+        <div id="profileFacts" class="facts"></div>
+      </section>
+      <section class="profile-panel">
+        <div class="panel-head"><div><span class="eyebrow">Персональный код</span><h2>Пропуск для рабочего места</h2></div></div>
+        <form id="issuePassForm" class="auth-form compact-auth-form">
+          <label><span>Рабочее место</span><select id="profileWorkstation" required></select></label>
+          <label><span>Подтвердите пароль</span><input id="profilePassword" type="password" autocomplete="current-password" required></label>
+          <button class="primary" type="submit">Выпустить новый код</button>
+        </form>
+        <div id="issuedPass" class="issued-pass" hidden><span>Новый код</span><strong id="issuedPassCode" class="mono"></strong></div>
+        <div id="profileMessage" class="message">Действующий код повторно не показывается.</div>
+      </section>
+      <section class="profile-panel profile-panel-wide">
+        <div class="panel-head"><div><span class="eyebrow">Безопасность</span><h2>Сменить пароль</h2></div></div>
+        <form id="passwordChangeForm" class="auth-form compact-auth-form">
+          <label><span>Текущий пароль</span><input id="currentPassword" type="password" autocomplete="current-password" required></label>
+          <label><span>Новый пароль</span><input id="newPassword" type="password" autocomplete="new-password" minlength="10" required></label>
+          <label><span>Повторите новый пароль</span><input id="repeatPassword" type="password" autocomplete="new-password" minlength="10" required></label>
+          <button class="primary" type="submit">Сменить пароль</button>
+        </form>
+        <div id="passwordMessage" class="message">После сброса администратором пароль необходимо сменить до складских операций.</div>
+      </section>
+    </main>
+    """
+    return document("Профиль Simple WMS", "profile-page", body, "/static/universal-auth.js")

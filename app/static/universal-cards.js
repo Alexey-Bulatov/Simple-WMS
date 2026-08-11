@@ -16,6 +16,10 @@
   function esc(value) { return String(value ?? "—").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
   async function api(path) {
     const response = await fetch(path);
+    if (response.status === 401) {
+      location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+      throw new Error("Требуется вход");
+    }
     const text = await response.text();
     const data = text ? JSON.parse(text) : null;
     if (!response.ok) throw new Error(data?.detail || response.statusText);

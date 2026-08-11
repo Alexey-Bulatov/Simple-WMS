@@ -31,6 +31,10 @@
   function warehouse() { return $("warehouseSelect").value; }
   async function api(path, options = {}) {
     const response = await fetch(path, options);
+    if (response.status === 401) {
+      location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+      throw new Error("Требуется вход");
+    }
     const text = await response.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }

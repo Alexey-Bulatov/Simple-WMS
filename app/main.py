@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.api.auth_routes import router as auth_router
 from app.core.config import get_settings
 from app.db.session import get_db, init_db
 from app.openapi_docs import install_bilingual_openapi
@@ -29,6 +30,7 @@ def health() -> dict[str, str]:
 
 
 app.include_router(router)
+app.include_router(auth_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(universal_web_router)
 install_bilingual_openapi(app)

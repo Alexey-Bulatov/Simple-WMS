@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.constants import DEFAULT_UNIT, DEFAULT_WAREHOUSE_CODE, DEFAULT_WAREHOUSE_NAME
 from app.models.enums import (
+    AuthenticationMethod,
     EquipmentConnection,
     EquipmentKind,
     InventoryLineStatus,
@@ -37,6 +38,232 @@ class UserCreate(BaseModel):
 class UserRead(UserCreate):
     id: int
     is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuthenticationUserRead(BaseModel):
+    id: int
+    username: str
+    full_name: str
+    role: UserRole
+    is_active: bool
+    must_change_password: bool
+    password_changed_at: datetime | None
+    last_login_at: datetime | None
+    locked_until: datetime | None
+    warehouse_ids: list[int]
+    warehouse_codes: list[str]
+
+
+class AuthenticationBootstrapRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=80)
+    full_name: str = Field(min_length=2, max_length=160)
+    password: str = Field(min_length=10, max_length=200)
+    bootstrap_token: str | None = Field(default=None, max_length=300)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if len(normalized) < 2:
+            raise ValueError("username must contain at least two visible characters")
+        return normalized
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 2:
+            raise ValueError("full name must contain at least two visible characters")
+        return normalized
+
+
+class AuthenticationPasswordLoginRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+    workstation_code: str | None = Field(default=None, max_length=64)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if len(normalized) < 2:
+            raise ValueError("username must contain at least two visible characters")
+        return normalized
+
+    @field_validator("workstation_code")
+    @classmethod
+    def normalize_workstation_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+
+class AuthenticationPassLoginRequest(BaseModel):
+    access_code: str = Field(min_length=20, max_length=300)
+    workstation_code: str = Field(min_length=1, max_length=64)
+
+    @field_validator("access_code")
+    @classmethod
+    def normalize_access_code(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("workstation_code")
+    @classmethod
+    def normalize_workstation_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class AuthenticationResult(BaseModel):
+    session_uid: str
+    session_token: str
+    authentication_method: AuthenticationMethod
+    workstation_code: str | None
+    expires_at: datetime
+    user: AuthenticationUserRead
+
+
+class AuthenticationPasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=10, max_length=200)
+
+
+class AuthenticationRevokeSessionsRequest(BaseModel):
+    reason: str = Field(default="Отзыв пользователем", min_length=1, max_length=240)
+
+
+class AuthenticationAdminPasswordResetRequest(BaseModel):
+    new_password: str = Field(min_length=10, max_length=200)
+    must_change_password: bool = True
+    reason: str = Field(default="Сброс администратором", min_length=1, max_length=240)
+
+
+class WarehouseWorkstationCreate(BaseModel):
+    code: str = Field(min_length=2, max_length=64)
+    name: str = Field(min_length=2, max_length=160)
+    warehouse_id: int = Field(gt=0)
+    pass_login_enabled: bool = True
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if len(normalized) < 2:
+            raise ValueError("workstation code must contain at least two visible characters")
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 2:
+            raise ValueError("workstation name must contain at least two visible characters")
+        return normalized
+
+
+class WarehouseWorkstationRead(WarehouseWorkstationCreate):
+    id: int
+    warehouse_code: str
+    is_active: bool
+    created_at: datetime
+
+
+class UserWarehouseAssignmentRequest(BaseModel):
+    warehouse_ids: list[int] = Field(default_factory=list)
+    default_warehouse_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_default_warehouse(self):
+        unique_ids = list(dict.fromkeys(self.warehouse_ids))
+        if len(unique_ids) != len(self.warehouse_ids):
+            raise ValueError("warehouse ids must be unique")
+        if (
+            self.default_warehouse_id is not None
+            and self.default_warehouse_id not in unique_ids
+        ):
+            raise ValueError("default warehouse must belong to warehouse ids")
+        return self
+
+
+class AuthenticationAdminUserCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=80)
+    full_name: str = Field(min_length=2, max_length=160)
+    role: UserRole
+    password: str = Field(min_length=10, max_length=200)
+    warehouse_ids: list[int] = Field(default_factory=list)
+    default_warehouse_id: int | None = Field(default=None, gt=0)
+    must_change_password: bool = True
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if len(normalized) < 2:
+            raise ValueError("username must contain at least two visible characters")
+        return normalized
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 2:
+            raise ValueError("full name must contain at least two visible characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_warehouses(self):
+        UserWarehouseAssignmentRequest(
+            warehouse_ids=self.warehouse_ids,
+            default_warehouse_id=self.default_warehouse_id,
+        )
+        return self
+
+
+class UserAccessPassIssueRequest(BaseModel):
+    workstation_code: str = Field(min_length=1, max_length=64)
+    current_password: str | None = Field(default=None, max_length=200)
+    expires_days: int | None = Field(default=30, ge=1, le=365)
+    reason: str = Field(default="Выпуск персонального пропуска", min_length=1, max_length=240)
+
+    @field_validator("workstation_code")
+    @classmethod
+    def normalize_workstation_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class UserAccessPassRead(BaseModel):
+    uid: str
+    user_id: int
+    username: str
+    workstation_id: int
+    workstation_code: str
+    issued_by_user_id: int | None
+    issued_at: datetime
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+class UserAccessPassIssueRead(UserAccessPassRead):
+    login_code: str
+    qr_payload: str
+    code128_payload: str
+
+
+class AuthenticationEventRead(BaseModel):
+    id: int
+    event_type: str
+    authentication_method: AuthenticationMethod | None
+    username: str | None
+    user_id: int | None
+    session_uid: str | None
+    workstation_code: str | None
+    client_ip: str | None
+    succeeded: bool
+    reason: str | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
