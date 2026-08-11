@@ -156,6 +156,8 @@ def russian_summary(path: str, method: str) -> str:
     action = static_tail[-1]
     if root == "stock-reservations" and action == "release":
         return f"{entity_label}: снять резерв"
+    if root == "stock-reservations" and action == "consume":
+        return f"{entity_label}: погасить фактическим отбором"
     action_label = METHOD_ACTION_LABELS.get(
         (method, action),
         ACTION_LABELS.get(action, action.replace("-", " ")),

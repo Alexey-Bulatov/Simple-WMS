@@ -79,13 +79,21 @@ def stock_position_identity_query(
     return query
 
 
-def active_stock_reservation_quantity(db: Session, stock_position_id: int) -> Decimal:
-    return db.scalar(
-        select(func.coalesce(func.sum(StockReservation.quantity), Decimal("0"))).where(
-            StockReservation.stock_position_id == stock_position_id,
-            StockReservation.status == StockReservationStatus.ACTIVE,
-        )
-    ) or Decimal("0")
+def active_stock_reservation_quantity(
+    db: Session,
+    stock_position_id: int,
+    *,
+    excluded_reservation_ids: set[int] | None = None,
+) -> Decimal:
+    query = select(
+        func.coalesce(func.sum(StockReservation.quantity), Decimal("0"))
+    ).where(
+        StockReservation.stock_position_id == stock_position_id,
+        StockReservation.status == StockReservationStatus.ACTIVE,
+    )
+    if excluded_reservation_ids:
+        query = query.where(StockReservation.id.not_in(excluded_reservation_ids))
+    return db.scalar(query) or Decimal("0")
 
 
 def convert_product_quantity_to_base(

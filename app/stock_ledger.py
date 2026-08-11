@@ -14,16 +14,23 @@ from app.models.entities import (
     Location,
     LogisticUnit,
     LogisticUnitContent,
+    LogisticTask,
     OperationEvent,
     Product,
     StockDocument,
     StockMovement,
     StockOwner,
     StockPosition,
+    StockReservation,
     UnitOfMeasure,
     utcnow,
 )
-from app.models.enums import MeasurementDimension, StockDocumentStatus
+from app.models.enums import (
+    MeasurementDimension,
+    StockDocumentStatus,
+    StockReservationStatus,
+    TaskStatus,
+)
 from app.schemas import StockDocumentPost, StockDocumentReverseRequest, StockMovementPost
 from app.stock import (
     TERMINAL_UNIT_STATUSES,
@@ -141,6 +148,7 @@ def _apply_movement(
     sequence_no: int,
     command: StockMovementPost,
     product: Product,
+    consuming_reservation_ids: set[int],
 ) -> None:
     owner = db.get(StockOwner, command.owner_id)
     if owner is None or not owner.is_active:
@@ -211,7 +219,11 @@ def _apply_movement(
             raise _bad_request("source stock position not found")
         if source_position.quantity < quantity:
             raise _bad_request("insufficient source stock")
-        reserved_quantity = active_stock_reservation_quantity(db, source_position.id)
+        reserved_quantity = active_stock_reservation_quantity(
+            db,
+            source_position.id,
+            excluded_reservation_ids=consuming_reservation_ids,
+        )
         if source_position.quantity - reserved_quantity < quantity:
             raise _conflict("insufficient unreserved source stock")
 
@@ -298,6 +310,7 @@ def post_stock_document(
     payload: StockDocumentPost,
     *,
     before_commit: Callable[[StockDocument], None] | None = None,
+    consuming_reservation_ids: set[int] | None = None,
 ) -> StockDocument:
     idempotency_key = payload.idempotency_key.strip()
     command_hash = _command_hash(payload)
@@ -307,6 +320,22 @@ def post_stock_document(
             return existing
         if any(key.startswith("_") for key in payload.attributes):
             raise _bad_request("stock document attributes cannot use reserved keys")
+
+        reservation_ids = sorted(consuming_reservation_ids or set())
+        if reservation_ids:
+            reservations = list(
+                db.scalars(
+                    select(StockReservation)
+                    .where(StockReservation.id.in_(reservation_ids))
+                    .order_by(StockReservation.id)
+                    .with_for_update()
+                )
+            )
+            if len(reservations) != len(reservation_ids) or any(
+                reservation.status != StockReservationStatus.ACTIVE
+                for reservation in reservations
+            ):
+                raise _conflict("active stock reservation not found for consumption")
 
         product_ids = sorted({movement.product_id for movement in payload.movements})
         products = {
@@ -348,7 +377,14 @@ def post_stock_document(
         db.flush()
 
         for sequence_no, movement in enumerate(payload.movements, start=1):
-            _apply_movement(db, document, sequence_no, movement, products[movement.product_id])
+            _apply_movement(
+                db,
+                document,
+                sequence_no,
+                movement,
+                products[movement.product_id],
+                consuming_reservation_ids or set(),
+            )
             db.flush()
 
         if before_commit is not None:
@@ -512,6 +548,121 @@ def _reverse_content_projection(
     )
 
 
+def _reverse_reservation_consumption(
+    db: Session,
+    original: StockDocument,
+    reversal: StockDocument,
+    *,
+    actor: str,
+    reason: str,
+) -> None:
+    reservation = db.scalar(
+        select(StockReservation)
+        .where(StockReservation.consumed_by_document_id == original.id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if reservation is None:
+        return
+    if reservation.status != StockReservationStatus.CONSUMED:
+        raise _conflict("stock reservation is not consumed by the original document")
+    restored_position = db.scalar(
+        stock_position_identity_query(
+            logistic_unit_id=reservation.logistic_unit_id,
+            location_id=reservation.location_id,
+            product_id=reservation.product_id,
+            batch_id=reservation.batch_id,
+            owner_id=reservation.owner_id,
+            quality_status=reservation.quality_status,
+            serial_number=reservation.serial_number,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if restored_position is None or restored_position.quantity < reservation.quantity:
+        raise _conflict("reversal did not restore the reserved stock position")
+
+    task = None
+    if reservation.task_id is not None:
+        task = db.scalar(
+            select(LogisticTask)
+            .where(LogisticTask.id == reservation.task_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if task is None:
+            raise _conflict("linked logistic task no longer exists")
+        parameters = task.parameters or {}
+        if task.status not in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED}:
+            raise _conflict("linked logistic task changed after reservation consumption")
+        before_task_status = task.status
+        before_task = {
+            "status": before_task_status.value,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        }
+        if task.status == TaskStatus.COMPLETED:
+            if not (
+                parameters.get("completed_by_reservation_uid")
+                and parameters.get("stock_document_uid")
+            ):
+                raise _conflict(
+                    "linked logistic task was not completed by stock reservations"
+                )
+            task.status = TaskStatus.IN_PROGRESS
+            task.completed_at = None
+        task.parameters = {
+            **parameters,
+            "reopened_by_reversal_uid": reversal.uid,
+        }
+        db.add(
+            OperationEvent(
+                operation=(
+                    "logistic_task_reopened_by_stock_reversal"
+                    if before_task_status == TaskStatus.COMPLETED
+                    else "logistic_task_updated_by_stock_reversal"
+                ),
+                object_type="logistic_task",
+                object_uid=task.task_uid,
+                actor=actor,
+                reason=reason,
+                before=before_task,
+                after={
+                    "status": task.status.value,
+                    "reservation_uid": reservation.uid,
+                    "reversal_document_uid": reversal.uid,
+                    "task_was_reopened": before_task_status == TaskStatus.COMPLETED,
+                },
+            )
+        )
+
+    consumed_at = reservation.consumed_at
+    reservation.status = StockReservationStatus.ACTIVE
+    reservation.stock_position_id = restored_position.id
+    reservation.consumed_at = None
+    reservation.consumed_by_document_id = None
+    reservation.consume_actor = None
+    reservation.consume_reason = None
+    db.add(
+        OperationEvent(
+            operation="stock_reservation_reopened_by_reversal",
+            object_type="stock_reservation",
+            object_uid=reservation.uid,
+            actor=actor,
+            reason=reason,
+            before={
+                "status": StockReservationStatus.CONSUMED.value,
+                "stock_document_uid": original.uid,
+                "consumed_at": consumed_at.isoformat() if consumed_at else None,
+            },
+            after={
+                "status": StockReservationStatus.ACTIVE.value,
+                "reversal_document_uid": reversal.uid,
+                "task_uid": task.task_uid if task else None,
+            },
+        )
+    )
+
+
 def reverse_stock_document(
     db: Session,
     document_uid: str,
@@ -555,10 +706,22 @@ def reverse_stock_document(
         raise _conflict("opening balance must be corrected by an adjustment document")
     if not original.movements:
         raise _conflict("stock document has no movements to reverse")
+    db.scalar(
+        select(StockReservation)
+        .where(StockReservation.consumed_by_document_id == original.id)
+        .with_for_update()
+    )
     command = _reversal_command(db, original, payload)
 
     def mark_reversed(reversal: StockDocument) -> None:
         _reverse_content_projection(
+            db,
+            original,
+            reversal,
+            actor=payload.actor,
+            reason=payload.reason,
+        )
+        _reverse_reservation_consumption(
             db,
             original,
             reversal,

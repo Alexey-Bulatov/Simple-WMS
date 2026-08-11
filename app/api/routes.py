@@ -98,6 +98,7 @@ from app.schemas import (
     StockMovementRead,
     StockPositionRead,
     StockReconciliationRead,
+    StockReservationConsumeRequest,
     StockReservationCreate,
     StockReservationRead,
     StockReservationReleaseRequest,
@@ -163,6 +164,7 @@ from app.stock_ledger import (
 )
 from app.stock_reconciliation import reconcile_stock_positions
 from app.stock_reservations import (
+    consume_stock_reservation,
     create_stock_reservation,
     release_stock_reservation,
     stock_reservation_payload,
@@ -1532,6 +1534,19 @@ def api_release_stock_reservation(
     db: Session = Depends(get_db),
 ) -> dict:
     reservation = release_stock_reservation(db, reservation_uid, payload)
+    return stock_reservation_payload(db, reservation)
+
+
+@router.post(
+    "/stock-reservations/{reservation_uid}/consume",
+    response_model=StockReservationRead,
+)
+def api_consume_stock_reservation(
+    reservation_uid: str,
+    payload: StockReservationConsumeRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    reservation = consume_stock_reservation(db, reservation_uid, payload)
     return stock_reservation_payload(db, reservation)
 
 

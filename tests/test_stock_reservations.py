@@ -14,28 +14,43 @@ from app.models.entities import (
     Location,
     LogisticUnit,
     LogisticUnitType,
+    LogisticTask,
     OperationEvent,
     Product,
     StockDocument,
     StockOwner,
     StockPosition,
     StockReservation,
+    StockMovement,
     UnitOfMeasure,
     Warehouse,
     Zone,
 )
-from app.models.enums import LocationKind, LogisticUnitStatus, StockReservationStatus
+from app.models.enums import (
+    LocationKind,
+    LogisticUnitStatus,
+    StockReservationStatus,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
+)
 from app.schemas import (
     ProductCreate,
     StockDocumentPost,
+    StockDocumentReverseRequest,
     StockMovementPost,
+    StockReservationConsumeRequest,
     StockReservationCreate,
     StockReservationReleaseRequest,
 )
 from app.services import create_product, ensure_reference_catalogs
 from app.stock import remove_logistic_unit_stock_positions, stock_position_payload
-from app.stock_ledger import post_stock_document
-from app.stock_reservations import create_stock_reservation, release_stock_reservation
+from app.stock_ledger import post_stock_document, reverse_stock_document
+from app.stock_reservations import (
+    consume_stock_reservation,
+    create_stock_reservation,
+    release_stock_reservation,
+)
 
 
 @pytest.fixture()
@@ -107,14 +122,25 @@ def create_stock_context(db, *, quantity: str = "5"):
     return product, pieces, owner, location, position
 
 
-def reserve_command(position, pieces, *, key: str, quantity: str = "3"):
+def reserve_command(
+    position,
+    pieces,
+    *,
+    key: str,
+    quantity: str = "3",
+    reference_type: str = "internal_issue",
+    reference_uid: str = "ISSUE-001",
+    reference_line_uid: str = "LINE-001",
+    task_uid: str | None = None,
+):
     return StockReservationCreate(
         stock_position_id=position.id,
         input_quantity=Decimal(quantity),
         input_uom_id=pieces.id,
-        reference_type="internal_issue",
-        reference_uid="ISSUE-001",
-        reference_line_uid="LINE-001",
+        reference_type=reference_type,
+        reference_uid=reference_uid,
+        reference_line_uid=reference_line_uid,
+        task_uid=task_uid,
         idempotency_key=key,
         actor="storekeeper",
         reason="Выдача сотруднику",
@@ -127,6 +153,39 @@ def release_command(*, key: str, reason: str = "Выдача отменена"):
         actor="senior-storekeeper",
         reason=reason,
     )
+
+
+def consume_command(
+    *,
+    key: str,
+    actor: str = "storekeeper",
+    reason: str = "Фактический отбор",
+    destination_location_id: int | None = None,
+):
+    return StockReservationConsumeRequest(
+        idempotency_key=key,
+        actor=actor,
+        reason=reason,
+        destination_location_id=destination_location_id,
+    )
+
+
+def create_linked_task(db, location, *, object_uid: str = "SHIP-QTY-001"):
+    task = LogisticTask(
+        task_uid=f"TSK-{object_uid}",
+        warehouse_id=location.warehouse_id,
+        task_type=TaskType.SHIP,
+        status=TaskStatus.NEW,
+        priority=TaskPriority.NORMAL,
+        title="Отобрать зарезервированный товар",
+        object_type="logistic_shipment",
+        object_uid=object_uid,
+        parameters={},
+        created_by="dispatcher",
+    )
+    db.add(task)
+    db.commit()
+    return task
 
 
 def issue_command(product, pieces, owner, location, *, key: str, quantity: str):
@@ -291,6 +350,340 @@ def test_reservation_and_release_idempotency_keys_reject_changed_commands(db):
         )
 
 
+def test_consumption_posts_movement_and_completes_linked_task_atomically(db):
+    _, pieces, _, location, position = create_stock_context(db)
+    task = create_linked_task(db, location)
+    reservation = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:consume-linked",
+            reference_type="logistic_shipment",
+            reference_uid=task.object_uid,
+            task_uid=task.task_uid,
+        ),
+    )
+
+    consumed = consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(key="consume:linked"),
+    )
+    repeated = consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(key="consume:linked"),
+    )
+
+    db.refresh(task)
+    assert repeated.id == consumed.id
+    assert consumed.status == StockReservationStatus.CONSUMED
+    assert consumed.consumed_by_document.document_type == "stock_issue"
+    assert consumed.consumed_by_document.status.value == "posted"
+    assert db.get(StockPosition, position.id).quantity == Decimal("2")
+    assert db.scalar(select(func.count(StockDocument.id))) == 1
+    assert db.scalar(select(func.count(StockMovement.id))) == 1
+    assert task.status == TaskStatus.COMPLETED
+    assert task.assigned_to == "storekeeper"
+    assert task.parameters["completed_by_reservation_uid"] == reservation.uid
+    assert task.parameters["stock_document_uid"] == consumed.consumed_by_document.uid
+
+    with pytest.raises(HTTPException, match="another reservation consumption"):
+        consume_stock_reservation(
+            db,
+            reservation.uid,
+            consume_command(key="consume:linked", reason="Изменённая команда"),
+        )
+    with pytest.raises(HTTPException, match="cannot be released"):
+        release_stock_reservation(
+            db,
+            reservation.uid,
+            release_command(key="release:consumed"),
+        )
+
+
+def test_consumption_can_move_reserved_stock_to_another_location(db):
+    _, pieces, _, source, position = create_stock_context(db)
+    destination = Location(
+        warehouse_id=source.warehouse_id,
+        zone_id=source.zone_id,
+        code="WH-RSV-ST01-02",
+        name="Ячейка 02",
+        kind=LocationKind.STORAGE,
+    )
+    db.add(destination)
+    db.commit()
+    reservation = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:pick-location",
+            quantity="2",
+        ),
+    )
+
+    consumed = consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(
+            key="consume:pick-location",
+            destination_location_id=destination.id,
+        ),
+    )
+
+    positions = list(db.scalars(select(StockPosition).order_by(StockPosition.id)))
+    assert consumed.consumed_by_document.document_type == "stock_pick"
+    assert [(item.location_id, item.quantity) for item in positions] == [
+        (source.id, Decimal("3")),
+        (destination.id, Decimal("2")),
+    ]
+
+
+def test_linked_task_completes_only_after_all_reservations_are_consumed(db):
+    _, pieces, _, location, position = create_stock_context(db)
+    task = create_linked_task(db, location)
+    first = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:multi:first",
+            quantity="1",
+            reference_type="logistic_shipment",
+            reference_uid=task.object_uid,
+            reference_line_uid="LINE-001",
+            task_uid=task.task_uid,
+        ),
+    )
+    second = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:multi:second",
+            quantity="2",
+            reference_type="logistic_shipment",
+            reference_uid=task.object_uid,
+            reference_line_uid="LINE-002",
+            task_uid=task.task_uid,
+        ),
+    )
+
+    first_consumption = consume_stock_reservation(
+        db,
+        first.uid,
+        consume_command(key="consume:multi:first"),
+    )
+    db.refresh(task)
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.parameters["remaining_reservation_count"] == 1
+
+    reverse_stock_document(
+        db,
+        first_consumption.consumed_by_document.uid,
+        StockDocumentReverseRequest(
+            idempotency_key="reverse:multi:first",
+            actor="senior-storekeeper",
+            reason="Повторить первую строку",
+        ),
+    )
+    db.refresh(first)
+    db.refresh(task)
+    assert first.status == StockReservationStatus.ACTIVE
+    assert task.status == TaskStatus.IN_PROGRESS
+
+    consume_stock_reservation(
+        db,
+        first.uid,
+        consume_command(key="consume:multi:first:retry"),
+    )
+
+    consume_stock_reservation(
+        db,
+        second.uid,
+        consume_command(key="consume:multi:second"),
+    )
+    db.refresh(task)
+    assert task.status == TaskStatus.COMPLETED
+    assert task.parameters["completed_by_reservation_uid"] == second.uid
+
+
+def test_reservation_rejects_mismatched_or_closed_task(db):
+    _, pieces, _, location, position = create_stock_context(db)
+    task = create_linked_task(db, location, object_uid="SHIP-OTHER")
+
+    with pytest.raises(HTTPException, match="does not match"):
+        create_stock_reservation(
+            db,
+            reserve_command(
+                position,
+                pieces,
+                key="reserve:wrong-task",
+                reference_type="logistic_shipment",
+                reference_uid="SHIP-QTY-001",
+                task_uid=task.task_uid,
+            ),
+        )
+    task.status = TaskStatus.CANCELLED
+    db.commit()
+    with pytest.raises(HTTPException, match="requires an active"):
+        create_stock_reservation(
+            db,
+            reserve_command(
+                position,
+                pieces,
+                key="reserve:closed-task",
+                reference_type="logistic_shipment",
+                reference_uid=task.object_uid,
+                task_uid=task.task_uid,
+            ),
+        )
+    assert db.scalar(select(func.count(StockReservation.id))) == 0
+
+
+def test_task_completion_failure_rolls_back_consumption_and_movement(db, monkeypatch):
+    import app.stock_reservations as reservation_service
+
+    _, pieces, _, location, position = create_stock_context(db)
+    task = create_linked_task(db, location)
+    reservation = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:rollback",
+            reference_type="logistic_shipment",
+            reference_uid=task.object_uid,
+            task_uid=task.task_uid,
+        ),
+    )
+
+    def fail_task_completion(*args, **kwargs):
+        raise HTTPException(status_code=409, detail="task completion failed")
+
+    monkeypatch.setattr(
+        reservation_service,
+        "_complete_linked_task",
+        fail_task_completion,
+    )
+    with pytest.raises(HTTPException, match="task completion failed"):
+        consume_stock_reservation(
+            db,
+            reservation.uid,
+            consume_command(key="consume:rollback"),
+        )
+
+    db.refresh(reservation)
+    db.refresh(task)
+    db.refresh(position)
+    assert reservation.status == StockReservationStatus.ACTIVE
+    assert reservation.consumed_by_document_id is None
+    assert task.status == TaskStatus.NEW
+    assert position.quantity == Decimal("5")
+    assert db.scalar(select(func.count(StockDocument.id))) == 0
+    assert db.scalar(select(func.count(StockMovement.id))) == 0
+
+
+def test_reversal_reopens_consumed_reservation_and_linked_task(db):
+    _, pieces, _, location, position = create_stock_context(db)
+    task = create_linked_task(db, location)
+    reservation = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:reverse-consumption",
+            reference_type="logistic_shipment",
+            reference_uid=task.object_uid,
+            task_uid=task.task_uid,
+        ),
+    )
+    consumed = consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(key="consume:before-reversal"),
+    )
+    original_document_uid = consumed.consumed_by_document.uid
+
+    reverse_stock_document(
+        db,
+        original_document_uid,
+        StockDocumentReverseRequest(
+            idempotency_key="reverse:consumption",
+            actor="senior-storekeeper",
+            reason="Ошибочный отбор",
+        ),
+    )
+
+    db.refresh(reservation)
+    db.refresh(task)
+    db.refresh(position)
+    assert reservation.status == StockReservationStatus.ACTIVE
+    assert reservation.consumed_at is None
+    assert reservation.consumed_by_document_id is None
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.completed_at is None
+    assert position.quantity == Decimal("5")
+
+    with pytest.raises(HTTPException, match="was reversed"):
+        consume_stock_reservation(
+            db,
+            reservation.uid,
+            consume_command(key="consume:before-reversal"),
+        )
+
+    consumed_again = consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(key="consume:after-reversal"),
+    )
+    db.refresh(task)
+    assert consumed_again.status == StockReservationStatus.CONSUMED
+    assert consumed_again.consumed_by_document.uid != original_document_uid
+    assert task.status == TaskStatus.COMPLETED
+
+
+def test_reversal_rebinds_full_quantity_reservation_to_restored_position(db):
+    _, pieces, _, _, position = create_stock_context(db)
+    original_position_id = position.id
+    reservation = create_stock_reservation(
+        db,
+        reserve_command(
+            position,
+            pieces,
+            key="reserve:full-position",
+            quantity="5",
+        ),
+    )
+    consumed = consume_stock_reservation(
+        db,
+        reservation.uid,
+        consume_command(key="consume:full-position"),
+    )
+    assert db.get(StockPosition, original_position_id) is None
+
+    reverse_stock_document(
+        db,
+        consumed.consumed_by_document.uid,
+        StockDocumentReverseRequest(
+            idempotency_key="reverse:full-position",
+            actor="senior-storekeeper",
+            reason="Возврат полного отбора",
+        ),
+    )
+
+    db.refresh(reservation)
+    restored_position = db.get(StockPosition, reservation.stock_position_id)
+    assert reservation.status == StockReservationStatus.ACTIVE
+    assert restored_position is not None
+    assert restored_position.quantity == Decimal("5")
+    assert stock_position_payload(db, restored_position)["reserved_quantity"] == Decimal(
+        "5"
+    )
+
+
 def test_stale_session_cannot_reserve_the_same_available_quantity_twice(tmp_path):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'reservations.db'}",
@@ -398,10 +791,38 @@ def test_stock_reservation_api_create_list_get_and_release(db):
             assert released.status_code == 200
             assert released.json()["status"] == "released"
 
+            created_for_consumption = client.post(
+                "/api/stock-reservations",
+                json={
+                    "stock_position_id": position.id,
+                    "input_quantity": "1",
+                    "input_uom_id": pieces.id,
+                    "reference_type": "internal_issue",
+                    "reference_uid": "ISSUE-API-002",
+                    "idempotency_key": "reserve:api:002",
+                    "actor": "api-user",
+                },
+            ).json()
+            consumed = client.post(
+                f"/api/stock-reservations/{created_for_consumption['uid']}/consume",
+                json={
+                    "idempotency_key": "consume:api:002",
+                    "actor": "api-user",
+                    "reason": "Выдано сотруднику",
+                },
+            )
+            assert consumed.status_code == 200
+            assert consumed.json()["status"] == "consumed"
+            assert consumed.json()["consumed_by_document_uid"].startswith("MOV-")
+
             openapi = client.get("/openapi.json").json()
             summary = openapi["paths"][
                 "/api/stock-reservations/{reservation_uid}/release"
             ]["post"]["summary"]
             assert "снять резерв" in summary
+            consume_summary = openapi["paths"][
+                "/api/stock-reservations/{reservation_uid}/consume"
+            ]["post"]["summary"]
+            assert "погасить фактическим отбором" in consume_summary
     finally:
         app.dependency_overrides.clear()

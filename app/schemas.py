@@ -340,6 +340,7 @@ class StockReservationCreate(BaseModel):
     reference_type: str = Field(min_length=1, max_length=40)
     reference_uid: str = Field(min_length=1, max_length=80)
     reference_line_uid: str | None = Field(default=None, max_length=80)
+    task_uid: str | None = Field(default=None, max_length=40)
     idempotency_key: str = Field(min_length=1, max_length=120)
     actor: str = Field(default="system", min_length=1, max_length=80)
     reason: str | None = Field(default=None, max_length=500)
@@ -365,6 +366,14 @@ class StockReservationCreate(BaseModel):
         normalized = value.strip()
         return normalized or None
 
+    @field_validator("task_uid")
+    @classmethod
+    def normalize_task_uid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
 
 class StockReservationReleaseRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=120)
@@ -378,6 +387,46 @@ class StockReservationReleaseRequest(BaseModel):
         if not normalized:
             raise ValueError("value must not be blank")
         return normalized
+
+
+class StockReservationConsumeRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+    destination_quality_status: str | None = Field(default=None, max_length=40)
+    destination_logistic_unit_id: int | None = Field(default=None, gt=0)
+    destination_location_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("destination_quality_status")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_destination(self):
+        destination_count = sum(
+            value is not None
+            for value in (
+                self.destination_logistic_unit_id,
+                self.destination_location_id,
+            )
+        )
+        if destination_count > 1:
+            raise ValueError("destination must reference at most one holder")
+        if destination_count == 0 and self.destination_quality_status:
+            raise ValueError("destination quality requires a destination holder")
+        return self
 
 
 class StockReservationRead(BaseModel):
@@ -409,6 +458,9 @@ class StockReservationRead(BaseModel):
     reference_type: str
     reference_uid: str
     reference_line_uid: str | None
+    task_id: int | None
+    task_uid: str | None
+    task_status: TaskStatus | None
     idempotency_key: str
     actor: str
     reason: str | None
@@ -419,6 +471,8 @@ class StockReservationRead(BaseModel):
     consumed_at: datetime | None
     consumed_by_document_id: int | None
     consumed_by_document_uid: str | None
+    consume_actor: str | None
+    consume_reason: str | None
 
 
 class StockMovementPost(BaseModel):

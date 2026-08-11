@@ -1,10 +1,11 @@
 import hashlib
 import json
+from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,7 @@ from app.models.entities import (
     Batch,
     LogisticUnit,
     Location,
+    LogisticTask,
     OperationEvent,
     Product,
     StockDocument,
@@ -21,9 +23,16 @@ from app.models.entities import (
     UnitOfMeasure,
     utcnow,
 )
-from app.models.enums import StockReservationStatus
-from app.schemas import StockReservationCreate, StockReservationReleaseRequest
+from app.models.enums import StockReservationStatus, TaskStatus
+from app.schemas import (
+    StockDocumentPost,
+    StockMovementPost,
+    StockReservationConsumeRequest,
+    StockReservationCreate,
+    StockReservationReleaseRequest,
+)
 from app.stock import convert_product_quantity_to_base, stock_position_payload
+from app.stock_ledger import post_stock_document
 
 
 def _bad_request(message: str) -> HTTPException:
@@ -41,7 +50,13 @@ def _not_found() -> HTTPException:
     )
 
 
-def _command_hash(payload: StockReservationCreate | StockReservationReleaseRequest) -> str:
+def _command_hash(
+    payload: (
+        StockReservationCreate
+        | StockReservationReleaseRequest
+        | StockReservationConsumeRequest
+    ),
+) -> str:
     serialized = json.dumps(
         payload.model_dump(mode="json"),
         ensure_ascii=False,
@@ -103,9 +118,30 @@ def create_stock_reservation(
             payload.input_quantity,
             input_uom,
         )
-        available = stock_position_payload(db, position)["available_quantity"]
+        position_payload = stock_position_payload(db, position)
+        available = position_payload["available_quantity"]
         if quantity > available:
             raise _conflict("insufficient available stock for reservation")
+
+        task = None
+        if payload.task_uid is not None:
+            task = db.scalar(
+                select(LogisticTask)
+                .where(LogisticTask.task_uid == payload.task_uid)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            if task is None:
+                raise _bad_request("logistic task not found")
+            if task.status not in {TaskStatus.NEW, TaskStatus.IN_PROGRESS}:
+                raise _conflict("stock reservation requires an active logistic task")
+            if (
+                task.object_type != payload.reference_type
+                or task.object_uid != payload.reference_uid.strip().upper()
+            ):
+                raise _conflict("logistic task does not match the reservation reference")
+            if task.warehouse_id != position_payload["warehouse_id"]:
+                raise _conflict("logistic task belongs to another warehouse")
 
         logistic_unit = (
             db.get(LogisticUnit, position.logistic_unit_id)
@@ -144,6 +180,7 @@ def create_stock_reservation(
             reference_type=payload.reference_type,
             reference_uid=payload.reference_uid,
             reference_line_uid=payload.reference_line_uid,
+            task_id=task.id if task else None,
             idempotency_key=payload.idempotency_key,
             command_hash=command_hash,
             actor=payload.actor,
@@ -166,6 +203,7 @@ def create_stock_reservation(
                     "reference_type": payload.reference_type,
                     "reference_uid": payload.reference_uid,
                     "reference_line_uid": payload.reference_line_uid,
+                    "task_uid": task.task_uid if task else None,
                 },
             )
         )
@@ -280,6 +318,290 @@ def release_stock_reservation(
         raise
 
 
+def _idempotent_consume(
+    db: Session,
+    reservation_uid: str,
+    idempotency_key: str,
+    command_hash: str,
+) -> StockReservation | None:
+    reservation = db.scalar(
+        select(StockReservation).where(
+            StockReservation.consume_idempotency_key == idempotency_key
+        )
+    )
+    if reservation is None:
+        return None
+    if reservation.uid != reservation_uid or reservation.consume_command_hash != command_hash:
+        raise _conflict("idempotency key belongs to another reservation consumption")
+    if reservation.status != StockReservationStatus.CONSUMED:
+        raise _conflict(
+            "reservation consumption was reversed; use a new idempotency key"
+        )
+    return reservation
+
+
+def _complete_linked_task(
+    db: Session,
+    reservation: StockReservation,
+    document: StockDocument,
+    *,
+    actor: str,
+    reason: str,
+    completed_at: datetime,
+) -> LogisticTask | None:
+    if reservation.task_id is None:
+        return None
+    task = db.scalar(
+        select(LogisticTask)
+        .where(LogisticTask.id == reservation.task_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if task is None:
+        raise _conflict("linked logistic task no longer exists")
+    if task.status not in {TaskStatus.NEW, TaskStatus.IN_PROGRESS}:
+        raise _conflict("linked logistic task is not active")
+    if task.assigned_to and task.assigned_to != actor:
+        raise _conflict("linked logistic task is assigned to another operator")
+    before = {
+        "status": task.status.value,
+        "assigned_to": task.assigned_to,
+    }
+    task.assigned_to = task.assigned_to or actor
+    task.started_at = task.started_at or completed_at
+    remaining_reservations = db.scalar(
+        select(func.count(StockReservation.id)).where(
+            StockReservation.task_id == task.id,
+            StockReservation.status == StockReservationStatus.ACTIVE,
+        )
+    ) or 0
+    if remaining_reservations:
+        task.status = TaskStatus.IN_PROGRESS
+        task.parameters = {
+            **(task.parameters or {}),
+            "last_consumed_reservation_uid": reservation.uid,
+            "last_stock_document_uid": document.uid,
+            "remaining_reservation_count": remaining_reservations,
+        }
+        db.add(
+            OperationEvent(
+                operation="logistic_task_progressed_by_stock_reservation",
+                object_type="logistic_task",
+                object_uid=task.task_uid,
+                actor=actor,
+                reason=reason,
+                before=before,
+                after={
+                    "status": TaskStatus.IN_PROGRESS.value,
+                    "assigned_to": task.assigned_to,
+                    "reservation_uid": reservation.uid,
+                    "stock_document_uid": document.uid,
+                    "remaining_reservation_count": remaining_reservations,
+                },
+            )
+        )
+        return task
+
+    task.status = TaskStatus.COMPLETED
+    task.completed_at = completed_at
+    task.parameters = {
+        **(task.parameters or {}),
+        "completed_by_reservation_uid": reservation.uid,
+        "stock_document_uid": document.uid,
+    }
+    db.add(
+        OperationEvent(
+            operation="logistic_task_completed_by_stock_reservation",
+            object_type="logistic_task",
+            object_uid=task.task_uid,
+            actor=actor,
+            reason=reason,
+            before=before,
+            after={
+                "status": TaskStatus.COMPLETED.value,
+                "assigned_to": task.assigned_to,
+                "reservation_uid": reservation.uid,
+                "stock_document_uid": document.uid,
+            },
+        )
+    )
+    return task
+
+
+def _consume_stock_reservation(
+    db: Session,
+    reservation_uid: str,
+    payload: StockReservationConsumeRequest,
+) -> StockReservation:
+    normalized_uid = reservation_uid.strip().upper()
+    command_hash = _command_hash(payload)
+    existing = _idempotent_consume(
+        db,
+        normalized_uid,
+        payload.idempotency_key,
+        command_hash,
+    )
+    if existing is not None:
+        return existing
+
+    reservation = db.scalar(
+        select(StockReservation)
+        .where(StockReservation.uid == normalized_uid)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if reservation is None:
+        raise _not_found()
+
+    existing = _idempotent_consume(
+        db,
+        normalized_uid,
+        payload.idempotency_key,
+        command_hash,
+    )
+    if existing is not None:
+        return existing
+    if reservation.status == StockReservationStatus.RELEASED:
+        raise _conflict("released stock reservation cannot be consumed")
+    if reservation.status == StockReservationStatus.CONSUMED:
+        raise _conflict("stock reservation is already consumed")
+
+    position = db.scalar(
+        select(StockPosition)
+        .where(StockPosition.id == reservation.stock_position_id)
+        .execution_options(populate_existing=True)
+    )
+    if position is None:
+        raise _conflict("reserved stock position no longer exists")
+    if (
+        position.product_id != reservation.product_id
+        or position.batch_id != reservation.batch_id
+        or position.serial_number != reservation.serial_number
+        or position.owner_id != reservation.owner_id
+        or position.quality_status != reservation.quality_status
+        or position.logistic_unit_id != reservation.logistic_unit_id
+        or position.location_id != reservation.location_id
+    ):
+        raise _conflict("reserved stock position identity has changed")
+    product = db.get(Product, reservation.product_id)
+    if product is None or product.base_uom_id != reservation.base_uom_id:
+        raise _conflict("product base unit changed after reservation")
+    if position.quantity < reservation.quantity:
+        raise _conflict("reserved stock quantity is no longer available")
+
+    task = None
+    if reservation.task_id is not None:
+        task = db.get(LogisticTask, reservation.task_id)
+        if task is None:
+            raise _conflict("linked logistic task no longer exists")
+        if task.status not in {TaskStatus.NEW, TaskStatus.IN_PROGRESS}:
+            raise _conflict("linked logistic task is not active")
+        if task.assigned_to and task.assigned_to != payload.actor:
+            raise _conflict("linked logistic task is assigned to another operator")
+
+    has_destination = (
+        payload.destination_logistic_unit_id is not None
+        or payload.destination_location_id is not None
+    )
+    command = StockDocumentPost(
+        document_type="stock_pick" if has_destination else "stock_issue",
+        reference_type=reservation.reference_type,
+        reference_uid=reservation.reference_uid,
+        idempotency_key=payload.idempotency_key,
+        actor=payload.actor,
+        reason=payload.reason,
+        attributes={
+            "operation": "stock_reservation_consumption",
+            "reservation_uid": reservation.uid,
+            "reference_line_uid": reservation.reference_line_uid,
+            "task_uid": task.task_uid if task else None,
+            "reserved_input_quantity": str(reservation.input_quantity),
+            "reserved_input_uom_id": reservation.input_uom_id,
+        },
+        movements=[
+            StockMovementPost(
+                product_id=reservation.product_id,
+                batch_id=reservation.batch_id,
+                serial_number=reservation.serial_number,
+                owner_id=reservation.owner_id,
+                source_quality_status=reservation.quality_status,
+                destination_quality_status=(
+                    payload.destination_quality_status or reservation.quality_status
+                    if has_destination
+                    else None
+                ),
+                input_quantity=reservation.quantity,
+                input_uom_id=reservation.base_uom_id,
+                source_logistic_unit_id=reservation.logistic_unit_id,
+                source_location_id=reservation.location_id,
+                destination_logistic_unit_id=payload.destination_logistic_unit_id,
+                destination_location_id=payload.destination_location_id,
+            )
+        ],
+    )
+
+    def mark_consumed(document: StockDocument) -> None:
+        consumed_at = utcnow()
+        reservation.status = StockReservationStatus.CONSUMED
+        reservation.consumed_at = consumed_at
+        reservation.consumed_by_document_id = document.id
+        reservation.consume_idempotency_key = payload.idempotency_key
+        reservation.consume_command_hash = command_hash
+        reservation.consume_actor = payload.actor
+        reservation.consume_reason = payload.reason
+        db.flush()
+        completed_task = _complete_linked_task(
+            db,
+            reservation,
+            document,
+            actor=payload.actor,
+            reason=payload.reason,
+            completed_at=consumed_at,
+        )
+        db.add(
+            OperationEvent(
+                operation="stock_reservation_consumed",
+                object_type="stock_reservation",
+                object_uid=reservation.uid,
+                actor=payload.actor,
+                reason=payload.reason,
+                before={"status": StockReservationStatus.ACTIVE.value},
+                after={
+                    "status": StockReservationStatus.CONSUMED.value,
+                    "stock_document_uid": document.uid,
+                    "task_uid": completed_task.task_uid if completed_task else None,
+                    "consumed_at": consumed_at.isoformat(),
+                },
+            )
+        )
+
+    document = post_stock_document(
+        db,
+        command,
+        before_commit=mark_consumed,
+        consuming_reservation_ids={reservation.id},
+    )
+    db.refresh(reservation)
+    if (
+        reservation.status != StockReservationStatus.CONSUMED
+        or reservation.consumed_by_document_id != document.id
+    ):
+        raise _conflict("stock document exists without reservation consumption")
+    return reservation
+
+
+def consume_stock_reservation(
+    db: Session,
+    reservation_uid: str,
+    payload: StockReservationConsumeRequest,
+) -> StockReservation:
+    try:
+        return _consume_stock_reservation(db, reservation_uid, payload)
+    except Exception:
+        db.rollback()
+        raise
+
+
 def stock_reservation_payload(db: Session, reservation: StockReservation) -> dict:
     product = db.get(Product, reservation.product_id)
     batch = db.get(Batch, reservation.batch_id) if reservation.batch_id is not None else None
@@ -291,6 +613,7 @@ def stock_reservation_payload(db: Session, reservation: StockReservation) -> dic
         if reservation.consumed_by_document_id is not None
         else None
     )
+    task = db.get(LogisticTask, reservation.task_id) if reservation.task_id else None
     return {
         "id": reservation.id,
         "uid": reservation.uid,
@@ -322,6 +645,9 @@ def stock_reservation_payload(db: Session, reservation: StockReservation) -> dic
         "reference_type": reservation.reference_type,
         "reference_uid": reservation.reference_uid,
         "reference_line_uid": reservation.reference_line_uid,
+        "task_id": reservation.task_id,
+        "task_uid": task.task_uid if task else None,
+        "task_status": task.status if task else None,
         "idempotency_key": reservation.idempotency_key,
         "actor": reservation.actor,
         "reason": reservation.reason,
@@ -332,4 +658,6 @@ def stock_reservation_payload(db: Session, reservation: StockReservation) -> dic
         "consumed_at": reservation.consumed_at,
         "consumed_by_document_id": reservation.consumed_by_document_id,
         "consumed_by_document_uid": consumed_document.uid if consumed_document else None,
+        "consume_actor": reservation.consume_actor,
+        "consume_reason": reservation.consume_reason,
     }

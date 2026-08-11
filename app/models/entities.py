@@ -457,6 +457,11 @@ class StockReservation(Base):
     reference_type: Mapped[str] = mapped_column(String(40), index=True)
     reference_uid: Mapped[str] = mapped_column(String(80), index=True)
     reference_line_uid: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     command_hash: Mapped[str] = mapped_column(String(64))
     actor: Mapped[str] = mapped_column(String(80), default="system", index=True)
@@ -478,6 +483,15 @@ class StockReservation(Base):
         nullable=True,
         index=True,
     )
+    consume_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    consume_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consume_actor: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    consume_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     stock_position: Mapped[StockPosition | None] = relationship()
     product: Mapped[Product] = relationship()
@@ -487,6 +501,7 @@ class StockReservation(Base):
     input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
     logistic_unit: Mapped[LogisticUnit | None] = relationship()
     location: Mapped["Location | None"] = relationship()
+    task: Mapped["LogisticTask | None"] = relationship()
     consumed_by_document: Mapped["StockDocument | None"] = relationship()
 
 
