@@ -112,6 +112,8 @@ def russian_summary(path: str, method: str) -> str:
         return "Проверка состояния приложения"
     if path == "/api/meta/constants":
         return "Системные константы API"
+    if path == "/api/stock-reconciliation":
+        return "Сверить текущие позиции с журналом движений"
 
     segments = [segment for segment in path.strip("/").split("/") if segment]
     if len(segments) < 2 or segments[0] != "api":

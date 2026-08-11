@@ -95,6 +95,7 @@ from app.schemas import (
     StockDocumentRead,
     StockMovementRead,
     StockPositionRead,
+    StockReconciliationRead,
     TaskActionRequest,
     TaskAssignRequest,
     TaskSyncRequest,
@@ -151,6 +152,7 @@ from app.services import (
 )
 from app.stock import stock_position_payload
 from app.stock_ledger import stock_document_payload, stock_movement_payload
+from app.stock_reconciliation import reconcile_stock_positions
 from app.logistic_documents import (
     close_logistic_shipment,
     create_logistic_shipment,
@@ -1455,6 +1457,11 @@ def api_get_stock_position(
     if position is None:
         raise not_found("stock_position")
     return stock_position_payload(db, position)
+
+
+@router.get("/stock-reconciliation", response_model=StockReconciliationRead)
+def api_reconcile_stock_positions(db: Session = Depends(get_db)) -> dict:
+    return reconcile_stock_positions(db)
 
 
 @router.get("/stock-documents", response_model=list[StockDocumentRead])

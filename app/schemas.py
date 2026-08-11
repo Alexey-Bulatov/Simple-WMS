@@ -470,6 +470,56 @@ class StockDocumentDetailRead(StockDocumentRead):
     movements: list[StockMovementRead]
 
 
+class StockReconciliationIssueRead(BaseModel):
+    kind: Literal[
+        "missing_position",
+        "unexpected_position",
+        "quantity_mismatch",
+        "negative_ledger_balance",
+        "invalid_movement",
+        "base_uom_mismatch",
+        "duplicate_position",
+    ]
+    message: str
+    movement_id: int | None = None
+    document_uid: str | None = None
+    position_id: int | None = None
+    product_id: int | None = None
+    product_code: str | None = None
+    product_name: str | None = None
+    batch_id: int | None = None
+    batch_number: str | None = None
+    serial_number: str | None = None
+    owner_id: int | None = None
+    owner_code: str | None = None
+    quality_status: str | None = None
+    holder_kind: Literal["logistic_unit", "location"] | None = None
+    logistic_unit_id: int | None = None
+    logistic_unit_uid: str | None = None
+    location_id: int | None = None
+    location_code: str | None = None
+    base_uom_id: int | None = None
+    base_uom_code: str | None = None
+    ledger_base_uom_ids: list[int] = Field(default_factory=list)
+    expected_quantity: Decimal | None = None
+    actual_quantity: Decimal | None = None
+    delta_quantity: Decimal | None = None
+
+
+class StockReconciliationRead(BaseModel):
+    checked_at: datetime
+    is_consistent: bool
+    movement_count: int
+    ignored_movement_count: int
+    position_count: int
+    checked_identity_count: int
+    matched_identity_count: int
+    zero_balance_identity_count: int
+    discrepancy_count: int
+    negative_ledger_count: int
+    issues: list[StockReconciliationIssueRead]
+
+
 class BatchCreate(BaseModel):
     batch_number: str = Field(min_length=1, max_length=80)
     product_id: int
