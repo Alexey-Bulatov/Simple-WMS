@@ -31,6 +31,7 @@ from app.models.enums import (
     LogisticUnitStatus,
     ShipmentStatus,
     StockDocumentStatus,
+    StockReservationStatus,
     TransferKind,
     TransferStatus,
     TaskPriority,
@@ -396,6 +397,97 @@ class StockPosition(Base):
     owner: Mapped[StockOwner] = relationship()
     logistic_unit: Mapped[LogisticUnit | None] = relationship()
     location: Mapped["Location | None"] = relationship()
+
+
+class StockReservation(Base):
+    __tablename__ = "stock_reservations"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_stock_reservation_quantity"),
+        CheckConstraint("input_quantity > 0", name="ck_stock_reservation_input_quantity"),
+        CheckConstraint("conversion_factor > 0", name="ck_stock_reservation_conversion_factor"),
+        CheckConstraint(
+            "NOT (logistic_unit_id IS NOT NULL AND location_id IS NOT NULL)",
+            name="ck_stock_reservation_single_holder",
+        ),
+        CheckConstraint(
+            "((logistic_unit_uid IS NOT NULL AND location_code IS NULL) OR "
+            "(logistic_unit_uid IS NULL AND location_code IS NOT NULL))",
+            name="ck_stock_reservation_holder_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[StockReservationStatus] = mapped_column(
+        Enum(StockReservationStatus, native_enum=False, length=24),
+        default=StockReservationStatus.ACTIVE,
+        index=True,
+    )
+    stock_position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_positions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batches.id"),
+        nullable=True,
+        index=True,
+    )
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("stock_owners.id"), index=True)
+    quality_status: Mapped[str] = mapped_column(String(40), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    logistic_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_units.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    logistic_unit_uid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    location_code: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    reference_type: Mapped[str] = mapped_column(String(40), index=True)
+    reference_uid: Mapped[str] = mapped_column(String(80), index=True)
+    reference_line_uid: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    command_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(80), default="system", index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    release_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    release_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    release_actor: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_by_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id"),
+        nullable=True,
+        index=True,
+    )
+
+    stock_position: Mapped[StockPosition | None] = relationship()
+    product: Mapped[Product] = relationship()
+    batch: Mapped[Batch | None] = relationship()
+    owner: Mapped[StockOwner] = relationship()
+    base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
+    input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
+    logistic_unit: Mapped[LogisticUnit | None] = relationship()
+    location: Mapped["Location | None"] = relationship()
+    consumed_by_document: Mapped["StockDocument | None"] = relationship()
 
 
 class StockDocument(Base):

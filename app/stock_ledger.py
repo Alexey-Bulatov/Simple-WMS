@@ -27,6 +27,7 @@ from app.models.enums import MeasurementDimension, StockDocumentStatus
 from app.schemas import StockDocumentPost, StockDocumentReverseRequest, StockMovementPost
 from app.stock import (
     TERMINAL_UNIT_STATUSES,
+    active_stock_reservation_quantity,
     convert_product_quantity_to_base,
     stock_position_identity_query,
 )
@@ -210,6 +211,9 @@ def _apply_movement(
             raise _bad_request("source stock position not found")
         if source_position.quantity < quantity:
             raise _bad_request("insufficient source stock")
+        reserved_quantity = active_stock_reservation_quantity(db, source_position.id)
+        if source_position.quantity - reserved_quantity < quantity:
+            raise _conflict("insufficient unreserved source stock")
 
     if serial_number and source_position is not None and destination_quality is not None:
         source_position.logistic_unit_id = destination_unit_id

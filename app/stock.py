@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
@@ -11,10 +11,11 @@ from app.models.entities import (
     Product,
     StockOwner,
     StockPosition,
+    StockReservation,
     UnitOfMeasure,
     Warehouse,
 )
-from app.models.enums import LocationKind, LogisticUnitStatus
+from app.models.enums import LocationKind, LogisticUnitStatus, StockReservationStatus
 
 
 DEFAULT_STOCK_OWNER_CODE = "INTERNAL"
@@ -78,6 +79,15 @@ def stock_position_identity_query(
     return query
 
 
+def active_stock_reservation_quantity(db: Session, stock_position_id: int) -> Decimal:
+    return db.scalar(
+        select(func.coalesce(func.sum(StockReservation.quantity), Decimal("0"))).where(
+            StockReservation.stock_position_id == stock_position_id,
+            StockReservation.status == StockReservationStatus.ACTIVE,
+        )
+    ) or Decimal("0")
+
+
 def convert_product_quantity_to_base(
     db: Session,
     product: Product,
@@ -126,7 +136,30 @@ def remove_logistic_unit_stock_positions(db: Session, logistic_unit_id: int) -> 
         )
         frontier = child_ids - unit_ids
         unit_ids.update(child_ids)
-    db.execute(delete(StockPosition).where(StockPosition.logistic_unit_id.in_(unit_ids)))
+    position_ids = list(
+        db.scalars(
+            select(StockPosition.id)
+            .where(StockPosition.logistic_unit_id.in_(unit_ids))
+            .order_by(StockPosition.id)
+            .with_for_update()
+        )
+    )
+    if not position_ids:
+        return
+    active_reservation = db.scalar(
+        select(StockReservation.id)
+        .where(
+            StockReservation.stock_position_id.in_(position_ids),
+            StockReservation.status == StockReservationStatus.ACTIVE,
+        )
+        .limit(1)
+    )
+    if active_reservation is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="logistic unit stock has an active reservation",
+        )
+    db.execute(delete(StockPosition).where(StockPosition.id.in_(position_ids)))
 
 
 def effective_logistic_unit_holder(
@@ -188,7 +221,8 @@ def stock_position_payload(db: Session, position: StockPosition) -> dict:
         and location.kind == LocationKind.STORAGE
         and (root_unit is None or holder_status == LogisticUnitStatus.AVAILABLE)
     ):
-        available = quantity
+        reserved = active_stock_reservation_quantity(db, position.id)
+        available = max(quantity - reserved, Decimal("0"))
 
     return {
         "id": position.id,

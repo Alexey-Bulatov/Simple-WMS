@@ -16,6 +16,7 @@ from app.models.enums import (
     MeasurementDimension,
     ShipmentStatus,
     StockDocumentStatus,
+    StockReservationStatus,
     TransferKind,
     TransferStatus,
     TaskPriority,
@@ -330,6 +331,94 @@ class StockPositionRead(BaseModel):
     warehouse_code: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class StockReservationCreate(BaseModel):
+    stock_position_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int = Field(gt=0)
+    reference_type: str = Field(min_length=1, max_length=40)
+    reference_uid: str = Field(min_length=1, max_length=80)
+    reference_line_uid: str | None = Field(default=None, max_length=80)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(default="system", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator(
+        "reference_type",
+        "reference_uid",
+        "idempotency_key",
+        "actor",
+    )
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("reference_line_uid", "reason")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class StockReservationReleaseRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class StockReservationRead(BaseModel):
+    id: int
+    uid: str
+    status: StockReservationStatus
+    stock_position_id: int | None
+    product_id: int
+    product_code: str
+    product_name: str
+    batch_id: int | None
+    batch_number: str | None
+    serial_number: str | None
+    owner_id: int
+    owner_code: str
+    quality_status: str
+    quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    input_quantity: Decimal
+    input_uom_id: int
+    input_uom_code: str
+    conversion_factor: Decimal
+    holder_kind: Literal["logistic_unit", "location"]
+    logistic_unit_id: int | None
+    logistic_unit_uid: str | None
+    location_id: int | None
+    location_code: str | None
+    reference_type: str
+    reference_uid: str
+    reference_line_uid: str | None
+    idempotency_key: str
+    actor: str
+    reason: str | None
+    created_at: datetime
+    released_at: datetime | None
+    release_actor: str | None
+    release_reason: str | None
+    consumed_at: datetime | None
+    consumed_by_document_id: int | None
+    consumed_by_document_uid: str | None
 
 
 class StockMovementPost(BaseModel):

@@ -35,6 +35,7 @@ from app.models.entities import (
     StockDocument,
     StockMovement,
     StockPosition,
+    StockReservation,
     UnitOfMeasure,
     User,
     Warehouse,
@@ -97,6 +98,9 @@ from app.schemas import (
     StockMovementRead,
     StockPositionRead,
     StockReconciliationRead,
+    StockReservationCreate,
+    StockReservationRead,
+    StockReservationReleaseRequest,
     TaskActionRequest,
     TaskAssignRequest,
     TaskSyncRequest,
@@ -158,6 +162,11 @@ from app.stock_ledger import (
     stock_movement_payload,
 )
 from app.stock_reconciliation import reconcile_stock_positions
+from app.stock_reservations import (
+    create_stock_reservation,
+    release_stock_reservation,
+    stock_reservation_payload,
+)
 from app.logistic_documents import (
     close_logistic_shipment,
     create_logistic_shipment,
@@ -202,6 +211,7 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     StockDocumentStatus,
+    StockReservationStatus,
     TaskStatus,
     TaskType,
     TransferKind,
@@ -1462,6 +1472,67 @@ def api_get_stock_position(
     if position is None:
         raise not_found("stock_position")
     return stock_position_payload(db, position)
+
+
+@router.post("/stock-reservations", response_model=StockReservationRead)
+def api_create_stock_reservation(
+    payload: StockReservationCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    reservation = create_stock_reservation(db, payload)
+    return stock_reservation_payload(db, reservation)
+
+
+@router.get("/stock-reservations", response_model=list[StockReservationRead])
+def api_list_stock_reservations(
+    reservation_status: StockReservationStatus | None = Query(default=None, alias="status"),
+    stock_position_id: int | None = Query(default=None),
+    reference_type: str | None = Query(default=None),
+    reference_uid: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(StockReservation)
+    if reservation_status is not None:
+        query = query.where(StockReservation.status == reservation_status)
+    if stock_position_id is not None:
+        query = query.where(StockReservation.stock_position_id == stock_position_id)
+    if reference_type is not None:
+        query = query.where(StockReservation.reference_type == reference_type.strip())
+    if reference_uid is not None:
+        query = query.where(StockReservation.reference_uid == reference_uid.strip())
+    reservations = db.scalars(
+        query.order_by(StockReservation.created_at.desc(), StockReservation.id.desc()).limit(limit)
+    )
+    return [stock_reservation_payload(db, reservation) for reservation in reservations]
+
+
+@router.get("/stock-reservations/{reservation_uid}", response_model=StockReservationRead)
+def api_get_stock_reservation(
+    reservation_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    reservation = db.scalar(
+        select(StockReservation).where(
+            StockReservation.uid == reservation_uid.strip().upper()
+        )
+    )
+    if reservation is None:
+        raise not_found("stock_reservation")
+    return stock_reservation_payload(db, reservation)
+
+
+@router.post(
+    "/stock-reservations/{reservation_uid}/release",
+    response_model=StockReservationRead,
+)
+def api_release_stock_reservation(
+    reservation_uid: str,
+    payload: StockReservationReleaseRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    reservation = release_stock_reservation(db, reservation_uid, payload)
+    return stock_reservation_payload(db, reservation)
 
 
 @router.get("/stock-reconciliation", response_model=StockReconciliationRead)

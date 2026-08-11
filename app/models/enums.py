@@ -51,6 +51,12 @@ class StockDocumentStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class StockReservationStatus(StrEnum):
+    ACTIVE = "active"
+    RELEASED = "released"
+    CONSUMED = "consumed"
+
+
 class UserRole(StrEnum):
     PRODUCTION_OPERATOR = "production_operator"
     RECEIVING_CLERK = "receiving_clerk"

@@ -20,6 +20,7 @@ ENTITY_TERMS = {
     "product-packagings": ("Товарная упаковка", "товарных упаковок", "товарную упаковку"),
     "stock-owners": ("Владелец запаса", "владельцев запаса", "владельца запаса"),
     "stock-positions": ("Позиция остатка", "позиций остатка", "позицию остатка"),
+    "stock-reservations": ("Резерв запаса", "резервов запаса", "резерв запаса"),
     "stock-documents": ("Документ учёта", "документов учёта", "документ учёта"),
     "stock-movements": ("Движение запаса", "движений запаса", "движение запаса"),
     "batches": ("Партия", "партий", "партию"),
@@ -153,6 +154,8 @@ def russian_summary(path: str, method: str) -> str:
         return f"Операция: {entity_label}"
 
     action = static_tail[-1]
+    if root == "stock-reservations" and action == "release":
+        return f"{entity_label}: снять резерв"
     action_label = METHOD_ACTION_LABELS.get(
         (method, action),
         ACTION_LABELS.get(action, action.replace("-", " ")),
