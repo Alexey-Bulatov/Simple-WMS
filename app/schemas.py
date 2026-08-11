@@ -415,6 +415,20 @@ class StockDocumentPost(BaseModel):
         return normalized
 
 
+class StockDocumentReverseRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
 class StockMovementRead(BaseModel):
     id: int
     document_id: int
@@ -457,6 +471,8 @@ class StockDocumentRead(BaseModel):
     idempotency_key: str | None
     reversal_of_id: int | None
     reversal_of_uid: str | None
+    reversed_by_id: int | None
+    reversed_by_uid: str | None
     actor: str
     reason: str | None
     attributes: dict[str, Any]

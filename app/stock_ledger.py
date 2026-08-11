@@ -13,6 +13,8 @@ from app.models.entities import (
     Batch,
     Location,
     LogisticUnit,
+    LogisticUnitContent,
+    OperationEvent,
     Product,
     StockDocument,
     StockMovement,
@@ -22,7 +24,7 @@ from app.models.entities import (
     utcnow,
 )
 from app.models.enums import MeasurementDimension, StockDocumentStatus
-from app.schemas import StockDocumentPost, StockMovementPost
+from app.schemas import StockDocumentPost, StockDocumentReverseRequest, StockMovementPost
 from app.stock import (
     TERMINAL_UNIT_STATUSES,
     convert_product_quantity_to_base,
@@ -31,6 +33,7 @@ from app.stock import (
 
 
 COMMAND_HASH_ATTRIBUTE = "_command_hash"
+REVERSAL_DOCUMENT_TYPE = "stock_reversal"
 
 
 def _bad_request(message: str) -> HTTPException:
@@ -364,6 +367,223 @@ def post_stock_document(
         raise
 
 
+def _reversal_command(
+    db: Session,
+    original: StockDocument,
+    payload: StockDocumentReverseRequest,
+) -> StockDocumentPost:
+    for movement in original.movements:
+        product = db.get(Product, movement.product_id)
+        if product is None or product.base_uom_id != movement.base_uom_id:
+            raise _conflict(
+                "product base unit changed after posting; use an adjustment document"
+            )
+        has_source = (
+            movement.source_logistic_unit_id is not None
+            or movement.source_location_id is not None
+        )
+        has_destination = (
+            movement.destination_logistic_unit_id is not None
+            or movement.destination_location_id is not None
+        )
+        if has_source and not movement.source_quality_status:
+            raise _conflict("source quality is missing in the original movement")
+        if has_destination and not movement.destination_quality_status:
+            raise _conflict("destination quality is missing in the original movement")
+    movements = [
+        StockMovementPost(
+            product_id=movement.product_id,
+            batch_id=movement.batch_id,
+            serial_number=movement.serial_number,
+            owner_id=movement.owner_id,
+            source_quality_status=movement.destination_quality_status,
+            destination_quality_status=movement.source_quality_status,
+            input_quantity=movement.quantity,
+            input_uom_id=movement.base_uom_id,
+            source_logistic_unit_id=movement.destination_logistic_unit_id,
+            source_location_id=movement.destination_location_id,
+            destination_logistic_unit_id=movement.source_logistic_unit_id,
+            destination_location_id=movement.source_location_id,
+        )
+        for movement in reversed(original.movements)
+    ]
+    return StockDocumentPost(
+        document_type=REVERSAL_DOCUMENT_TYPE,
+        reference_type="stock_document",
+        reference_uid=original.uid,
+        idempotency_key=payload.idempotency_key,
+        actor=payload.actor,
+        reason=payload.reason,
+        attributes={
+            "operation": "stock_reversal",
+            "original_document_id": original.id,
+            "original_document_uid": original.uid,
+            "original_document_type": original.document_type,
+        },
+        movements=movements,
+    )
+
+
+def _content_line_query(
+    movement: StockMovement,
+    logistic_unit_id: int,
+):
+    query = select(LogisticUnitContent).where(
+        LogisticUnitContent.logistic_unit_id == logistic_unit_id,
+        LogisticUnitContent.product_id == movement.product_id,
+        LogisticUnitContent.uom_id == movement.base_uom_id,
+    )
+    if movement.batch_id is None:
+        return query.where(LogisticUnitContent.batch_id.is_(None))
+    return query.where(LogisticUnitContent.batch_id == movement.batch_id)
+
+
+def _reverse_content_projection(
+    db: Session,
+    original: StockDocument,
+    reversal: StockDocument,
+    *,
+    actor: str,
+    reason: str,
+) -> None:
+    if original.document_type not in {
+        "logistic_unit_content_add",
+        "logistic_unit_content_remove",
+    }:
+        return
+    if len(original.movements) != 1:
+        raise _conflict("content document must contain exactly one movement")
+    movement = original.movements[0]
+    if original.document_type == "logistic_unit_content_add":
+        logistic_unit_id = movement.destination_logistic_unit_id
+        operation = "logistic_unit_content_add_reversed"
+        direction = Decimal("-1")
+    else:
+        logistic_unit_id = movement.source_logistic_unit_id
+        operation = "logistic_unit_content_remove_reversed"
+        direction = Decimal("1")
+    if logistic_unit_id is None:
+        raise _conflict("content movement does not reference a logistic unit")
+
+    line = db.scalar(
+        _content_line_query(movement, logistic_unit_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    before_quantity = line.quantity if line is not None else Decimal("0")
+    after_quantity = before_quantity + direction * movement.quantity
+    if after_quantity < 0:
+        raise _conflict("content projection is insufficient for reversal")
+    if line is None:
+        if after_quantity == 0:
+            raise _conflict("content projection is missing for reversal")
+        line = LogisticUnitContent(
+            logistic_unit_id=logistic_unit_id,
+            product_id=movement.product_id,
+            batch_id=movement.batch_id,
+            quantity=after_quantity,
+            uom_id=movement.base_uom_id,
+        )
+        db.add(line)
+    elif after_quantity == 0:
+        db.delete(line)
+    else:
+        line.quantity = after_quantity
+
+    unit = db.get(LogisticUnit, logistic_unit_id)
+    db.add(
+        OperationEvent(
+            operation=operation,
+            object_type="logistic_unit",
+            object_uid=unit.uid if unit else str(logistic_unit_id),
+            actor=actor,
+            reason=reason,
+            before={"quantity": str(before_quantity)},
+            after={
+                "quantity": str(after_quantity),
+                "original_document_uid": original.uid,
+                "reversal_document_uid": reversal.uid,
+            },
+        )
+    )
+
+
+def reverse_stock_document(
+    db: Session,
+    document_uid: str,
+    payload: StockDocumentReverseRequest,
+) -> StockDocument:
+    original = db.scalar(
+        select(StockDocument)
+        .where(StockDocument.uid == document_uid.strip().upper())
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if original is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="stock document not found",
+        )
+    existing = db.scalar(
+        select(StockDocument).where(
+            StockDocument.idempotency_key == payload.idempotency_key
+        )
+    )
+    if existing is not None:
+        if not (
+            existing.document_type == REVERSAL_DOCUMENT_TYPE
+            and existing.reversal_of_id == original.id
+            and existing.reference_type == "stock_document"
+            and existing.reference_uid == original.uid
+            and existing.actor == payload.actor
+            and existing.reason == payload.reason
+        ):
+            raise _conflict("idempotency key belongs to another reversal")
+        return existing
+
+    if original.status == StockDocumentStatus.REVERSED:
+        raise _conflict("stock document is already reversed")
+    if original.status != StockDocumentStatus.POSTED:
+        raise _conflict("only a posted stock document can be reversed")
+    if original.reversal_of_id is not None:
+        raise _conflict("a reversal document cannot be reversed")
+    if original.document_type == "opening_balance":
+        raise _conflict("opening balance must be corrected by an adjustment document")
+    if not original.movements:
+        raise _conflict("stock document has no movements to reverse")
+    command = _reversal_command(db, original, payload)
+
+    def mark_reversed(reversal: StockDocument) -> None:
+        _reverse_content_projection(
+            db,
+            original,
+            reversal,
+            actor=payload.actor,
+            reason=payload.reason,
+        )
+        reversed_at = utcnow()
+        reversal.reversal_of_id = original.id
+        original.status = StockDocumentStatus.REVERSED
+        original.reversed_at = reversed_at
+        db.add(
+            OperationEvent(
+                operation="stock_document_reversed",
+                object_type="stock_document",
+                object_uid=original.uid,
+                actor=payload.actor,
+                reason=payload.reason,
+                before={"status": StockDocumentStatus.POSTED.value},
+                after={
+                    "status": StockDocumentStatus.REVERSED.value,
+                    "reversal_document_uid": reversal.uid,
+                    "reversed_at": reversed_at.isoformat(),
+                },
+            )
+        )
+
+    return post_stock_document(db, command, before_commit=mark_reversed)
+
+
 def stock_movement_payload(db: Session, movement: StockMovement) -> dict:
     document = db.get(StockDocument, movement.document_id)
     product = db.get(Product, movement.product_id)
@@ -435,6 +655,9 @@ def stock_document_payload(
         if document.reversal_of_id is not None
         else None
     )
+    reversed_by = db.scalar(
+        select(StockDocument).where(StockDocument.reversal_of_id == document.id)
+    )
     payload = {
         "id": document.id,
         "uid": document.uid,
@@ -445,6 +668,8 @@ def stock_document_payload(
         "idempotency_key": document.idempotency_key,
         "reversal_of_id": document.reversal_of_id,
         "reversal_of_uid": reversal.uid if reversal else None,
+        "reversed_by_id": reversed_by.id if reversed_by else None,
+        "reversed_by_uid": reversed_by.uid if reversed_by else None,
         "actor": document.actor,
         "reason": document.reason,
         "attributes": {

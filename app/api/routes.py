@@ -93,6 +93,7 @@ from app.schemas import (
     StockOwnerRead,
     StockDocumentDetailRead,
     StockDocumentRead,
+    StockDocumentReverseRequest,
     StockMovementRead,
     StockPositionRead,
     StockReconciliationRead,
@@ -151,7 +152,11 @@ from app.services import (
     reopen_logistic_unit,
 )
 from app.stock import stock_position_payload
-from app.stock_ledger import stock_document_payload, stock_movement_payload
+from app.stock_ledger import (
+    reverse_stock_document,
+    stock_document_payload,
+    stock_movement_payload,
+)
 from app.stock_reconciliation import reconcile_stock_positions
 from app.logistic_documents import (
     close_logistic_shipment,
@@ -1499,6 +1504,19 @@ def api_get_stock_document(
     if document is None:
         raise not_found("stock_document")
     return stock_document_payload(db, document, include_movements=True)
+
+
+@router.post(
+    "/stock-documents/{document_uid}/reverse",
+    response_model=StockDocumentDetailRead,
+)
+def api_reverse_stock_document(
+    document_uid: str,
+    payload: StockDocumentReverseRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    reversal = reverse_stock_document(db, document_uid, payload)
+    return stock_document_payload(db, reversal, include_movements=True)
 
 
 @router.get("/stock-movements", response_model=list[StockMovementRead])
