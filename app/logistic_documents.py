@@ -43,6 +43,7 @@ from app.services import (
     not_found,
 )
 from app.stock import (
+    assign_logistic_unit_tree_warehouse,
     ensure_logistic_unit_stock_is_unreserved,
     remove_logistic_unit_stock_positions,
 )
@@ -822,6 +823,7 @@ def receive_logistic_transfer_unit(
         raise bad_request("transfer-in location capacity is already reached")
     unit.status = LogisticUnitStatus.CLOSED
     unit.current_location_id = location.id
+    assign_logistic_unit_tree_warehouse(db, unit, location.warehouse_id)
     link.status = "received"
     link.received_at = utcnow()
     transfer.status = TransferStatus.RECEIVING

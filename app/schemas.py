@@ -26,6 +26,7 @@ from app.models.enums import (
     TaskStatus,
     TaskType,
     UserRole,
+    WarehousePermission,
 )
 
 
@@ -56,6 +57,12 @@ class AuthenticationUserRead(BaseModel):
     default_warehouse_id: int | None
     warehouse_ids: list[int]
     warehouse_codes: list[str]
+    permissions: list[WarehousePermission]
+
+
+class AuthenticationRoleRead(BaseModel):
+    role: UserRole
+    permissions: list[WarehousePermission]
 
 
 class AuthenticationBootstrapRequest(BaseModel):
@@ -372,6 +379,7 @@ class LogisticUnitTypeRead(LogisticUnitTypeCreate):
 
 class LogisticUnitCreate(BaseModel):
     type_id: int
+    warehouse_id: int | None = Field(default=None, gt=0)
     uid: str | None = Field(default=None, min_length=1, max_length=64)
     measured_gross_weight: Decimal | None = Field(
         default=None,
@@ -469,6 +477,8 @@ class LogisticUnitRead(BaseModel):
     parent_uid: str | None
     current_location_id: int | None
     current_location_code: str | None
+    warehouse_id: int | None
+    warehouse_code: str | None
     measured_gross_weight: Decimal | None
     weight_uom_id: int | None
     weight_uom_code: str | None
@@ -779,6 +789,8 @@ class StockReservationRead(BaseModel):
     logistic_unit_uid: str | None
     location_id: int | None
     location_code: str | None
+    warehouse_id: int | None
+    warehouse_code: str | None
     reference_type: str
     reference_uid: str
     reference_line_uid: str | None
@@ -953,10 +965,14 @@ class StockMovementRead(BaseModel):
     source_logistic_unit_uid: str | None
     source_location_id: int | None
     source_location_code: str | None
+    source_warehouse_id: int | None
+    source_warehouse_code: str | None
     destination_logistic_unit_id: int | None
     destination_logistic_unit_uid: str | None
     destination_location_id: int | None
     destination_location_code: str | None
+    destination_warehouse_id: int | None
+    destination_warehouse_code: str | None
     occurred_at: datetime
 
 
@@ -976,6 +992,8 @@ class StockDocumentRead(BaseModel):
     reason: str | None
     attributes: dict[str, Any]
     movement_count: int
+    warehouse_ids: list[int]
+    warehouse_codes: list[str]
     created_at: datetime
     posted_at: datetime | None
     reversed_at: datetime | None

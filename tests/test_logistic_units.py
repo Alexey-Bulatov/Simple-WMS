@@ -234,6 +234,46 @@ def test_nesting_rejects_wrong_type_and_second_parent(db):
         )
 
 
+def test_nesting_keeps_child_in_parent_warehouse(db):
+    ensure_reference_catalogs(db)
+    first_warehouse, _, _, _ = warehouse_layout(db, warehouse_code="WH-NEST-A")
+    second_warehouse, _, _, _ = warehouse_layout(db, warehouse_code="WH-NEST-B")
+    pallet_type = reference(db, LogisticUnitType, "PALLET")
+    box_type = reference(db, LogisticUnitType, "BOX")
+    pallet = create_logistic_unit(
+        db,
+        LogisticUnitCreate(
+            type_id=pallet_type.id,
+            warehouse_id=first_warehouse.id,
+            uid="PLT-NEST-WH",
+        ),
+    )
+    box = create_logistic_unit(
+        db,
+        LogisticUnitCreate(
+            type_id=box_type.id,
+            warehouse_id=second_warehouse.id,
+            uid="BOX-NEST-WH",
+        ),
+    )
+    close_logistic_unit(db, box.uid, LogisticUnitActionRequest())
+
+    with pytest.raises(HTTPException, match="belongs to another warehouse"):
+        add_logistic_unit_child(
+            db,
+            pallet.uid,
+            LogisticUnitChildRequest(child_uid=box.uid),
+        )
+
+    box.warehouse_id = first_warehouse.id
+    db.commit()
+    add_logistic_unit_child(
+        db,
+        pallet.uid,
+        LogisticUnitChildRequest(child_uid=box.uid),
+    )
+    assert box.warehouse_id == pallet.warehouse_id
+
 def test_content_rejects_foreign_batch_and_incompatible_measurement(db):
     product, _, pieces = product_and_batch(db, code="CHEM-A")
     _, foreign_batch, _ = product_and_batch(db, code="CHEM-B")

@@ -86,7 +86,9 @@ from app.schemas import (
 )
 from app.stock import (
     DEFAULT_STOCK_OWNER_CODE,
+    assign_logistic_unit_tree_warehouse,
     convert_product_quantity_to_base,
+    effective_logistic_unit_holder,
     ensure_default_stock_owner,
 )
 from app.stock_ledger import post_stock_document
@@ -371,6 +373,13 @@ def logistic_unit_payload(db: Session, item: LogisticUnit) -> dict:
         if item.current_location_id is not None
         else None
     )
+    _, effective_location = effective_logistic_unit_holder(db, item)
+    warehouse_id = (
+        effective_location.warehouse_id
+        if effective_location is not None
+        else item.warehouse_id
+    )
+    warehouse = db.get(Warehouse, warehouse_id) if warehouse_id is not None else None
     weight_uom = db.get(UnitOfMeasure, item.weight_uom_id) if item.weight_uom_id is not None else None
     content_rows = list(
         db.scalars(
@@ -428,6 +437,8 @@ def logistic_unit_payload(db: Session, item: LogisticUnit) -> dict:
         "parent_uid": parent.uid if parent else None,
         "current_location_id": item.current_location_id,
         "current_location_code": current_location.code if current_location else None,
+        "warehouse_id": warehouse.id if warehouse else None,
+        "warehouse_code": warehouse.code if warehouse else None,
         "measured_gross_weight": item.measured_gross_weight,
         "weight_uom_id": item.weight_uom_id,
         "weight_uom_code": weight_uom.code if weight_uom else None,
@@ -472,6 +483,8 @@ def create_logistic_unit(db: Session, payload: LogisticUnitCreate) -> LogisticUn
     unit_type = db.get(LogisticUnitType, payload.type_id)
     if unit_type is None or not unit_type.is_active:
         raise not_found("logistic_unit_type")
+    if payload.warehouse_id is not None and db.get(Warehouse, payload.warehouse_id) is None:
+        raise not_found("warehouse")
     validate_logistic_unit_weight(
         db,
         unit_type,
@@ -482,6 +495,7 @@ def create_logistic_unit(db: Session, payload: LogisticUnitCreate) -> LogisticUn
     item = LogisticUnit(
         uid=uid,
         type_id=unit_type.id,
+        warehouse_id=payload.warehouse_id,
         measured_gross_weight=payload.measured_gross_weight,
         weight_uom_id=payload.weight_uom_id,
         length_mm=payload.length_mm or unit_type.length_mm,
@@ -551,9 +565,12 @@ def accept_logistic_unit(
     location = get_active_location(db, payload.location_code)
     if location.kind != LocationKind.RECEIVING:
         raise bad_request("logistic unit can be accepted only at a receiving location")
+    if item.warehouse_id is not None and item.warehouse_id != location.warehouse_id:
+        raise bad_request("logistic unit belongs to another receiving warehouse")
     if logistic_location_occupied_count(db, location.id) >= location.capacity_units:
         raise bad_request("location capacity is already reached")
     item.current_location_id = location.id
+    assign_logistic_unit_tree_warehouse(db, item, location.warehouse_id)
     item.accepted_at = utcnow()
     create_event(
         db,
@@ -879,7 +896,20 @@ def add_logistic_unit_child(
         if ancestor.id == child.id:
             raise bad_request("logistic unit nesting cycle is not allowed")
 
+    parent_root, parent_location = effective_logistic_unit_holder(db, parent)
+    parent_warehouse_id = (
+        parent_location.warehouse_id if parent_location else parent_root.warehouse_id
+    )
+    child_warehouse_id = child.warehouse_id
+    if (
+        parent_warehouse_id is not None
+        and child_warehouse_id is not None
+        and parent_warehouse_id != child_warehouse_id
+    ):
+        raise bad_request("child logistic unit belongs to another warehouse")
     child.parent_unit_id = parent.id
+    if parent_warehouse_id is not None:
+        assign_logistic_unit_tree_warehouse(db, child, parent_warehouse_id)
     create_event(
         db,
         operation="logistic_unit_child_added",
@@ -1107,6 +1137,7 @@ def place_logistic_unit(
         "location_code": current_location.code if current_location else None,
     }
     item.current_location_id = location.id
+    assign_logistic_unit_tree_warehouse(db, item, location.warehouse_id)
     item.status = LogisticUnitStatus.AVAILABLE
     create_event(
         db,
@@ -1157,6 +1188,7 @@ def move_logistic_unit(
     if logistic_location_occupied_count(db, location.id) >= location.capacity_units:
         raise bad_request("location capacity is already reached")
     item.current_location_id = location.id
+    assign_logistic_unit_tree_warehouse(db, item, location.warehouse_id)
     create_event(
         db,
         operation="logistic_unit_moved",

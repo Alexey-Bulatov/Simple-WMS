@@ -15,6 +15,7 @@ from app.models.entities import (
     StockOwner,
     StockPosition,
     UnitOfMeasure,
+    Warehouse,
 )
 from app.models.enums import StockDocumentStatus
 from app.schemas import (
@@ -130,6 +131,31 @@ def test_posting_is_idempotent_and_preserves_input_quantity(db):
     assert position.quantity == Decimal("2")
     assert first.movements[0].input_quantity == Decimal("2")
     assert stock_document_payload(db, first)["attributes"] == {"channel": "unit-test"}
+
+
+def test_movement_keeps_warehouse_snapshot_after_unit_moves(db):
+    product, pieces, owner, unit = create_stock_context(db)
+    source_warehouse = Warehouse(code="WH-SNAPSHOT-A", name="Первый склад")
+    destination_warehouse = Warehouse(code="WH-SNAPSHOT-B", name="Второй склад")
+    db.add_all([source_warehouse, destination_warehouse])
+    db.flush()
+    unit.warehouse_id = source_warehouse.id
+    db.commit()
+
+    document = post_stock_document(
+        db,
+        inbound_command(product, pieces, owner, unit, key="receipt:snapshot"),
+    )
+    movement = document.movements[0]
+    assert movement.destination_warehouse_id == source_warehouse.id
+
+    unit.warehouse_id = destination_warehouse.id
+    db.commit()
+    db.refresh(movement)
+
+    payload = stock_document_payload(db, document, include_movements=True)
+    assert payload["warehouse_codes"] == [source_warehouse.code]
+    assert payload["movements"][0]["destination_warehouse_code"] == source_warehouse.code
 
 
 def test_idempotency_key_rejects_a_different_command(db):

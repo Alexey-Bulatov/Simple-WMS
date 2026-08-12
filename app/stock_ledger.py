@@ -23,6 +23,7 @@ from app.models.entities import (
     StockPosition,
     StockReservation,
     UnitOfMeasure,
+    Warehouse,
     utcnow,
 )
 from app.models.enums import (
@@ -36,6 +37,7 @@ from app.stock import (
     TERMINAL_UNIT_STATUSES,
     active_stock_reservation_quantity,
     convert_product_quantity_to_base,
+    effective_logistic_unit_holder,
     stock_position_identity_query,
 )
 
@@ -142,6 +144,23 @@ def _validate_holder(
             raise _bad_request("active location not found")
 
 
+def _holder_warehouse_id(
+    db: Session,
+    *,
+    logistic_unit_id: int | None,
+    location_id: int | None,
+) -> int | None:
+    if location_id is not None:
+        location = db.get(Location, location_id)
+        return location.warehouse_id if location else None
+    if logistic_unit_id is not None:
+        unit = db.get(LogisticUnit, logistic_unit_id)
+        if unit is not None:
+            _, location = effective_logistic_unit_holder(db, unit)
+            return location.warehouse_id if location else unit.warehouse_id
+    return None
+
+
 def _apply_movement(
     db: Session,
     document: StockDocument,
@@ -191,6 +210,16 @@ def _apply_movement(
         logistic_unit_id=destination_unit_id,
         location_id=destination_location_id,
         destination=True,
+    )
+    source_warehouse_id = _holder_warehouse_id(
+        db,
+        logistic_unit_id=source_unit_id,
+        location_id=source_location_id,
+    )
+    destination_warehouse_id = _holder_warehouse_id(
+        db,
+        logistic_unit_id=destination_unit_id,
+        location_id=destination_location_id,
     )
     if (
         source_unit_id,
@@ -299,8 +328,10 @@ def _apply_movement(
             conversion_factor=conversion_factor,
             source_logistic_unit_id=source_unit_id,
             source_location_id=source_location_id,
+            source_warehouse_id=source_warehouse_id,
             destination_logistic_unit_id=destination_unit_id,
             destination_location_id=destination_location_id,
+            destination_warehouse_id=destination_warehouse_id,
         )
     )
 
@@ -778,6 +809,20 @@ def stock_movement_payload(db: Session, movement: StockMovement) -> dict:
         if movement.destination_location_id is not None
         else None
     )
+    if source_location is None and source_unit is not None:
+        _, source_location = effective_logistic_unit_holder(db, source_unit)
+    if destination_location is None and destination_unit is not None:
+        _, destination_location = effective_logistic_unit_holder(db, destination_unit)
+    source_warehouse = (
+        db.get(Warehouse, movement.source_warehouse_id)
+        if movement.source_warehouse_id is not None
+        else None
+    )
+    destination_warehouse = (
+        db.get(Warehouse, movement.destination_warehouse_id)
+        if movement.destination_warehouse_id is not None
+        else None
+    )
     return {
         "id": movement.id,
         "document_id": movement.document_id,
@@ -803,10 +848,18 @@ def stock_movement_payload(db: Session, movement: StockMovement) -> dict:
         "source_logistic_unit_uid": source_unit.uid if source_unit else None,
         "source_location_id": movement.source_location_id,
         "source_location_code": source_location.code if source_location else None,
+        "source_warehouse_id": source_warehouse.id if source_warehouse else None,
+        "source_warehouse_code": source_warehouse.code if source_warehouse else None,
         "destination_logistic_unit_id": movement.destination_logistic_unit_id,
         "destination_logistic_unit_uid": destination_unit.uid if destination_unit else None,
         "destination_location_id": movement.destination_location_id,
         "destination_location_code": destination_location.code if destination_location else None,
+        "destination_warehouse_id": (
+            destination_warehouse.id if destination_warehouse else None
+        ),
+        "destination_warehouse_code": (
+            destination_warehouse.code if destination_warehouse else None
+        ),
         "occurred_at": movement.occurred_at,
     }
 
@@ -824,6 +877,23 @@ def stock_document_payload(
     )
     reversed_by = db.scalar(
         select(StockDocument).where(StockDocument.reversal_of_id == document.id)
+    )
+    movement_payloads = [
+        stock_movement_payload(db, movement) for movement in document.movements
+    ]
+    warehouse_pairs = sorted(
+        {
+            (warehouse_id, warehouse_code)
+            for movement in movement_payloads
+            for warehouse_id, warehouse_code in (
+                (movement["source_warehouse_id"], movement["source_warehouse_code"]),
+                (
+                    movement["destination_warehouse_id"],
+                    movement["destination_warehouse_code"],
+                ),
+            )
+            if warehouse_id is not None and warehouse_code is not None
+        }
     )
     payload = {
         "id": document.id,
@@ -845,12 +915,12 @@ def stock_document_payload(
             if not key.startswith("_")
         },
         "movement_count": len(document.movements),
+        "warehouse_ids": [warehouse_id for warehouse_id, _ in warehouse_pairs],
+        "warehouse_codes": [warehouse_code for _, warehouse_code in warehouse_pairs],
         "created_at": document.created_at,
         "posted_at": document.posted_at,
         "reversed_at": document.reversed_at,
     }
     if include_movements:
-        payload["movements"] = [
-            stock_movement_payload(db, movement) for movement in document.movements
-        ]
+        payload["movements"] = movement_payloads
     return payload

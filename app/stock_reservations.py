@@ -1009,6 +1009,12 @@ def stock_reservation_payload(db: Session, reservation: StockReservation) -> dic
         else None
     )
     task = db.get(LogisticTask, reservation.task_id) if reservation.task_id else None
+    position = (
+        db.get(StockPosition, reservation.stock_position_id)
+        if reservation.stock_position_id is not None
+        else None
+    )
+    position_data = stock_position_payload(db, position) if position is not None else {}
     return {
         "id": reservation.id,
         "uid": reservation.uid,
@@ -1039,6 +1045,8 @@ def stock_reservation_payload(db: Session, reservation: StockReservation) -> dic
         "logistic_unit_uid": reservation.logistic_unit_uid,
         "location_id": reservation.location_id,
         "location_code": reservation.location_code,
+        "warehouse_id": position_data.get("warehouse_id"),
+        "warehouse_code": position_data.get("warehouse_code"),
         "reference_type": reservation.reference_type,
         "reference_uid": reservation.reference_uid,
         "reference_line_uid": reservation.reference_line_uid,

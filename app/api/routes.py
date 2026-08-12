@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -278,6 +278,25 @@ def query_values(values: list[str] | None) -> list[str]:
     return result
 
 
+def request_warehouse_scope(request: Request) -> set[int] | None:
+    return getattr(request.state, "warehouse_scope", None)
+
+
+def warehouse_payload_visible(
+    request: Request,
+    warehouse_ids: list[int | None] | tuple[int | None, ...],
+    *,
+    any_assigned: bool = False,
+) -> bool:
+    scope = request_warehouse_scope(request)
+    if scope is None:
+        return True
+    actual_ids = {warehouse_id for warehouse_id in warehouse_ids if warehouse_id is not None}
+    if any_assigned:
+        return not actual_ids.isdisjoint(scope)
+    return bool(actual_ids) and actual_ids.issubset(scope)
+
+
 @router.get("/meta/constants")
 def api_constants() -> dict:
     return {
@@ -511,6 +530,7 @@ def api_create_equipment_profile(
 
 @router.get("/equipment-profiles", response_model=list[EquipmentProfileRead])
 def api_list_equipment_profiles(
+    request: Request,
     warehouse_id: int | None = Query(default=None),
     device_kind: str | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -520,7 +540,13 @@ def api_list_equipment_profiles(
         query = query.where(EquipmentProfile.warehouse_id == warehouse_id)
     if device_kind is not None:
         query = query.where(EquipmentProfile.device_kind == device_kind)
-    return list(db.scalars(query.order_by(EquipmentProfile.device_kind, EquipmentProfile.code)))
+    items = list(
+        db.scalars(query.order_by(EquipmentProfile.device_kind, EquipmentProfile.code))
+    )
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        items = [item for item in items if item.warehouse_id is None or item.warehouse_id in scope]
+    return items
 
 
 @router.put("/equipment-profiles/{profile_id}", response_model=EquipmentProfileRead)
@@ -565,6 +591,7 @@ def api_create_logistic_unit(
 
 @router.get("/logistic-units", response_model=list[LogisticUnitRead])
 def api_list_logistic_units(
+    request: Request,
     type_id: int | None = Query(default=None),
     unit_status: LogisticUnitStatus | None = Query(default=None, alias="status"),
     parent_uid: str | None = Query(default=None),
@@ -592,9 +619,14 @@ def api_list_logistic_units(
                 select(Location.id).where(Location.warehouse_id == warehouse.id)
             )
         )
-    return [
+    payloads = [
         logistic_unit_payload(db, item)
         for item in db.scalars(query.order_by(LogisticUnit.created_at.desc(), LogisticUnit.uid))
+    ]
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(request, [item["warehouse_id"]])
     ]
 
 
@@ -785,6 +817,7 @@ def api_create_logistic_shipment(
 
 @router.get("/logistic-shipments", response_model=list[LogisticShipmentRead])
 def api_list_logistic_shipments(
+    request: Request,
     status_filter: list[str] | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -792,7 +825,14 @@ def api_list_logistic_shipments(
     query = select(LogisticShipment).order_by(LogisticShipment.created_at.desc()).limit(limit)
     if status_filter:
         query = query.where(LogisticShipment.status.in_(status_filter))
-    return [logistic_shipment_payload(db, item) for item in db.scalars(query)]
+    return [
+        payload
+        for item in db.scalars(query)
+        if warehouse_payload_visible(
+            request,
+            [(payload := logistic_shipment_payload(db, item))["warehouse_id"]],
+        )
+    ]
 
 
 @router.get(
@@ -868,6 +908,7 @@ def api_create_logistic_transfer(
 
 @router.get("/logistic-transfers", response_model=list[LogisticTransferRead])
 def api_list_logistic_transfers(
+    request: Request,
     status_filter: list[str] | None = Query(default=None, alias="status"),
     transfer_kind: TransferKind | None = None,
     limit: int = Query(default=100, ge=1, le=500),
@@ -878,7 +919,16 @@ def api_list_logistic_transfers(
         query = query.where(LogisticTransfer.status.in_(status_filter))
     if transfer_kind is not None:
         query = query.where(LogisticTransfer.transfer_kind == transfer_kind)
-    return [logistic_transfer_payload(db, item) for item in db.scalars(query)]
+    payloads = [logistic_transfer_payload(db, item) for item in db.scalars(query)]
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(
+            request,
+            [item["source_warehouse_id"], item["destination_warehouse_id"]],
+            any_assigned=True,
+        )
+    ]
 
 
 @router.get(
@@ -982,6 +1032,7 @@ def api_start_logistic_inventory(
     response_model=list[LogisticInventoryRead],
 )
 def api_list_logistic_inventories(
+    request: Request,
     status_filter: list[str] | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -993,9 +1044,13 @@ def api_list_logistic_inventories(
     )
     if status_filter:
         query = query.where(LogisticInventory.status.in_(status_filter))
+    payloads = [
+        logistic_inventory_payload(db, inventory) for inventory in db.scalars(query)
+    ]
     return [
-        logistic_inventory_payload(db, inventory)
-        for inventory in db.scalars(query)
+        item
+        for item in payloads
+        if warehouse_payload_visible(request, [item["warehouse_id"]])
     ]
 
 
@@ -1184,6 +1239,7 @@ def api_create_logistic_task(
 
 @router.get("/logistic-tasks", response_model=list[LogisticTaskRead])
 def api_list_logistic_tasks(
+    request: Request,
     warehouse_code: str | None = Query(default=None),
     status_filter: list[str] | None = Query(default=None, alias="status"),
     task_type: TaskType | None = Query(default=None),
@@ -1231,7 +1287,14 @@ def api_list_logistic_tasks(
             task.created_at,
         )
     )
-    return [logistic_task_payload(db, task) for task in tasks]
+    return [
+        item
+        for task in tasks
+        if warehouse_payload_visible(
+            request,
+            [(item := logistic_task_payload(db, task))["warehouse_id"]],
+        )
+    ]
 
 
 @router.post(
@@ -1428,6 +1491,7 @@ def api_list_stock_owners(
 
 @router.get("/stock-positions", response_model=list[StockPositionRead])
 def api_list_stock_positions(
+    request: Request,
     product_id: int | None = Query(default=None),
     owner_id: int | None = Query(default=None),
     quality_status: str | None = Query(default=None),
@@ -1460,7 +1524,11 @@ def api_list_stock_positions(
     ]
     if warehouse_id is not None:
         payloads = [item for item in payloads if item["warehouse_id"] == warehouse_id]
-    return payloads
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(request, [item["warehouse_id"]])
+    ]
 
 
 @router.get("/stock-positions/{position_id}", response_model=StockPositionRead)
@@ -1512,6 +1580,7 @@ def api_create_logistic_unit_stock_reservation_request(
     response_model=list[StockReservationRequestRead],
 )
 def api_list_stock_reservation_requests(
+    request: Request,
     request_kind: StockReservationKind | None = Query(default=None, alias="kind"),
     request_result: StockReservationResult | None = Query(default=None, alias="result"),
     reference_type: str | None = Query(default=None),
@@ -1534,7 +1603,26 @@ def api_list_stock_reservation_requests(
             StockReservationRequest.id.desc(),
         ).limit(limit)
     )
-    return [stock_reservation_request_payload(db, request) for request in requests]
+    payloads = [stock_reservation_request_payload(db, item) for item in requests]
+    scope = request_warehouse_scope(request)
+    if scope is None:
+        return payloads
+    result = []
+    for item in payloads:
+        warehouse_ids = {
+            reservation["warehouse_id"]
+            for reservation in item["reservations"]
+            if reservation.get("warehouse_id") is not None
+        }
+        if not warehouse_ids and item["requested_stock_position_id"] is not None:
+            position = db.get(StockPosition, item["requested_stock_position_id"])
+            if position is not None:
+                position_data = stock_position_payload(db, position)
+                if position_data["warehouse_id"] is not None:
+                    warehouse_ids.add(position_data["warehouse_id"])
+        if warehouse_ids and not warehouse_ids.isdisjoint(scope):
+            result.append(item)
+    return result
 
 
 @router.get(
@@ -1557,6 +1645,7 @@ def api_get_stock_reservation_request(
 
 @router.get("/stock-reservations", response_model=list[StockReservationRead])
 def api_list_stock_reservations(
+    request: Request,
     reservation_status: StockReservationStatus | None = Query(default=None, alias="status"),
     stock_position_id: int | None = Query(default=None),
     reference_type: str | None = Query(default=None),
@@ -1576,7 +1665,12 @@ def api_list_stock_reservations(
     reservations = db.scalars(
         query.order_by(StockReservation.created_at.desc(), StockReservation.id.desc()).limit(limit)
     )
-    return [stock_reservation_payload(db, reservation) for reservation in reservations]
+    payloads = [stock_reservation_payload(db, reservation) for reservation in reservations]
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(request, [item["warehouse_id"]])
+    ]
 
 
 @router.get("/stock-reservations/{reservation_uid}", response_model=StockReservationRead)
@@ -1627,6 +1721,7 @@ def api_reconcile_stock_positions(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/stock-documents", response_model=list[StockDocumentRead])
 def api_list_stock_documents(
+    request: Request,
     document_type: str | None = Query(default=None),
     status: StockDocumentStatus | None = Query(default=None),
     reference_type: str | None = Query(default=None),
@@ -1646,7 +1741,16 @@ def api_list_stock_documents(
     documents = db.scalars(
         query.order_by(StockDocument.created_at.desc(), StockDocument.id.desc()).limit(limit)
     )
-    return [stock_document_payload(db, document) for document in documents]
+    payloads = [stock_document_payload(db, document) for document in documents]
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(
+            request,
+            item["warehouse_ids"],
+            any_assigned=True,
+        )
+    ]
 
 
 @router.get("/stock-documents/{document_uid}", response_model=StockDocumentDetailRead)
@@ -1677,6 +1781,7 @@ def api_reverse_stock_document(
 
 @router.get("/stock-movements", response_model=list[StockMovementRead])
 def api_list_stock_movements(
+    request: Request,
     document_uid: str | None = Query(default=None),
     product_id: int | None = Query(default=None),
     batch_id: int | None = Query(default=None),
@@ -1706,7 +1811,16 @@ def api_list_stock_movements(
     movements = db.scalars(
         query.order_by(StockMovement.occurred_at.desc(), StockMovement.id.desc()).limit(limit)
     )
-    return [stock_movement_payload(db, movement) for movement in movements]
+    payloads = [stock_movement_payload(db, movement) for movement in movements]
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(
+            request,
+            [item["source_warehouse_id"], item["destination_warehouse_id"]],
+            any_assigned=True,
+        )
+    ]
 
 
 @router.get("/stock-movements/{movement_id}", response_model=StockMovementRead)
@@ -1736,8 +1850,15 @@ def api_create_warehouse(payload: WarehouseCreate, db: Session = Depends(get_db)
 
 
 @router.get("/warehouses", response_model=list[WarehouseRead])
-def api_list_warehouses(db: Session = Depends(get_db)) -> list[Warehouse]:
-    return list(db.scalars(select(Warehouse).order_by(Warehouse.code)))
+def api_list_warehouses(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> list[Warehouse]:
+    query = select(Warehouse)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.where(Warehouse.id.in_(scope))
+    return list(db.scalars(query.order_by(Warehouse.code)))
 
 
 @router.put("/warehouses/{warehouse_id}", response_model=WarehouseRead)
@@ -1755,8 +1876,12 @@ def api_create_zone(payload: ZoneCreate, db: Session = Depends(get_db)) -> Zone:
 
 
 @router.get("/zones", response_model=list[ZoneRead])
-def api_list_zones(db: Session = Depends(get_db)) -> list[Zone]:
-    return list(db.scalars(select(Zone).order_by(Zone.code)))
+def api_list_zones(request: Request, db: Session = Depends(get_db)) -> list[Zone]:
+    query = select(Zone)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.where(Zone.warehouse_id.in_(scope))
+    return list(db.scalars(query.order_by(Zone.code)))
 
 
 @router.post("/aisles", response_model=AisleRead)
@@ -1765,8 +1890,12 @@ def api_create_aisle(payload: AisleCreate, db: Session = Depends(get_db)) -> Ais
 
 
 @router.get("/aisles", response_model=list[AisleRead])
-def api_list_aisles(db: Session = Depends(get_db)) -> list[Aisle]:
-    return list(db.scalars(select(Aisle).order_by(Aisle.zone_id, Aisle.sort_order, Aisle.code)))
+def api_list_aisles(request: Request, db: Session = Depends(get_db)) -> list[Aisle]:
+    query = select(Aisle)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.join(Zone, Zone.id == Aisle.zone_id).where(Zone.warehouse_id.in_(scope))
+    return list(db.scalars(query.order_by(Aisle.zone_id, Aisle.sort_order, Aisle.code)))
 
 
 @router.post("/racks", response_model=RackRead)
@@ -1775,8 +1904,14 @@ def api_create_rack(payload: RackCreate, db: Session = Depends(get_db)) -> Rack:
 
 
 @router.get("/racks", response_model=list[RackRead])
-def api_list_racks(db: Session = Depends(get_db)) -> list[Rack]:
-    return list(db.scalars(select(Rack).order_by(Rack.aisle_id, Rack.sort_order, Rack.code)))
+def api_list_racks(request: Request, db: Session = Depends(get_db)) -> list[Rack]:
+    query = select(Rack)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.join(Aisle, Aisle.id == Rack.aisle_id).join(
+            Zone, Zone.id == Aisle.zone_id
+        ).where(Zone.warehouse_id.in_(scope))
+    return list(db.scalars(query.order_by(Rack.aisle_id, Rack.sort_order, Rack.code)))
 
 
 @router.post("/rack-sections", response_model=RackSectionRead)
@@ -1788,10 +1923,19 @@ def api_create_rack_section(
 
 
 @router.get("/rack-sections", response_model=list[RackSectionRead])
-def api_list_rack_sections(db: Session = Depends(get_db)) -> list[RackSection]:
+def api_list_rack_sections(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> list[RackSection]:
+    query = select(RackSection)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.join(Rack, Rack.id == RackSection.rack_id).join(
+            Aisle, Aisle.id == Rack.aisle_id
+        ).join(Zone, Zone.id == Aisle.zone_id).where(Zone.warehouse_id.in_(scope))
     return list(
         db.scalars(
-            select(RackSection).order_by(
+            query.order_by(
                 RackSection.rack_id,
                 RackSection.sort_order,
                 RackSection.code,
@@ -1809,10 +1953,21 @@ def api_create_rack_level(
 
 
 @router.get("/rack-levels", response_model=list[RackLevelRead])
-def api_list_rack_levels(db: Session = Depends(get_db)) -> list[RackLevel]:
+def api_list_rack_levels(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> list[RackLevel]:
+    query = select(RackLevel)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.join(RackSection, RackSection.id == RackLevel.section_id).join(
+            Rack, Rack.id == RackSection.rack_id
+        ).join(Aisle, Aisle.id == Rack.aisle_id).join(
+            Zone, Zone.id == Aisle.zone_id
+        ).where(Zone.warehouse_id.in_(scope))
     return list(
         db.scalars(
-            select(RackLevel).order_by(
+            query.order_by(
                 RackLevel.section_id,
                 RackLevel.sort_order,
                 RackLevel.code,
@@ -1957,23 +2112,36 @@ def api_create_location(payload: LocationCreate, db: Session = Depends(get_db)) 
 
 
 @router.get("/locations", response_model=list[LocationRead])
-def api_list_locations(db: Session = Depends(get_db)) -> list[Location]:
-    return list(db.scalars(select(Location).order_by(Location.code)))
+def api_list_locations(request: Request, db: Session = Depends(get_db)) -> list[Location]:
+    query = select(Location)
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.where(Location.warehouse_id.in_(scope))
+    return list(db.scalars(query.order_by(Location.code)))
 
 
 @router.get("/inventory-locations", response_model=list[LocationRead])
-def api_list_inventory_locations(db: Session = Depends(get_db)) -> list[Location]:
+def api_list_inventory_locations(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> list[Location]:
+    query = select(Location).where(
+        Location.kind == LocationKind.STORAGE,
+        Location.is_active.is_(True),
+    )
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        query = query.where(Location.warehouse_id.in_(scope))
     return list(
         db.scalars(
-            select(Location)
-            .where(Location.kind == LocationKind.STORAGE, Location.is_active.is_(True))
-            .order_by(Location.code)
+            query.order_by(Location.code)
         )
     )
 
 
 @router.get("/labels/logistic-units.pdf")
 def api_logistic_unit_labels(
+    request: Request,
     unit_uid_filter: list[str] | None = Query(default=None, alias="unit_uid"),
     type_code: str | None = Query(default=None),
     status_filter: list[str] | None = Query(default=None, alias="status"),
@@ -2014,7 +2182,14 @@ def api_logistic_unit_labels(
                 select(Location.id).where(Location.warehouse_id == warehouse.id)
             )
         )
-    units = list(db.scalars(stmt.order_by(LogisticUnit.uid).limit(limit)))
+    units = [
+        unit
+        for unit in db.scalars(stmt.order_by(LogisticUnit.uid))
+        if warehouse_payload_visible(
+            request,
+            [logistic_unit_payload(db, unit)["warehouse_id"]],
+        )
+    ][:limit]
     content = build_labels_pdf(
         [logistic_unit_label_item(db, unit) for unit in units],
         title="Этикетки логистических единиц",
@@ -2041,6 +2216,7 @@ def api_print_location_label(location_code: str, db: Session = Depends(get_db)) 
 
 @router.get("/labels/locations.pdf")
 def api_location_labels(
+    request: Request,
     warehouse_code_filter: str | None = Query(default=None, alias="warehouse_code"),
     location_code_filter: list[str] | None = Query(default=None, alias="location_code"),
     kind_filter: list[str] | None = Query(default=None, alias="kind"),
@@ -2066,6 +2242,9 @@ def api_location_labels(
         stmt = stmt.where(Location.kind.in_(kinds))
     if storage_only:
         stmt = stmt.where(Location.kind == LocationKind.STORAGE, Location.is_active.is_(True))
+    scope = request_warehouse_scope(request)
+    if scope is not None:
+        stmt = stmt.where(Location.warehouse_id.in_(scope))
     locations = list(db.scalars(stmt))
     content = build_labels_pdf([location_label_item(location) for location in locations], title="Этикетки ячеек")
     return pdf_response(content, "location-labels.pdf")

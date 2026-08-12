@@ -13,14 +13,21 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.entities import (
+    Aisle,
     AuthenticationEvent,
     AuthenticationSession,
+    EquipmentProfile,
     Location,
     LogisticInventory,
     LogisticShipment,
     LogisticTask,
     LogisticTransfer,
     LogisticUnit,
+    Rack,
+    RackLevel,
+    RackSection,
+    StockDocument,
+    StockMovement,
     StockPosition,
     StockReservation,
     StockReservationRequest,
@@ -29,12 +36,14 @@ from app.models.entities import (
     UserWarehouseAccess,
     Warehouse,
     WarehouseWorkstation,
+    Zone,
     utcnow,
 )
 from app.models.enums import (
     AuthenticationEventType,
     AuthenticationMethod,
     UserRole,
+    WarehousePermission,
 )
 from app.schemas import (
     AuthenticationAdminUserCreate,
@@ -58,12 +67,103 @@ PASSWORD_P = 1
 PASSWORD_DKLEN = 32
 SESSION_TOKEN_PREFIX = "WMS-SID"
 ACCESS_PASS_PREFIX = "WMS-PASS"
+CONFIRMATION_PASSWORD_HEADER = "X-WMS-Confirm-Password"
 
 
 @dataclass(frozen=True)
 class AuthenticationContext:
     user: User
     session: AuthenticationSession
+
+
+ROLE_PERMISSIONS: dict[UserRole, frozenset[WarehousePermission]] = {
+    UserRole.PRODUCTION_OPERATOR: frozenset(
+        {
+            WarehousePermission.LOGISTIC_UNIT_CREATE,
+            WarehousePermission.LOGISTIC_UNIT_PACK,
+            WarehousePermission.TASK_EXECUTE,
+            WarehousePermission.LABEL_PRINT,
+        }
+    ),
+    UserRole.RECEIVING_CLERK: frozenset(
+        {
+            WarehousePermission.LOGISTIC_UNIT_CREATE,
+            WarehousePermission.LOGISTIC_UNIT_RECEIVE,
+            WarehousePermission.LOGISTIC_UNIT_PACK,
+            WarehousePermission.LOGISTIC_UNIT_MOVE,
+            WarehousePermission.LOGISTIC_UNIT_HOLD,
+            WarehousePermission.INVENTORY_COUNT,
+            WarehousePermission.TASK_EXECUTE,
+            WarehousePermission.LABEL_PRINT,
+        }
+    ),
+    UserRole.WAREHOUSE_CLERK: frozenset(
+        {
+            WarehousePermission.LOGISTIC_UNIT_PACK,
+            WarehousePermission.LOGISTIC_UNIT_MOVE,
+            WarehousePermission.LOGISTIC_UNIT_HOLD,
+            WarehousePermission.SHIPMENT_OPERATE,
+            WarehousePermission.TRANSFER_OPERATE,
+            WarehousePermission.INVENTORY_COUNT,
+            WarehousePermission.TASK_EXECUTE,
+            WarehousePermission.STOCK_RESERVE,
+            WarehousePermission.STOCK_CONSUME,
+            WarehousePermission.LABEL_PRINT,
+        }
+    ),
+    UserRole.SHIPPING_OPERATOR: frozenset(
+        {
+            WarehousePermission.SHIPMENT_OPERATE,
+            WarehousePermission.TRANSFER_OPERATE,
+            WarehousePermission.TASK_EXECUTE,
+            WarehousePermission.STOCK_RESERVE,
+            WarehousePermission.STOCK_CONSUME,
+            WarehousePermission.LABEL_PRINT,
+        }
+    ),
+    UserRole.SENIOR_CLERK: frozenset(
+        {
+            WarehousePermission.LOGISTIC_UNIT_CREATE,
+            WarehousePermission.LOGISTIC_UNIT_RECEIVE,
+            WarehousePermission.LOGISTIC_UNIT_PACK,
+            WarehousePermission.LOGISTIC_UNIT_MOVE,
+            WarehousePermission.LOGISTIC_UNIT_HOLD,
+            WarehousePermission.LOGISTIC_UNIT_RELEASE,
+            WarehousePermission.LOGISTIC_UNIT_DISASSEMBLE,
+            WarehousePermission.SHIPMENT_OPERATE,
+            WarehousePermission.TRANSFER_OPERATE,
+            WarehousePermission.INVENTORY_COUNT,
+            WarehousePermission.INVENTORY_RESOLVE,
+            WarehousePermission.TASK_EXECUTE,
+            WarehousePermission.TASK_DISPATCH,
+            WarehousePermission.STOCK_RESERVE,
+            WarehousePermission.STOCK_RELEASE_RESERVATION,
+            WarehousePermission.STOCK_CONSUME,
+            WarehousePermission.LABEL_PRINT,
+        }
+    ),
+    UserRole.WAREHOUSE_MANAGER: frozenset(
+        permission
+        for permission in WarehousePermission
+        if permission
+        not in {
+            WarehousePermission.SYSTEM_ADMINISTER,
+            WarehousePermission.DEMO_MANAGE,
+        }
+    ),
+    UserRole.ADMIN: frozenset(WarehousePermission),
+    UserRole.AUDITOR: frozenset(),
+    UserRole.INTEGRATION: frozenset(),
+}
+
+DANGEROUS_PERMISSIONS = frozenset(
+    {
+        WarehousePermission.LOGISTIC_UNIT_RELEASE,
+        WarehousePermission.LOGISTIC_UNIT_DISASSEMBLE,
+        WarehousePermission.INVENTORY_RESOLVE,
+        WarehousePermission.STOCK_CORRECT,
+    }
+)
 
 
 def _unauthorized(message: str = "authentication required") -> HTTPException:
@@ -213,6 +313,9 @@ def user_payload(db: Session, user: User) -> dict:
             for access in accesses
             if access.warehouse_id in warehouses
         ],
+        "permissions": sorted(
+            permission.value for permission in ROLE_PERMISSIONS.get(user.role, frozenset())
+        ),
     }
 
 
@@ -559,61 +662,85 @@ def require_security_reader(
     return context
 
 
-ROLE_MUTATION_ROOTS: dict[UserRole, set[str]] = {
-    UserRole.PRODUCTION_OPERATOR: {"logistic-units", "logistic-tasks"},
-    UserRole.RECEIVING_CLERK: {
-        "logistic-units",
-        "logistic-inventories",
-        "logistic-tasks",
-    },
-    UserRole.WAREHOUSE_CLERK: {
-        "logistic-units",
-        "logistic-shipments",
-        "logistic-transfers",
-        "logistic-inventories",
-        "logistic-tasks",
-        "stock-reservations",
-        "stock-reservation-requests",
-    },
-    UserRole.SHIPPING_OPERATOR: {
-        "logistic-units",
-        "logistic-shipments",
-        "logistic-transfers",
-        "logistic-tasks",
-        "stock-reservations",
-        "stock-reservation-requests",
-    },
-    UserRole.SENIOR_CLERK: {
-        "logistic-units",
-        "logistic-shipments",
-        "logistic-transfers",
-        "logistic-inventories",
-        "logistic-tasks",
-        "stock-reservations",
-        "stock-reservation-requests",
-        "stock-documents",
-        "locations",
-    },
-    UserRole.WAREHOUSE_MANAGER: {
-        "maps",
-        "logistic-units",
-        "logistic-shipments",
-        "logistic-transfers",
-        "logistic-inventories",
-        "logistic-tasks",
-        "stock-reservations",
-        "stock-reservation-requests",
-        "stock-documents",
-        "locations",
-        "zones",
-        "aisles",
-        "racks",
-        "rack-sections",
-        "rack-levels",
-    },
-    UserRole.AUDITOR: set(),
-    UserRole.INTEGRATION: set(),
-}
+def mutation_permission(request: Request) -> WarehousePermission | None:
+    segments = [segment for segment in request.url.path.split("/") if segment]
+    if len(segments) < 2 or segments[0] != "api":
+        return None
+    root = segments[1]
+    tail = segments[2:]
+
+    if root == "logistic-units":
+        if not tail:
+            return WarehousePermission.LOGISTIC_UNIT_CREATE
+        action = tail[-1]
+        if action == "label.print":
+            return WarehousePermission.LABEL_PRINT
+        if action == "accept":
+            return WarehousePermission.LOGISTIC_UNIT_RECEIVE
+        if action in {"contents", "children", "remove", "close", "reopen"}:
+            return WarehousePermission.LOGISTIC_UNIT_PACK
+        if action in {"place", "move"}:
+            return WarehousePermission.LOGISTIC_UNIT_MOVE
+        if action in {"block", "quarantine"}:
+            return WarehousePermission.LOGISTIC_UNIT_HOLD
+        if action == "release":
+            return WarehousePermission.LOGISTIC_UNIT_RELEASE
+        if action == "disassemble":
+            return WarehousePermission.LOGISTIC_UNIT_DISASSEMBLE
+        return None
+    if root == "logistic-shipments":
+        return WarehousePermission.SHIPMENT_OPERATE
+    if root == "logistic-transfers":
+        return WarehousePermission.TRANSFER_OPERATE
+    if root == "logistic-inventories":
+        if "discrepancies" in tail:
+            return WarehousePermission.INVENTORY_RESOLVE
+        return WarehousePermission.INVENTORY_COUNT
+    if root == "logistic-tasks":
+        if tail and tail[-1] in {"start", "complete"}:
+            return WarehousePermission.TASK_EXECUTE
+        return WarehousePermission.TASK_DISPATCH
+    if root in {"stock-reservations", "stock-reservation-requests"}:
+        if tail and tail[-1] == "release":
+            return WarehousePermission.STOCK_RELEASE_RESERVATION
+        if tail and tail[-1] == "consume":
+            return WarehousePermission.STOCK_CONSUME
+        return WarehousePermission.STOCK_RESERVE
+    if root == "stock-documents" and tail and tail[-1] == "reverse":
+        return WarehousePermission.STOCK_CORRECT
+    if root == "locations" and tail and tail[-1] == "label.print":
+        return WarehousePermission.LABEL_PRINT
+    if root in {"maps", "zones", "aisles", "racks", "rack-sections", "rack-levels", "locations"}:
+        if root == "maps" and tail and tail[-1] in {"setup", "reset"}:
+            return WarehousePermission.DEMO_MANAGE
+        return WarehousePermission.WAREHOUSE_STRUCTURE_MANAGE
+    if root in {
+        "units-of-measure",
+        "logistic-unit-types",
+        "products",
+        "product-packagings",
+        "stock-owners",
+        "batches",
+        "import",
+    }:
+        return WarehousePermission.CATALOG_MANAGE
+    if root in {"warehouses", "equipment-profiles"}:
+        return WarehousePermission.SYSTEM_ADMINISTER
+    if root == "demo":
+        return WarehousePermission.DEMO_MANAGE
+    return None
+
+
+def allowed_warehouse_ids(db: Session, user: User) -> set[int] | None:
+    if user.role == UserRole.ADMIN:
+        return None
+    return set(
+        db.scalars(
+            select(UserWarehouseAccess.warehouse_id).where(
+                UserWarehouseAccess.user_id == user.id
+            )
+        )
+    )
 
 
 async def _request_json(request: Request) -> dict:
@@ -639,7 +766,7 @@ def _warehouse_id_for_unit(db: Session, uid: str) -> int | None:
             break
         unit = parent
     location = db.get(Location, unit.current_location_id) if unit.current_location_id else None
-    return location.warehouse_id if location else None
+    return location.warehouse_id if location else unit.warehouse_id
 
 
 def _warehouse_id_for_position(db: Session, position: StockPosition) -> int | None:
@@ -648,6 +775,41 @@ def _warehouse_id_for_position(db: Session, position: StockPosition) -> int | No
         return _warehouse_id_for_unit(db, unit.uid) if unit else None
     location = db.get(Location, position.location_id) if position.location_id else None
     return location.warehouse_id if location else None
+
+
+def _warehouse_ids_for_movement(db: Session, movement: StockMovement) -> set[int]:
+    return {
+        warehouse_id
+        for warehouse_id in (
+            movement.source_warehouse_id,
+            movement.destination_warehouse_id,
+        )
+        if warehouse_id is not None
+    }
+
+
+def stock_document_warehouse_ids(db: Session, document: StockDocument) -> set[int]:
+    result: set[int] = set()
+    for movement in document.movements:
+        result.update(_warehouse_ids_for_movement(db, movement))
+    return result
+
+
+def _warehouse_id_for_reservation(
+    db: Session,
+    reservation: StockReservation,
+) -> int | None:
+    if reservation.stock_position_id is not None:
+        position = db.get(StockPosition, reservation.stock_position_id)
+        if position is not None:
+            return _warehouse_id_for_position(db, position)
+    if reservation.logistic_unit_id is not None:
+        unit = db.get(LogisticUnit, reservation.logistic_unit_id)
+        return _warehouse_id_for_unit(db, unit.uid) if unit else None
+    if reservation.location_id is not None:
+        location = db.get(Location, reservation.location_id)
+        return location.warehouse_id if location else None
+    return None
 
 
 async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
@@ -687,17 +849,58 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
         warehouse_id = _warehouse_id_for_position(db, position) if position else None
         if warehouse_id is not None:
             result.add(warehouse_id)
-    location_code = payload.get("location_code")
-    if isinstance(location_code, str):
-        location = db.scalar(select(Location).where(Location.code == location_code.upper()))
-        if location:
-            result.add(location.warehouse_id)
+    location_codes = {
+        value.strip().upper()
+        for key in ("location_code", "source_location_code", "destination_location_code")
+        if isinstance((value := payload.get(key)), str) and value.strip()
+    }
+    if location_codes:
+        result.update(
+            db.scalars(select(Location.warehouse_id).where(Location.code.in_(location_codes)))
+        )
+    hierarchy_ids = {
+        "zone_id": (Zone, lambda item: item.warehouse_id),
+        "aisle_id": (Aisle, lambda item: item.zone.warehouse_id),
+        "rack_id": (Rack, lambda item: item.aisle.zone.warehouse_id),
+        "section_id": (
+            RackSection,
+            lambda item: item.rack.aisle.zone.warehouse_id,
+        ),
+        "level_id": (
+            RackLevel,
+            lambda item: item.section.rack.aisle.zone.warehouse_id,
+        ),
+    }
+    for key, (model, warehouse_id_getter) in hierarchy_ids.items():
+        value = payload.get(key)
+        if isinstance(value, int):
+            item = db.get(model, value)
+            if item is not None:
+                result.add(warehouse_id_getter(item))
 
     segments = [segment for segment in request.url.path.split("/") if segment]
-    if len(segments) < 3:
+    if len(segments) < 2:
         return result
     root = segments[1] if segments[0] == "api" else ""
     object_uid = segments[2] if len(segments) > 2 else None
+    if (
+        root == "logistic-transfers"
+        and object_uid is None
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+    ):
+        source_code = payload.get("source_warehouse_code")
+        source_id = payload.get("source_warehouse_id")
+        result.clear()
+        if isinstance(source_id, int):
+            result.add(source_id)
+        elif isinstance(source_code, str) and source_code.strip():
+            warehouse_id = db.scalar(
+                select(Warehouse.id).where(
+                    Warehouse.code == source_code.strip().upper()
+                )
+            )
+            if warehouse_id is not None:
+                result.add(warehouse_id)
     if root == "logistic-units" and object_uid:
         warehouse_id = _warehouse_id_for_unit(db, object_uid)
         if warehouse_id is not None:
@@ -713,7 +916,13 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
             select(LogisticTransfer).where(LogisticTransfer.transfer_uid == object_uid.upper())
         )
         if item:
-            result.update({item.source_warehouse_id, item.destination_warehouse_id})
+            action = segments[-1]
+            if request.method in {"GET", "HEAD", "OPTIONS"}:
+                result.update({item.source_warehouse_id, item.destination_warehouse_id})
+            elif "receive" in segments or action == "receive":
+                result.add(item.destination_warehouse_id)
+            else:
+                result.add(item.source_warehouse_id)
     elif root == "logistic-inventories" and object_uid:
         item = db.scalar(
             select(LogisticInventory).where(LogisticInventory.inventory_uid == object_uid.upper())
@@ -730,11 +939,16 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
         item = db.scalar(select(Location).where(Location.code == object_uid.upper()))
         if item:
             result.add(item.warehouse_id)
+    elif root == "stock-positions" and object_uid and object_uid.isdigit():
+        item = db.get(StockPosition, int(object_uid))
+        if item:
+            warehouse_id = _warehouse_id_for_position(db, item)
+            if warehouse_id is not None:
+                result.add(warehouse_id)
     elif root == "stock-reservations" and object_uid:
         item = db.scalar(select(StockReservation).where(StockReservation.uid == object_uid.upper()))
-        if item and item.stock_position_id:
-            position = db.get(StockPosition, item.stock_position_id)
-            warehouse_id = _warehouse_id_for_position(db, position) if position else None
+        if item:
+            warehouse_id = _warehouse_id_for_reservation(db, item)
             if warehouse_id is not None:
                 result.add(warehouse_id)
     elif root == "stock-reservation-requests" and object_uid:
@@ -743,8 +957,40 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
                 StockReservationRequest.uid == object_uid.upper()
             )
         )
-        if item and item.requested_logistic_unit_uid:
-            warehouse_id = _warehouse_id_for_unit(db, item.requested_logistic_unit_uid)
+        if item:
+            if item.requested_logistic_unit_uid:
+                warehouse_id = _warehouse_id_for_unit(db, item.requested_logistic_unit_uid)
+                if warehouse_id is not None:
+                    result.add(warehouse_id)
+            elif item.requested_stock_position_id:
+                position = db.get(StockPosition, item.requested_stock_position_id)
+                warehouse_id = _warehouse_id_for_position(db, position) if position else None
+                if warehouse_id is not None:
+                    result.add(warehouse_id)
+    elif root == "stock-documents" and object_uid:
+        item = db.scalar(
+            select(StockDocument).where(StockDocument.uid == object_uid.upper())
+        )
+        if item:
+            result.update(stock_document_warehouse_ids(db, item))
+    elif root == "stock-movements" and object_uid and object_uid.isdigit():
+        item = db.get(StockMovement, int(object_uid))
+        if item:
+            result.update(_warehouse_ids_for_movement(db, item))
+    elif root == "warehouses" and object_uid and object_uid.isdigit():
+        if db.get(Warehouse, int(object_uid)) is not None:
+            result.add(int(object_uid))
+    elif root == "equipment-profiles" and object_uid and object_uid.isdigit():
+        item = db.get(EquipmentProfile, int(object_uid))
+        if item and item.warehouse_id is not None:
+            result.add(item.warehouse_id)
+    elif root == "cards" and len(segments) > 3:
+        card_code = segments[3].strip().upper()
+        location = db.scalar(select(Location).where(Location.code == card_code))
+        if location:
+            result.add(location.warehouse_id)
+        else:
+            warehouse_id = _warehouse_id_for_unit(db, card_code)
             if warehouse_id is not None:
                 result.add(warehouse_id)
     return result
@@ -756,29 +1002,92 @@ async def authorize_api_request(
     settings: Settings = Depends(get_settings),
 ) -> AuthenticationContext | None:
     if not settings.auth_enforcement_enabled:
+        request.state.warehouse_scope = None
+        request.state.authentication_context = None
         return None
     context = authentication_context(request, db, settings)
+    request.state.authentication_context = context
+    permitted_warehouse_ids = allowed_warehouse_ids(db, context.user)
+    request.state.warehouse_scope = permitted_warehouse_ids
+    warehouse_ids = await request_warehouse_ids(db, request)
     if request.method in {"GET", "HEAD", "OPTIONS"}:
+        segments = [segment for segment in request.url.path.split("/") if segment]
+        root = segments[1] if len(segments) > 1 and segments[0] == "api" else ""
+        if root == "stock-reconciliation" and context.user.role != UserRole.ADMIN:
+            raise _forbidden("stock reconciliation permission is required")
+        scoped_detail_roots = {
+            "cards",
+            "logistic-units",
+            "logistic-shipments",
+            "logistic-transfers",
+            "logistic-inventories",
+            "logistic-tasks",
+            "stock-positions",
+            "stock-reservations",
+            "stock-reservation-requests",
+            "stock-documents",
+            "stock-movements",
+            "locations",
+        }
+        if (
+            permitted_warehouse_ids is not None
+            and warehouse_ids
+            and warehouse_ids.isdisjoint(permitted_warehouse_ids)
+        ):
+            raise _forbidden("operation references an unavailable warehouse")
+        if (
+            permitted_warehouse_ids is not None
+            and root in scoped_detail_roots
+            and len(segments) > 2
+            and not warehouse_ids
+        ):
+            raise _forbidden("warehouse-scoped object is not assigned to an available warehouse")
         return context
+    if (
+        permitted_warehouse_ids is not None
+        and warehouse_ids
+        and not warehouse_ids.issubset(permitted_warehouse_ids)
+    ):
+        raise _forbidden("operation references an unavailable warehouse")
     if context.user.must_change_password:
         raise _forbidden("password change is required before warehouse operations")
-    if context.user.role == UserRole.ADMIN:
-        return context
-    segments = [segment for segment in request.url.path.split("/") if segment]
-    root = segments[1] if len(segments) > 1 and segments[0] == "api" else ""
-    if root not in ROLE_MUTATION_ROOTS.get(context.user.role, set()):
-        raise _forbidden("role does not permit this warehouse operation")
-    warehouse_ids = await request_warehouse_ids(db, request)
-    if warehouse_ids:
-        allowed_ids = set(
-            db.scalars(
-                select(UserWarehouseAccess.warehouse_id).where(
-                    UserWarehouseAccess.user_id == context.user.id
-                )
-            )
+    permission = mutation_permission(request)
+    if permission is None:
+        raise _forbidden("warehouse operation is not present in the permission matrix")
+    if permission not in ROLE_PERMISSIONS.get(context.user.role, frozenset()):
+        raise _forbidden(f"permission {permission.value} is required")
+
+    payload = await _request_json(request)
+    actor = payload.get("actor")
+    if isinstance(actor, str) and actor.strip().lower() != context.user.username:
+        raise _forbidden("operation actor must match the authenticated user")
+    if (
+        permission == WarehousePermission.LOGISTIC_UNIT_CREATE
+        and context.user.role != UserRole.ADMIN
+        and not isinstance(payload.get("warehouse_id"), int)
+    ):
+        raise _forbidden("warehouse_id is required when creating a logistic unit")
+    if permission in DANGEROUS_PERMISSIONS:
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise _forbidden("a reason is required for a privileged warehouse operation")
+        confirmation_password = request.headers.get(CONFIRMATION_PASSWORD_HEADER)
+        confirmed = bool(confirmation_password) and verify_password(
+            confirmation_password,
+            context.user.password_hash,
         )
-        if not warehouse_ids.issubset(allowed_ids):
-            raise _forbidden("operation references an unavailable warehouse")
+        add_authentication_event(
+            db,
+            event_type=AuthenticationEventType.PRIVILEGED_ACTION_CONFIRMED,
+            succeeded=confirmed,
+            request=request,
+            user=context.user,
+            session_uid=context.session.uid,
+            reason=f"permission={permission.value}; path={request.url.path}",
+        )
+        db.commit()
+        if not confirmed:
+            raise _forbidden("current password confirmation is required")
     return context
 
 

@@ -239,6 +239,7 @@ def settings_page() -> str:
             <label><span>Роль</span><select id="userRole" required>
               <option value="warehouse_clerk">Кладовщик</option><option value="receiving_clerk">Оператор приёмки</option><option value="shipping_operator">Оператор отгрузки</option><option value="production_operator">Оператор производства</option><option value="senior_clerk">Старший кладовщик</option><option value="warehouse_manager">Руководитель склада</option><option value="auditor">Аудитор</option><option value="integration">Интеграция</option><option value="admin">Администратор</option>
             </select></label>
+            <fieldset class="settings-fieldset"><legend>Полномочия роли</legend><div id="userPermissions" class="permission-list"></div></fieldset>
             <label id="userPasswordLabel"><span>Временный пароль</span><input id="userPassword" type="password" minlength="10" autocomplete="new-password"></label>
             <fieldset class="settings-fieldset"><legend>Доступные склады</legend><div id="userWarehouses" class="check-grid"></div></fieldset>
             <label id="userDefaultWarehouseLabel"><span>Склад по умолчанию</span><select id="userDefaultWarehouse"><option value="">Не выбран</option></select></label>

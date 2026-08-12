@@ -18,6 +18,7 @@ from app.auth import (
     require_authentication_context,
     require_pass_issuer,
     require_security_reader,
+    ROLE_PERMISSIONS,
     reset_user_password,
     revoke_user_sessions,
     user_payload,
@@ -45,6 +46,7 @@ from app.schemas import (
     AuthenticationPasswordChangeRequest,
     AuthenticationPasswordLoginRequest,
     AuthenticationResult,
+    AuthenticationRoleRead,
     AuthenticationRevokeSessionsRequest,
     AuthenticationUserRead,
     UserAccessPassIssueRead,
@@ -160,6 +162,19 @@ def api_current_user(
     db: Session = Depends(get_db),
 ) -> dict:
     return user_payload(db, context.user)
+
+
+@router.get("/roles", response_model=list[AuthenticationRoleRead])
+def api_authentication_roles(
+    _context: AuthenticationContext = Depends(require_authentication_context),
+) -> list[dict]:
+    return [
+        {
+            "role": role,
+            "permissions": sorted(permission.value for permission in permissions),
+        }
+        for role, permissions in ROLE_PERMISSIONS.items()
+    ]
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

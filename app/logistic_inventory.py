@@ -35,6 +35,7 @@ from app.services import (
     logistic_location_occupied_count,
     not_found,
 )
+from app.stock import assign_logistic_unit_tree_warehouse
 
 
 PROBLEM_STATUSES = {
@@ -751,6 +752,7 @@ def place_logistic_inventory_found_unit(
         "location_code": current.code if current else None,
     }
     unit.current_location_id = location.id
+    assign_logistic_unit_tree_warehouse(db, unit, location.warehouse_id)
     unit.status = LogisticUnitStatus.AVAILABLE
     resolve_logistic_inventory_line(
         db,
@@ -801,6 +803,7 @@ def move_logistic_inventory_unit_to_actual(
         raise bad_request("actual location is outside inventory warehouse")
     ensure_resolution_location_capacity(db, unit, actual)
     unit.current_location_id = actual.id
+    assign_logistic_unit_tree_warehouse(db, unit, actual.warehouse_id)
     resolve_logistic_inventory_line(
         db,
         inventory=inventory,

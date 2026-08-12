@@ -83,6 +83,7 @@ class AuthenticationEventType(StrEnum):
     ACCESS_PASS_REVOKED = "access_pass_revoked"
     USER_UPDATED = "user_updated"
     WORKSTATION_UPDATED = "workstation_updated"
+    PRIVILEGED_ACTION_CONFIRMED = "privileged_action_confirmed"
 
 
 class UserRole(StrEnum):
@@ -95,6 +96,31 @@ class UserRole(StrEnum):
     ADMIN = "admin"
     AUDITOR = "auditor"
     INTEGRATION = "integration"
+
+
+class WarehousePermission(StrEnum):
+    LOGISTIC_UNIT_CREATE = "logistic_unit.create"
+    LOGISTIC_UNIT_RECEIVE = "logistic_unit.receive"
+    LOGISTIC_UNIT_PACK = "logistic_unit.pack"
+    LOGISTIC_UNIT_MOVE = "logistic_unit.move"
+    LOGISTIC_UNIT_HOLD = "logistic_unit.hold"
+    LOGISTIC_UNIT_RELEASE = "logistic_unit.release"
+    LOGISTIC_UNIT_DISASSEMBLE = "logistic_unit.disassemble"
+    SHIPMENT_OPERATE = "shipment.operate"
+    TRANSFER_OPERATE = "transfer.operate"
+    INVENTORY_COUNT = "inventory.count"
+    INVENTORY_RESOLVE = "inventory.resolve"
+    TASK_EXECUTE = "task.execute"
+    TASK_DISPATCH = "task.dispatch"
+    STOCK_RESERVE = "stock.reserve"
+    STOCK_RELEASE_RESERVATION = "stock.release_reservation"
+    STOCK_CONSUME = "stock.consume"
+    STOCK_CORRECT = "stock.correct"
+    LABEL_PRINT = "label.print"
+    CATALOG_MANAGE = "catalog.manage"
+    WAREHOUSE_STRUCTURE_MANAGE = "warehouse_structure.manage"
+    SYSTEM_ADMINISTER = "system.administer"
+    DEMO_MANAGE = "demo.manage"
 
 
 class ShipmentStatus(StrEnum):

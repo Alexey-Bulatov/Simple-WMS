@@ -1,6 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { user: null, warehouses: [], users: [], workstations: [], equipment: [] };
+  const state = { user: null, warehouses: [], users: [], roles: [], workstations: [], equipment: [] };
 
   const roleLabels = {
     production_operator: "Оператор производства",
@@ -15,6 +15,9 @@
   };
   const kindLabels = { printer: "Принтер", scanner: "Сканер", terminal: "ТСД", scale: "Весы", other: "Другое" };
   const connectionLabels = { pdf: "PDF", system_queue: "Системная очередь", raw_tcp: "RAW TCP", keyboard: "Клавиатура", camera: "Камера", web: "Веб", serial: "COM / Serial", usb: "USB" };
+  const permissionLabels = {
+    "logistic_unit.create": "Создание логистических единиц", "logistic_unit.receive": "Приёмка", "logistic_unit.pack": "Формирование и упаковка", "logistic_unit.move": "Размещение и перемещение", "logistic_unit.hold": "Блокировка и карантин", "logistic_unit.release": "Снятие блокировки", "logistic_unit.disassemble": "Расформирование", "shipment.operate": "Отгрузка", "transfer.operate": "Межскладские передачи", "inventory.count": "Проведение инвентаризации", "inventory.resolve": "Разбор расхождений", "task.execute": "Выполнение заданий", "task.dispatch": "Назначение заданий", "stock.reserve": "Резервирование", "stock.release_reservation": "Снятие резерва", "stock.consume": "Списание и выдача", "stock.correct": "Корректировка остатков", "label.print": "Печать этикеток", "catalog.manage": "Справочники", "warehouse_structure.manage": "Структура склада", "system.administer": "Настройки системы", "demo.manage": "Демо-данные",
+  };
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
@@ -77,6 +80,14 @@
     return Array.from(document.querySelectorAll('[name="userWarehouse"]:checked')).map((node) => Number(node.value));
   }
 
+  function renderRolePermissions(role = $("userRole").value) {
+    const item = state.roles.find((row) => row.role === role);
+    const permissions = item?.permissions || [];
+    $("userPermissions").innerHTML = permissions.length
+      ? permissions.map((permission) => `<span class="permission-item">${esc(permissionLabels[permission] || permission)}</span>`).join("")
+      : '<span class="muted">Только чтение доступных данных.</span>';
+  }
+
   function renderUsers() {
     $("userList").innerHTML = state.users.length ? state.users.map((item) => row({
       kind: "user", id: item.id, title: `${item.full_name} · ${item.username}`,
@@ -115,7 +126,7 @@
   }
 
   function resetUser() {
-    $("userForm").reset(); $("userId").value = ""; $("userUsername").readOnly = false; $("userPassword").required = true; $("userPasswordLabel").hidden = false; $("userActive").checked = true; $("userActive").disabled = true; $("userFormTitle").textContent = "Новый пользователь"; renderUserWarehouseControls([], null);
+    $("userForm").reset(); $("userId").value = ""; $("userUsername").readOnly = false; $("userPassword").required = true; $("userPasswordLabel").hidden = false; $("userActive").checked = true; $("userActive").disabled = true; $("userFormTitle").textContent = "Новый пользователь"; renderUserWarehouseControls([], null); renderRolePermissions();
   }
 
   function resetWorkstation() {
@@ -133,7 +144,7 @@
 
   function editUser(id) {
     const item = state.users.find((row) => row.id === id); if (!item) return;
-    $("userId").value = item.id; $("userUsername").value = item.username; $("userUsername").readOnly = true; $("userFullName").value = item.full_name; $("userRole").value = item.role; $("userPassword").required = false; $("userPasswordLabel").hidden = true; $("userActive").disabled = false; $("userActive").checked = item.is_active; $("userFormTitle").textContent = item.full_name; renderUserWarehouseControls(item.warehouse_ids, item.default_warehouse_id); $("userFullName").focus();
+    $("userId").value = item.id; $("userUsername").value = item.username; $("userUsername").readOnly = true; $("userFullName").value = item.full_name; $("userRole").value = item.role; $("userPassword").required = false; $("userPasswordLabel").hidden = true; $("userActive").disabled = false; $("userActive").checked = item.is_active; $("userFormTitle").textContent = item.full_name; renderUserWarehouseControls(item.warehouse_ids, item.default_warehouse_id); renderRolePermissions(item.role); $("userFullName").focus();
   }
 
   function editWorkstation(id) {
@@ -155,11 +166,11 @@
   }
 
   async function reloadAll(successText = "Настройки загружены.") {
-    const [warehouses, users, workstations, equipment] = await Promise.all([
-      api("/api/warehouses"), api("/api/auth/admin/users"), api("/api/auth/admin/workstations"), api("/api/equipment-profiles"),
+    const [warehouses, users, roles, workstations, equipment] = await Promise.all([
+      api("/api/warehouses"), api("/api/auth/admin/users"), api("/api/auth/roles"), api("/api/auth/admin/workstations"), api("/api/equipment-profiles"),
     ]);
-    state.warehouses = warehouses; state.users = users; state.workstations = workstations; state.equipment = equipment;
-    renderWarehouses(); renderUsers(); renderWorkstations(); renderEquipment(); message(successText);
+    state.warehouses = warehouses; state.users = users; state.roles = roles; state.workstations = workstations; state.equipment = equipment;
+    renderWarehouses(); renderUsers(); renderRolePermissions(); renderWorkstations(); renderEquipment(); message(successText);
   }
 
   function bindForms() {
@@ -208,6 +219,7 @@
       history.replaceState(null, "", `#${tab}`);
     }));
     $("warehouseReset").addEventListener("click", resetWarehouse); $("userReset").addEventListener("click", resetUser); $("workstationReset").addEventListener("click", resetWorkstation); $("equipmentReset").addEventListener("click", resetEquipment); $("equipmentConnection").addEventListener("change", updateConnectionFields);
+    $("userRole").addEventListener("change", () => renderRolePermissions());
     $("userWarehouses").addEventListener("change", () => renderUserWarehouseControls(selectedWarehouseIds(), $("userDefaultWarehouse").value));
     document.addEventListener("click", (event) => {
       const target = event.target.closest("[data-edit-kind]"); if (!target) return; const id = Number(target.dataset.editId);

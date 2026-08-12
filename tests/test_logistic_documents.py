@@ -286,6 +286,7 @@ def test_logistic_transfer_finishes_at_destination_receiving(db):
     assert transfer.completed_at is not None
     assert unit.status == LogisticUnitStatus.CLOSED
     assert unit.current_location_id == destination[LocationKind.TRANSFER_IN].id
+    assert unit.warehouse_id == destination["warehouse"].id
 
     place_logistic_unit(
         db,

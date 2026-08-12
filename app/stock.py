@@ -33,6 +33,22 @@ RESERVED_UNIT_STATUSES = {
 }
 
 
+def assign_logistic_unit_tree_warehouse(
+    db: Session,
+    unit: LogisticUnit,
+    warehouse_id: int,
+) -> None:
+    pending = [unit]
+    while pending:
+        current = pending.pop()
+        current.warehouse_id = warehouse_id
+        pending.extend(
+            db.scalars(
+                select(LogisticUnit).where(LogisticUnit.parent_unit_id == current.id)
+            )
+        )
+
+
 def ensure_default_stock_owner(db: Session) -> StockOwner:
     owner = db.scalar(select(StockOwner).where(StockOwner.code == DEFAULT_STOCK_OWNER_CODE))
     if owner is not None:

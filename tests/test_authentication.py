@@ -14,13 +14,22 @@ from app.main import app
 from app.models.entities import (
     AuthenticationEvent,
     AuthenticationSession,
+    Location,
+    LogisticUnit,
+    LogisticUnitType,
     User,
     UserAccessPass,
     Warehouse,
     WarehouseWorkstation,
+    Zone,
     utcnow,
 )
-from app.models.enums import AuthenticationEventType, UserRole
+from app.models.enums import (
+    AuthenticationEventType,
+    LocationKind,
+    LogisticUnitStatus,
+    UserRole,
+)
 
 
 @pytest.fixture()
@@ -422,7 +431,8 @@ def test_enforcement_blocks_anonymous_role_and_foreign_warehouse(db, client):
             "actor": "scoped-user",
         },
     )
-    assert own_request.status_code != 403
+    assert own_request.status_code == 403
+    assert own_request.json()["detail"] == "permission task.dispatch is required"
 
 
 def test_legacy_user_api_is_removed_and_senior_cannot_issue_admin_pass(db, client):
@@ -592,3 +602,208 @@ def test_administration_updates_warehouse_user_and_revokes_workstation_access(db
             "workstation_code": workstation["code"],
         },
     ).status_code == 401
+
+
+def test_detailed_permissions_scope_reads_actor_and_privileged_confirmation(db, client):
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        auth_enforcement_enabled=True,
+        auth_session_hours=12,
+    )
+    bootstrap(client)
+    login(client)
+
+    own = Warehouse(code="WH-B2-A", name="Склад полномочий")
+    foreign = Warehouse(code="WH-B2-B", name="Чужой склад полномочий")
+    db.add_all([own, foreign])
+    db.flush()
+    own_zone = Zone(
+        warehouse_id=own.id,
+        code="ST-A",
+        name="Хранение A",
+        kind=LocationKind.STORAGE,
+    )
+    foreign_zone = Zone(
+        warehouse_id=foreign.id,
+        code="ST-B",
+        name="Хранение B",
+        kind=LocationKind.STORAGE,
+    )
+    db.add_all([own_zone, foreign_zone])
+    db.flush()
+    own_location = Location(
+        warehouse_id=own.id,
+        zone_id=own_zone.id,
+        code="WH-B2-A-ST-01",
+        name="Ячейка A",
+        kind=LocationKind.STORAGE,
+    )
+    foreign_location = Location(
+        warehouse_id=foreign.id,
+        zone_id=foreign_zone.id,
+        code="WH-B2-B-ST-01",
+        name="Ячейка B",
+        kind=LocationKind.STORAGE,
+    )
+    unit_type = LogisticUnitType(
+        code="B2-PALLET",
+        name="Палета B2",
+        identifier_prefix="B2P",
+    )
+    db.add_all([own_location, foreign_location, unit_type])
+    db.flush()
+    own_unit = LogisticUnit(
+        uid="B2P-OWN",
+        type_id=unit_type.id,
+        warehouse_id=own.id,
+        current_location_id=own_location.id,
+        status=LogisticUnitStatus.BLOCKED,
+        status_before_hold=LogisticUnitStatus.AVAILABLE.value,
+    )
+    foreign_unit = LogisticUnit(
+        uid="B2P-FOREIGN",
+        type_id=unit_type.id,
+        warehouse_id=foreign.id,
+        current_location_id=foreign_location.id,
+        status=LogisticUnitStatus.AVAILABLE,
+    )
+    db.add_all([own_unit, foreign_unit])
+    db.commit()
+
+    for username, role, password in (
+        ("b2-clerk", "warehouse_clerk", "B2-clerk-pass-2026"),
+        ("b2-senior", "senior_clerk", "B2-senior-pass-2026"),
+        ("b2-manager", "warehouse_manager", "B2-manager-pass-2026"),
+        ("b2-auditor", "auditor", "B2-auditor-pass-2026"),
+    ):
+        response = client.post(
+            "/api/auth/admin/users",
+            json={
+                "username": username,
+                "full_name": username,
+                "role": role,
+                "password": password,
+                "warehouse_ids": [own.id],
+                "default_warehouse_id": own.id,
+                "must_change_password": False,
+            },
+        )
+        assert response.status_code == 200
+
+    clerk = TestClient(app)
+    clerk_profile = login(
+        clerk,
+        username="b2-clerk",
+        password="B2-clerk-pass-2026",
+    )["user"]
+    assert "logistic_unit.move" in clerk_profile["permissions"]
+    assert "logistic_unit.release" not in clerk_profile["permissions"]
+    role_matrix = {item["role"]: item["permissions"] for item in clerk.get("/api/auth/roles").json()}
+    assert "stock.correct" in role_matrix["warehouse_manager"]
+    assert role_matrix["auditor"] == []
+    assert [item["code"] for item in clerk.get("/api/warehouses").json()] == ["WH-B2-A"]
+    assert [item["uid"] for item in clerk.get("/api/logistic-units").json()] == ["B2P-OWN"]
+    assert clerk.get("/api/logistic-units/B2P-FOREIGN").status_code == 403
+    assert clerk.get(
+        "/api/labels/locations.pdf",
+        params={"warehouse_code": foreign.code},
+    ).status_code == 403
+    create_without_warehouse = clerk.post(
+        "/api/logistic-units",
+        json={"type_id": unit_type.id, "actor": "b2-clerk"},
+    )
+    assert create_without_warehouse.status_code == 403
+    assert create_without_warehouse.json()["detail"] == (
+        "permission logistic_unit.create is required"
+    )
+    assert clerk.post(
+        "/api/logistic-units/B2P-OWN/release",
+        json={"actor": "b2-clerk", "reason": "Проверка матрицы"},
+        headers={"X-WMS-Confirm-Password": "B2-clerk-pass-2026"},
+    ).status_code == 403
+    actor_spoof = clerk.post(
+        "/api/logistic-units/B2P-OWN/move",
+        json={
+            "location_code": own_location.code,
+            "actor": "another-user",
+            "reason": "Подмена оператора",
+        },
+    )
+    assert actor_spoof.status_code == 403
+    assert actor_spoof.json()["detail"] == "operation actor must match the authenticated user"
+
+    transfer = clerk.post(
+        "/api/logistic-transfers",
+        json={
+            "source_warehouse_code": own.code,
+            "destination_warehouse_code": foreign.code,
+            "transfer_kind": "local",
+            "actor": "b2-clerk",
+        },
+    )
+    assert transfer.status_code == 200
+    assert transfer.json()["source_warehouse_code"] == own.code
+    assert transfer.json()["destination_warehouse_code"] == foreign.code
+
+    manager = TestClient(app)
+    login(manager, username="b2-manager", password="B2-manager-pass-2026")
+    foreign_aisle = manager.post(
+        "/api/aisles",
+        json={"zone_id": foreign_zone.id, "code": "A-FOREIGN", "name": "Чужой проход"},
+    )
+    assert foreign_aisle.status_code == 403
+    assert manager.post(
+        "/api/aisles",
+        json={"zone_id": own_zone.id, "code": "A-OWN", "name": "Свой проход"},
+    ).status_code == 200
+
+    senior = TestClient(app)
+    login(senior, username="b2-senior", password="B2-senior-pass-2026")
+    senior_create_without_warehouse = senior.post(
+        "/api/logistic-units",
+        json={"type_id": unit_type.id, "actor": "b2-senior"},
+    )
+    assert senior_create_without_warehouse.status_code == 403
+    assert senior_create_without_warehouse.json()["detail"] == (
+        "warehouse_id is required when creating a logistic unit"
+    )
+    no_confirmation = senior.post(
+        "/api/logistic-units/B2P-OWN/release",
+        json={"actor": "b2-senior", "reason": "Разрешено старшим"},
+    )
+    assert no_confirmation.status_code == 403
+    assert no_confirmation.json()["detail"] == "current password confirmation is required"
+    wrong_confirmation = senior.post(
+        "/api/logistic-units/B2P-OWN/release",
+        json={"actor": "b2-senior", "reason": "Разрешено старшим"},
+        headers={"X-WMS-Confirm-Password": "wrong-password"},
+    )
+    assert wrong_confirmation.status_code == 403
+    released = senior.post(
+        "/api/logistic-units/B2P-OWN/release",
+        json={"actor": "b2-senior", "reason": "Разрешено старшим"},
+        headers={"X-WMS-Confirm-Password": "B2-senior-pass-2026"},
+    )
+    assert released.status_code == 200
+    assert released.json()["status"] == "available"
+
+    auditor = TestClient(app)
+    login(auditor, username="b2-auditor", password="B2-auditor-pass-2026")
+    assert auditor.get("/api/logistic-units").status_code == 200
+    assert auditor.post(
+        "/api/logistic-tasks",
+        json={
+            "warehouse_code": own.code,
+            "task_type": "move",
+            "object_uid": own_unit.uid,
+            "actor": "b2-auditor",
+        },
+    ).status_code == 403
+    confirmation_events = list(
+        db.scalars(
+            select(AuthenticationEvent).where(
+                AuthenticationEvent.event_type
+                == AuthenticationEventType.PRIVILEGED_ACTION_CONFIRMED
+            )
+        )
+    )
+    assert [event.succeeded for event in confirmation_events] == [False, False, True]

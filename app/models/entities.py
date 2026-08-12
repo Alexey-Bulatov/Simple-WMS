@@ -296,6 +296,11 @@ class LogisticUnit(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     type_id: Mapped[int] = mapped_column(ForeignKey("logistic_unit_types.id"), index=True)
+    warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouses.id"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[LogisticUnitStatus] = mapped_column(
         Enum(LogisticUnitStatus),
         default=LogisticUnitStatus.OPEN,
@@ -849,6 +854,11 @@ class StockMovement(Base):
         nullable=True,
         index=True,
     )
+    source_warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouses.id"),
+        nullable=True,
+        index=True,
+    )
     destination_logistic_unit_id: Mapped[int | None] = mapped_column(
         ForeignKey("logistic_units.id"),
         nullable=True,
@@ -856,6 +866,11 @@ class StockMovement(Base):
     )
     destination_location_id: Mapped[int | None] = mapped_column(
         ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    destination_warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouses.id"),
         nullable=True,
         index=True,
     )
