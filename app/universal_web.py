@@ -7,16 +7,18 @@ router = APIRouter()
 
 def navigation(active: str) -> str:
     links = (
-        ("work", "/work", "Рабочее место"),
-        ("terminal", "/terminal", "ТСД"),
-        ("cards", "/cards", "Поиск"),
-        ("demo", "/demo", "Демо"),
-        ("api", "/docs", "API"),
-        ("profile", "/profile", "Вход"),
+        ("work", "/work", "Рабочее место", False),
+        ("terminal", "/terminal", "ТСД", False),
+        ("cards", "/cards", "Поиск", False),
+        ("demo", "/demo", "Демо", False),
+        ("api", "/docs", "API", False),
+        ("settings", "/settings", "Настройки", True),
+        ("profile", "/profile", "Вход", False),
     )
     return "".join(
-        f'<a class="{"active" if key == active else ""}" href="{url}">{label}</a>'
-        for key, url, label in links
+        f'<a class="{"active" if key == active else ""}" href="{url}"'
+        f'{" data-admin-link hidden" if admin_only else ""}>{label}</a>'
+        for key, url, label, admin_only in links
     )
 
 
@@ -197,3 +199,97 @@ def profile_page() -> str:
     </main>
     """
     return document("Профиль Simple WMS", "profile-page", body, "/static/universal-auth.js")
+
+
+@router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
+def settings_page() -> str:
+    body = f"""
+    <header class="product-header"><a class="brand" href="/work">Simple WMS</a><nav>{navigation("settings")}</nav></header>
+    <main class="settings-main">
+      <div class="settings-title"><div><span class="eyebrow">Администрирование</span><h1>Настройки системы</h1></div><div id="settingsMessage" class="message">Загрузка данных...</div></div>
+      <div class="settings-tabs" role="tablist">
+        <button class="active" data-settings-tab="warehouses" type="button">Склады</button>
+        <button data-settings-tab="users" type="button">Пользователи</button>
+        <button data-settings-tab="workstations" type="button">Рабочие места</button>
+        <button data-settings-tab="equipment" type="button">Оборудование</button>
+      </div>
+
+      <section class="settings-view" data-settings-view="warehouses">
+        <form id="warehouseForm" class="settings-form-panel">
+          <div class="panel-head"><div><span class="eyebrow">Справочник</span><h2 id="warehouseFormTitle">Новый склад</h2></div></div>
+          <div class="settings-form-body">
+            <input id="warehouseId" type="hidden">
+            <label><span>Код</span><input id="warehouseCode" class="mono" value="WH01" maxlength="32" required></label>
+            <label><span>Название</span><input id="warehouseName" value="Основной склад" maxlength="160" required></label>
+            <label><span>Город</span><input id="warehouseCity" maxlength="120"></label>
+            <label><span>Часовой пояс</span><input id="warehouseTimezone" value="Europe/Moscow" maxlength="80" required></label>
+            <div class="form-actions"><button class="primary" type="submit">Сохранить</button><button id="warehouseReset" type="button">Очистить</button></div>
+          </div>
+        </form>
+        <section class="settings-list-panel"><div class="panel-head"><div><span class="eyebrow">Доступные склады</span><h2>Склады</h2></div></div><div id="warehouseList" class="settings-list"></div></section>
+      </section>
+
+      <section class="settings-view" data-settings-view="users" hidden>
+        <form id="userForm" class="settings-form-panel">
+          <div class="panel-head"><div><span class="eyebrow">Учётная запись</span><h2 id="userFormTitle">Новый пользователь</h2></div></div>
+          <div class="settings-form-body">
+            <input id="userId" type="hidden">
+            <label><span>Логин</span><input id="userUsername" autocomplete="off" maxlength="80" required></label>
+            <label><span>ФИО</span><input id="userFullName" maxlength="160" required></label>
+            <label><span>Роль</span><select id="userRole" required>
+              <option value="warehouse_clerk">Кладовщик</option><option value="receiving_clerk">Оператор приёмки</option><option value="shipping_operator">Оператор отгрузки</option><option value="production_operator">Оператор производства</option><option value="senior_clerk">Старший кладовщик</option><option value="warehouse_manager">Руководитель склада</option><option value="auditor">Аудитор</option><option value="integration">Интеграция</option><option value="admin">Администратор</option>
+            </select></label>
+            <label id="userPasswordLabel"><span>Временный пароль</span><input id="userPassword" type="password" minlength="10" autocomplete="new-password"></label>
+            <fieldset class="settings-fieldset"><legend>Доступные склады</legend><div id="userWarehouses" class="check-grid"></div></fieldset>
+            <label id="userDefaultWarehouseLabel"><span>Склад по умолчанию</span><select id="userDefaultWarehouse"><option value="">Не выбран</option></select></label>
+            <label class="check-row"><input id="userActive" type="checkbox" checked><span>Пользователь активен</span></label>
+            <div class="form-actions"><button class="primary" type="submit">Сохранить</button><button id="userReset" type="button">Очистить</button></div>
+          </div>
+        </form>
+        <section class="settings-list-panel"><div class="panel-head"><div><span class="eyebrow">Безопасность</span><h2>Пользователи</h2></div></div><div id="userList" class="settings-list"></div></section>
+      </section>
+
+      <section class="settings-view" data-settings-view="workstations" hidden>
+        <form id="workstationForm" class="settings-form-panel">
+          <div class="panel-head"><div><span class="eyebrow">Точка входа</span><h2 id="workstationFormTitle">Новое рабочее место</h2></div></div>
+          <div class="settings-form-body">
+            <input id="workstationId" type="hidden">
+            <label><span>Код</span><input id="workstationCode" class="mono" maxlength="64" required></label>
+            <label><span>Название</span><input id="workstationName" maxlength="160" required></label>
+            <label><span>Склад</span><select id="workstationWarehouse" required></select></label>
+            <label class="check-row"><input id="workstationPass" type="checkbox" checked><span>Разрешить вход по QR/штрихкоду</span></label>
+            <label class="check-row"><input id="workstationActive" type="checkbox" checked><span>Рабочее место активно</span></label>
+            <div class="form-actions"><button class="primary" type="submit">Сохранить</button><button id="workstationReset" type="button">Очистить</button></div>
+          </div>
+        </form>
+        <section class="settings-list-panel"><div class="panel-head"><div><span class="eyebrow">Авторизация</span><h2>Рабочие места</h2></div></div><div id="workstationList" class="settings-list"></div></section>
+      </section>
+
+      <section class="settings-view" data-settings-view="equipment" hidden>
+        <form id="equipmentForm" class="settings-form-panel settings-form-wide">
+          <div class="panel-head"><div><span class="eyebrow">Подключение</span><h2 id="equipmentFormTitle">Новый профиль оборудования</h2></div></div>
+          <div class="settings-form-body settings-form-grid">
+            <input id="equipmentId" type="hidden">
+            <label><span>Код</span><input id="equipmentCode" class="mono" maxlength="48" required></label>
+            <label><span>Название</span><input id="equipmentName" maxlength="160" required></label>
+            <label><span>Тип</span><select id="equipmentKind"><option value="printer">Принтер</option><option value="scanner">Сканер</option><option value="terminal">ТСД</option><option value="scale">Весы</option><option value="other">Другое</option></select></label>
+            <label><span>Подключение</span><select id="equipmentConnection"><option value="raw_tcp">RAW TCP</option><option value="pdf">PDF</option><option value="system_queue">Системная очередь</option><option value="keyboard">Клавиатура</option><option value="camera">Камера</option><option value="web">Веб</option><option value="serial">COM / Serial</option><option value="usb">USB</option></select></label>
+            <label><span>Производитель</span><input id="equipmentManufacturer" maxlength="120"></label>
+            <label><span>Модель</span><input id="equipmentModel" maxlength="120"></label>
+            <label><span>Склад</span><select id="equipmentWarehouse"><option value="">Общий профиль</option></select></label>
+            <label><span>Драйвер</span><input id="equipmentDriver" class="mono" maxlength="80"></label>
+            <label data-connection-field="network"><span>IP / имя хоста</span><input id="equipmentHost" maxlength="255"></label>
+            <label data-connection-field="network"><span>Порт</span><input id="equipmentPort" type="number" min="1" max="65535"></label>
+            <label data-connection-field="queue"><span>Очередь печати</span><input id="equipmentQueue" maxlength="120"></label>
+            <label data-connection-field="serial"><span>Устройство</span><input id="equipmentSerial" class="mono" maxlength="160" placeholder="/dev/ttyUSB0"></label>
+            <label class="settings-span"><span>Дополнительные параметры JSON</span><textarea id="equipmentParameters" rows="3">{{}}</textarea></label>
+            <label class="check-row"><input id="equipmentDefault" type="checkbox"><span>Использовать по умолчанию</span></label>
+            <label class="check-row"><input id="equipmentActive" type="checkbox" checked><span>Профиль активен</span></label>
+            <div class="form-actions settings-span"><button class="primary" type="submit">Сохранить</button><button id="equipmentReset" type="button">Очистить</button></div>
+          </div>
+        </form>
+        <section class="settings-list-panel"><div class="panel-head"><div><span class="eyebrow">Устройства</span><h2>Профили оборудования</h2></div></div><div id="equipmentList" class="settings-list"></div></section>
+      </section>
+    </main>
+    """
+    return document("Настройки Simple WMS", "settings-page", body, "/static/universal-settings.js")

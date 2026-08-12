@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,7 @@ from app.models.enums import (
 )
 from app.schemas import (
     AuthenticationAdminUserCreate,
+    AuthenticationAdminUserUpdate,
     AuthenticationAdminPasswordResetRequest,
     AuthenticationBootstrapRequest,
     AuthenticationPassLoginRequest,
@@ -46,6 +47,7 @@ from app.schemas import (
     UserAccessPassIssueRequest,
     UserWarehouseAssignmentRequest,
     WarehouseWorkstationCreate,
+    WarehouseWorkstationUpdate,
 )
 
 
@@ -201,6 +203,10 @@ def user_payload(db: Session, user: User) -> dict:
         "password_changed_at": user.password_changed_at,
         "last_login_at": user.last_login_at,
         "locked_until": user.locked_until,
+        "default_warehouse_id": next(
+            (access.warehouse_id for access in accesses if access.is_default),
+            None,
+        ),
         "warehouse_ids": [access.warehouse_id for access in accesses],
         "warehouse_codes": [
             warehouses[access.warehouse_id].code
@@ -913,6 +919,8 @@ def _replace_user_warehouses(
     )
     for access in existing:
         db.delete(access)
+    if existing:
+        db.flush()
     for warehouse_id in payload.warehouse_ids:
         db.add(
             UserWarehouseAccess(
@@ -971,6 +979,94 @@ def assign_user_warehouses(
     return user
 
 
+def update_authenticated_user(
+    db: Session,
+    user: User,
+    payload: AuthenticationAdminUserUpdate,
+    actor: User,
+    request: Request,
+) -> User:
+    locked_user = db.scalar(select(User).where(User.id == user.id).with_for_update())
+    if locked_user is None:
+        raise _conflict("user does not exist")
+    if actor.id == locked_user.id and (
+        not payload.is_active or payload.role != UserRole.ADMIN
+    ):
+        raise _forbidden("administrator cannot disable or demote the current account")
+    removes_active_admin = (
+        locked_user.role == UserRole.ADMIN
+        and locked_user.is_active
+        and (payload.role != UserRole.ADMIN or not payload.is_active)
+    )
+    if removes_active_admin:
+        active_admins = db.scalar(
+            select(func.count(User.id)).where(
+                User.role == UserRole.ADMIN,
+                User.is_active.is_(True),
+            )
+        )
+        if active_admins <= 1:
+            raise _conflict("the last active administrator cannot be disabled or demoted")
+
+    before_role = locked_user.role.value
+    was_active = locked_user.is_active
+    locked_user.full_name = payload.full_name
+    locked_user.role = payload.role
+    locked_user.is_active = payload.is_active
+    _replace_user_warehouses(
+        db,
+        locked_user,
+        UserWarehouseAssignmentRequest(
+            warehouse_ids=payload.warehouse_ids,
+            default_warehouse_id=payload.default_warehouse_id,
+        ),
+        actor,
+    )
+    revoked_sessions = 0
+    revoked_passes = 0
+    if not payload.is_active:
+        now = utcnow()
+        sessions = list(
+            db.scalars(
+                select(AuthenticationSession).where(
+                    AuthenticationSession.user_id == locked_user.id,
+                    AuthenticationSession.revoked_at.is_(None),
+                )
+            )
+        )
+        for session in sessions:
+            session.revoked_at = now
+            session.revoke_reason = "user_deactivated"
+        passes = list(
+            db.scalars(
+                select(UserAccessPass).where(
+                    UserAccessPass.user_id == locked_user.id,
+                    UserAccessPass.revoked_at.is_(None),
+                )
+            )
+        )
+        for access_pass in passes:
+            access_pass.revoked_at = now
+            access_pass.revoke_reason = "user_deactivated"
+        revoked_sessions = len(sessions)
+        revoked_passes = len(passes)
+    add_authentication_event(
+        db,
+        event_type=AuthenticationEventType.USER_UPDATED,
+        succeeded=True,
+        request=request,
+        user=locked_user,
+        reason=(
+            f"actor={actor.username}; role={before_role}->{payload.role.value}; "
+            f"active={was_active}->{payload.is_active}; sessions={revoked_sessions}; "
+            f"passes={revoked_passes}"
+        ),
+    )
+    db.commit()
+    db.refresh(locked_user)
+    return locked_user
+
+
 def create_workstation(
     db: Session,
     payload: WarehouseWorkstationCreate,
@@ -986,6 +1082,81 @@ def create_workstation(
         raise _conflict("workstation already exists") from exc
     db.refresh(workstation)
     return workstation
+
+
+def update_workstation(
+    db: Session,
+    workstation: WarehouseWorkstation,
+    payload: WarehouseWorkstationUpdate,
+    actor: User,
+    request: Request,
+) -> WarehouseWorkstation:
+    locked = db.scalar(
+        select(WarehouseWorkstation)
+        .where(WarehouseWorkstation.id == workstation.id)
+        .with_for_update()
+    )
+    if locked is None:
+        raise _conflict("workstation does not exist")
+    if db.get(Warehouse, payload.warehouse_id) is None:
+        raise _conflict("warehouse does not exist")
+    old_warehouse_id = locked.warehouse_id
+    old_active = locked.is_active
+    old_pass_login = locked.pass_login_enabled
+    locked.name = payload.name
+    locked.warehouse_id = payload.warehouse_id
+    locked.pass_login_enabled = payload.pass_login_enabled
+    locked.is_active = payload.is_active
+    disruptive = (
+        not payload.is_active
+        or not payload.pass_login_enabled
+        or old_warehouse_id != payload.warehouse_id
+    )
+    revoked_passes = 0
+    revoked_sessions = 0
+    if disruptive:
+        now = utcnow()
+        passes = list(
+            db.scalars(
+                select(UserAccessPass).where(
+                    UserAccessPass.workstation_id == locked.id,
+                    UserAccessPass.revoked_at.is_(None),
+                )
+            )
+        )
+        for access_pass in passes:
+            access_pass.revoked_at = now
+            access_pass.revoke_reason = "workstation_updated"
+        sessions = list(
+            db.scalars(
+                select(AuthenticationSession).where(
+                    AuthenticationSession.workstation_id == locked.id,
+                    AuthenticationSession.revoked_at.is_(None),
+                )
+            )
+        )
+        for session in sessions:
+            session.revoked_at = now
+            session.revoke_reason = "workstation_updated"
+        revoked_passes = len(passes)
+        revoked_sessions = len(sessions)
+    add_authentication_event(
+        db,
+        event_type=AuthenticationEventType.WORKSTATION_UPDATED,
+        succeeded=True,
+        request=request,
+        username=actor.username,
+        workstation_code=locked.code,
+        reason=(
+            f"warehouse={old_warehouse_id}->{payload.warehouse_id}; "
+            f"active={old_active}->{payload.is_active}; "
+            f"pass_login={old_pass_login}->{payload.pass_login_enabled}; "
+            f"sessions={revoked_sessions}; passes={revoked_passes}"
+        ),
+    )
+    db.commit()
+    db.refresh(locked)
+    return locked
 
 
 def issue_access_pass(

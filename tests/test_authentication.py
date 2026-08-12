@@ -394,6 +394,15 @@ def test_enforcement_blocks_anonymous_role_and_foreign_warehouse(db, client):
 
     scoped_client = TestClient(app)
     login(scoped_client, username="scoped-user", password="Scoped-pass-2026")
+    assert scoped_client.get("/api/auth/admin/users").status_code == 403
+    assert scoped_client.put(
+        f"/api/warehouses/{own.id}",
+        json={
+            "name": "Недоступное изменение",
+            "city": None,
+            "timezone": "Europe/Moscow",
+        },
+    ).status_code == 403
     forbidden = scoped_client.post(
         "/api/logistic-tasks",
         json={
@@ -464,6 +473,7 @@ def test_legacy_user_api_is_removed_and_senior_cannot_issue_admin_pass(db, clien
 def test_login_and_profile_pages_are_available(client):
     login_page = client.get("/login")
     profile_page = client.get("/profile")
+    settings_page = client.get("/settings")
 
     assert login_page.status_code == 200
     assert 'id="passwordLogin"' in login_page.text
@@ -472,3 +482,113 @@ def test_login_and_profile_pages_are_available(client):
     assert 'id="issuePassForm"' in profile_page.text
     assert 'id="passwordChangeForm"' in profile_page.text
     assert "/static/universal-auth.js" in profile_page.text
+    assert settings_page.status_code == 200
+    assert 'id="warehouseForm"' in settings_page.text
+    assert 'id="userForm"' in settings_page.text
+    assert 'id="workstationForm"' in settings_page.text
+    assert 'id="equipmentForm"' in settings_page.text
+    assert "/static/universal-settings.js" in settings_page.text
+
+
+def test_administration_updates_warehouse_user_and_revokes_workstation_access(db, client):
+    administrator = bootstrap(client)
+    login(client)
+    warehouse_response = client.post(
+        "/api/warehouses",
+        json={
+            "code": "WH-ADMIN",
+            "name": "Склад настроек",
+            "city": "Москва",
+            "timezone": "Europe/Moscow",
+        },
+    )
+    assert warehouse_response.status_code == 200
+    warehouse = warehouse_response.json()
+    updated_warehouse = client.put(
+        f"/api/warehouses/{warehouse['id']}",
+        json={
+            "name": "Главный склад настроек",
+            "city": "Тверь",
+            "timezone": "Europe/Moscow",
+        },
+    )
+    assert updated_warehouse.status_code == 200
+    assert updated_warehouse.json()["code"] == "WH-ADMIN"
+    assert updated_warehouse.json()["city"] == "Тверь"
+
+    worker = client.post(
+        "/api/auth/admin/users",
+        json={
+            "username": "settings-worker",
+            "full_name": "Кладовщик настроек",
+            "role": "warehouse_clerk",
+            "password": "Settings-pass-2026",
+            "warehouse_ids": [warehouse["id"]],
+            "default_warehouse_id": warehouse["id"],
+            "must_change_password": False,
+        },
+    ).json()
+    updated_worker = client.put(
+        f"/api/auth/admin/users/{worker['id']}",
+        json={
+            "full_name": "Старший оператор настроек",
+            "role": "senior_clerk",
+            "is_active": True,
+            "warehouse_ids": [warehouse["id"]],
+            "default_warehouse_id": warehouse["id"],
+        },
+    )
+    assert updated_worker.status_code == 200
+    assert updated_worker.json()["role"] == "senior_clerk"
+    assert updated_worker.json()["default_warehouse_id"] == warehouse["id"]
+    assert updated_worker.json()["warehouse_codes"] == ["WH-ADMIN"]
+    assert client.put(
+        f"/api/auth/admin/users/{administrator['id']}",
+        json={
+            "full_name": "Отключённый администратор",
+            "role": "warehouse_clerk",
+            "is_active": False,
+            "warehouse_ids": [],
+        },
+    ).status_code == 403
+
+    workstation = client.post(
+        "/api/auth/admin/workstations",
+        json={
+            "code": "TSD-ADMIN-01",
+            "name": "Рабочее место настроек",
+            "warehouse_id": warehouse["id"],
+        },
+    ).json()
+    issued = client.post(
+        f"/api/auth/admin/users/{worker['id']}/passes/issue",
+        json={"workstation_code": workstation["code"]},
+    ).json()
+    pass_client = TestClient(app)
+    assert pass_client.post(
+        "/api/auth/login/pass",
+        json={
+            "access_code": issued["login_code"],
+            "workstation_code": workstation["code"],
+        },
+    ).status_code == 200
+
+    disabled = client.put(
+        f"/api/auth/admin/workstations/{workstation['id']}",
+        json={
+            "name": workstation["name"],
+            "warehouse_id": warehouse["id"],
+            "pass_login_enabled": False,
+            "is_active": False,
+        },
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["is_active"] is False
+    assert pass_client.get("/api/auth/me").status_code == 401
+    assert TestClient(app).post(
+        "/api/auth/login/pass",
+        json={
+            "access_code": issued["login_code"],
+            "workstation_code": workstation["code"],
+        },
+    ).status_code == 401

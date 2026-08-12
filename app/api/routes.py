@@ -118,6 +118,7 @@ from app.schemas import (
     WarehouseMapLocationCreate,
     WarehouseMapRowCreate,
     WarehouseRead,
+    WarehouseUpdate,
     ZoneCreate,
     ZoneRead,
 )
@@ -145,6 +146,7 @@ from app.services import (
     bad_request,
     not_found,
     update_equipment_profile,
+    update_warehouse,
     disassemble_logistic_unit,
     get_logistic_unit,
     hold_logistic_unit,
@@ -1736,6 +1738,15 @@ def api_create_warehouse(payload: WarehouseCreate, db: Session = Depends(get_db)
 @router.get("/warehouses", response_model=list[WarehouseRead])
 def api_list_warehouses(db: Session = Depends(get_db)) -> list[Warehouse]:
     return list(db.scalars(select(Warehouse).order_by(Warehouse.code)))
+
+
+@router.put("/warehouses/{warehouse_id}", response_model=WarehouseRead)
+def api_update_warehouse(
+    warehouse_id: int,
+    payload: WarehouseUpdate,
+    db: Session = Depends(get_db),
+) -> Warehouse:
+    return update_warehouse(db, warehouse_id, payload)
 
 
 @router.post("/zones", response_model=ZoneRead)

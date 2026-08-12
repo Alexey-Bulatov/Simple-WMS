@@ -81,6 +81,7 @@ from app.schemas import (
     UserCreate,
     UnitOfMeasureCreate,
     WarehouseCreate,
+    WarehouseUpdate,
     ZoneCreate,
 )
 from app.stock import (
@@ -1433,6 +1434,18 @@ def create_warehouse(db: Session, payload: WarehouseCreate) -> Warehouse:
     warehouse = Warehouse(**data)
     db.add(warehouse)
     commit_or_409(db, "warehouse already exists")
+    db.refresh(warehouse)
+    return warehouse
+
+
+def update_warehouse(db: Session, warehouse_id: int, payload: WarehouseUpdate) -> Warehouse:
+    warehouse = db.get(Warehouse, warehouse_id)
+    if warehouse is None:
+        raise not_found("warehouse")
+    warehouse.name = payload.name.strip()
+    warehouse.city = payload.city.strip() if payload.city and payload.city.strip() else None
+    warehouse.timezone = payload.timezone.strip()
+    db.commit()
     db.refresh(warehouse)
     return warehouse
 

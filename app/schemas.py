@@ -53,6 +53,7 @@ class AuthenticationUserRead(BaseModel):
     password_changed_at: datetime | None
     last_login_at: datetime | None
     locked_until: datetime | None
+    default_warehouse_id: int | None
     warehouse_ids: list[int]
     warehouse_codes: list[str]
 
@@ -171,6 +172,21 @@ class WarehouseWorkstationRead(WarehouseWorkstationCreate):
     created_at: datetime
 
 
+class WarehouseWorkstationUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    warehouse_id: int = Field(gt=0)
+    pass_login_enabled: bool = True
+    is_active: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 2:
+            raise ValueError("workstation name must contain at least two visible characters")
+        return normalized
+
+
 class UserWarehouseAssignmentRequest(BaseModel):
     warehouse_ids: list[int] = Field(default_factory=list)
     default_warehouse_id: int | None = Field(default=None, gt=0)
@@ -204,6 +220,30 @@ class AuthenticationAdminUserCreate(BaseModel):
         if len(normalized) < 2:
             raise ValueError("username must contain at least two visible characters")
         return normalized
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 2:
+            raise ValueError("full name must contain at least two visible characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_warehouses(self):
+        UserWarehouseAssignmentRequest(
+            warehouse_ids=self.warehouse_ids,
+            default_warehouse_id=self.default_warehouse_id,
+        )
+        return self
+
+
+class AuthenticationAdminUserUpdate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=160)
+    role: UserRole
+    is_active: bool = True
+    warehouse_ids: list[int] = Field(default_factory=list)
+    default_warehouse_id: int | None = Field(default=None, gt=0)
 
     @field_validator("full_name")
     @classmethod
@@ -1021,6 +1061,12 @@ class WarehouseRead(WarehouseCreate):
     id: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    city: str | None = Field(default=None, max_length=120)
+    timezone: str = Field(default="Europe/Moscow", min_length=1, max_length=80)
 
 
 class ZoneCreate(BaseModel):

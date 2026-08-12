@@ -12,6 +12,9 @@
       }
       const user = await response.json();
       if (profileLink) profileLink.textContent = user.full_name;
+      document.querySelectorAll("[data-admin-link]").forEach((link) => {
+        link.hidden = user.role !== "admin";
+      });
       document.querySelectorAll("#actorInput, #demoActor").forEach((input) => {
         input.value = user.username;
         input.readOnly = true;

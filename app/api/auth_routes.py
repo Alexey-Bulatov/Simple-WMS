@@ -21,6 +21,8 @@ from app.auth import (
     reset_user_password,
     revoke_user_sessions,
     user_payload,
+    update_authenticated_user,
+    update_workstation,
     workstation_payload,
 )
 from app.core.config import Settings, get_settings
@@ -36,6 +38,7 @@ from app.models.enums import UserRole
 from app.schemas import (
     AuthenticationAdminPasswordResetRequest,
     AuthenticationAdminUserCreate,
+    AuthenticationAdminUserUpdate,
     AuthenticationBootstrapRequest,
     AuthenticationEventRead,
     AuthenticationPassLoginRequest,
@@ -50,6 +53,7 @@ from app.schemas import (
     UserWarehouseAssignmentRequest,
     WarehouseWorkstationCreate,
     WarehouseWorkstationRead,
+    WarehouseWorkstationUpdate,
 )
 
 
@@ -278,6 +282,21 @@ def api_list_authenticated_users(
     return [user_payload(db, user) for user in users]
 
 
+@router.put("/admin/users/{user_id}", response_model=AuthenticationUserRead)
+def api_update_authenticated_user(
+    user_id: int,
+    payload: AuthenticationAdminUserUpdate,
+    request: Request,
+    context: AuthenticationContext = Depends(require_administrator),
+    db: Session = Depends(get_db),
+) -> dict:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    updated = update_authenticated_user(db, user, payload, context.user, request)
+    return user_payload(db, updated)
+
+
 @router.put(
     "/admin/users/{user_id}/warehouses",
     response_model=AuthenticationUserRead,
@@ -366,6 +385,24 @@ def api_list_workstations(
 ) -> list[dict]:
     workstations = db.scalars(select(WarehouseWorkstation).order_by(WarehouseWorkstation.code))
     return [workstation_payload(db, workstation) for workstation in workstations]
+
+
+@router.put(
+    "/admin/workstations/{workstation_id}",
+    response_model=WarehouseWorkstationRead,
+)
+def api_update_workstation(
+    workstation_id: int,
+    payload: WarehouseWorkstationUpdate,
+    request: Request,
+    context: AuthenticationContext = Depends(require_administrator),
+    db: Session = Depends(get_db),
+) -> dict:
+    workstation = db.get(WarehouseWorkstation, workstation_id)
+    if workstation is None:
+        raise HTTPException(status_code=404, detail="workstation not found")
+    updated = update_workstation(db, workstation, payload, context.user, request)
+    return workstation_payload(db, updated)
 
 
 @router.get("/admin/events", response_model=list[AuthenticationEventRead])

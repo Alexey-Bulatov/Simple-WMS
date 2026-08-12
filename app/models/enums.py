@@ -81,6 +81,8 @@ class AuthenticationEventType(StrEnum):
     SESSIONS_REVOKED = "sessions_revoked"
     ACCESS_PASS_ISSUED = "access_pass_issued"
     ACCESS_PASS_REVOKED = "access_pass_revoked"
+    USER_UPDATED = "user_updated"
+    WORKSTATION_UPDATED = "workstation_updated"
 
 
 class UserRole(StrEnum):
