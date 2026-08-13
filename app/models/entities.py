@@ -29,6 +29,8 @@ from app.models.enums import (
     InventoryLineStatus,
     InventoryLocationStatus,
     InventoryStatus,
+    InboundReceiptKind,
+    InboundReceiptStatus,
     LocationKind,
     LogisticUnitStatus,
     ShipmentStatus,
@@ -953,6 +955,104 @@ class EquipmentProfile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     warehouse: Mapped[Warehouse | None] = relationship()
+
+
+class InboundReceipt(Base):
+    __tablename__ = "inbound_receipts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    receipt_kind: Mapped[InboundReceiptKind] = mapped_column(
+        Enum(InboundReceiptKind, native_enum=False, length=24),
+        index=True,
+    )
+    status: Mapped[InboundReceiptStatus] = mapped_column(
+        Enum(InboundReceiptStatus, native_enum=False, length=24),
+        default=InboundReceiptStatus.DRAFT,
+        index=True,
+    )
+    source_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    external_reference: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    command_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(80), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posted_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    warehouse: Mapped[Warehouse] = relationship()
+    posted_stock_document: Mapped[StockDocument | None] = relationship()
+    lines: Mapped[list["InboundReceiptLine"]] = relationship(
+        back_populates="receipt",
+        cascade="all, delete-orphan",
+        order_by="InboundReceiptLine.line_no",
+    )
+
+
+class InboundReceiptLine(Base):
+    __tablename__ = "inbound_receipt_lines"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", "line_no", name="uq_inbound_receipt_line_no"),
+        CheckConstraint("input_quantity > 0", name="ck_inbound_receipt_input_quantity"),
+        CheckConstraint(
+            "expected_base_quantity > 0",
+            name="ck_inbound_receipt_expected_base_quantity",
+        ),
+        CheckConstraint(
+            "conversion_factor > 0",
+            name="ck_inbound_receipt_conversion_factor",
+        ),
+        CheckConstraint(
+            "expiry_date IS NULL OR production_date IS NULL OR expiry_date >= production_date",
+            name="ck_inbound_receipt_batch_dates",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("inbound_receipts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    line_no: Mapped[int] = mapped_column(Integer)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("stock_owners.id"), index=True)
+    input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    packaging_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_packagings.id"),
+        nullable=True,
+        index=True,
+    )
+    expected_base_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    batch_number: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    production_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    quality_status: Mapped[str] = mapped_column(String(40), default="released", index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    receipt: Mapped[InboundReceipt] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship()
+    owner: Mapped[StockOwner] = relationship()
+    input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
+    base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
+    packaging: Mapped[ProductPackaging | None] = relationship()
 
 
 class Zone(Base):

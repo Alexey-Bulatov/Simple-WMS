@@ -12,6 +12,8 @@ from app.models.enums import (
     InventoryLineStatus,
     InventoryLocationStatus,
     InventoryStatus,
+    InboundReceiptKind,
+    InboundReceiptStatus,
     LocationKind,
     LogisticUnitStatus,
     MeasurementDimension,
@@ -807,6 +809,84 @@ class InternalReturnCreate(BaseModel):
         return normalized
 
 
+class InboundReceiptLineCreate(BaseModel):
+    product_id: int = Field(gt=0)
+    owner_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int | None = Field(default=None, gt=0)
+    packaging_id: int | None = Field(default=None, gt=0)
+    batch_number: str | None = Field(default=None, max_length=80)
+    production_date: date | None = None
+    expiry_date: date | None = None
+    serial_number: str | None = Field(default=None, max_length=120)
+    quality_status: Literal["released", "quarantine"] = "released"
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("batch_number", "serial_number")
+    @classmethod
+    def normalize_optional_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("note")
+    @classmethod
+    def normalize_optional_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_quantity_source_and_dates(self):
+        if (self.input_uom_id is None) == (self.packaging_id is None):
+            raise ValueError("use either input_uom_id or packaging_id")
+        if (
+            self.production_date is not None
+            and self.expiry_date is not None
+            and self.expiry_date < self.production_date
+        ):
+            raise ValueError("expiry_date must not precede production_date")
+        return self
+
+
+class InboundReceiptCreate(BaseModel):
+    warehouse_code: str = Field(min_length=1, max_length=32)
+    receipt_kind: InboundReceiptKind
+    source_name: str | None = Field(default=None, max_length=200)
+    external_reference: str | None = Field(default=None, max_length=120)
+    planned_date: date | None = None
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    note: str | None = Field(default=None, max_length=1000)
+    lines: list[InboundReceiptLineCreate] = Field(min_length=1, max_length=500)
+
+    @field_validator("warehouse_code")
+    @classmethod
+    def normalize_warehouse_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("warehouse_code must not be blank")
+        return normalized
+
+    @field_validator("idempotency_key", "actor")
+    @classmethod
+    def normalize_required_receipt_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("source_name", "external_reference", "note")
+    @classmethod
+    def normalize_optional_receipt_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class StockReservationCreate(BaseModel):
     stock_position_id: int = Field(gt=0)
     input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
@@ -1280,6 +1360,58 @@ class InternalAccountabilityWriteoffRead(BaseModel):
     written_off_quantities: dict[str, Decimal]
     created_at: datetime
     posted_at: datetime | None
+
+
+class InboundReceiptLineRead(BaseModel):
+    id: int
+    line_no: int
+    product_id: int
+    product_code: str
+    product_name: str
+    owner_id: int
+    owner_code: str
+    owner_name: str
+    input_quantity: Decimal
+    input_uom_id: int
+    input_uom_code: str
+    input_uom_symbol: str
+    packaging_id: int | None
+    packaging_code: str | None
+    packaging_name: str | None
+    expected_base_quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    base_uom_symbol: str
+    conversion_factor: Decimal
+    batch_number: str | None
+    production_date: date | None
+    expiry_date: date | None
+    serial_number: str | None
+    quality_status: Literal["released", "quarantine"]
+    note: str | None
+
+
+class InboundReceiptRead(BaseModel):
+    id: int
+    uid: str
+    warehouse_id: int
+    warehouse_code: str
+    warehouse_name: str
+    receipt_kind: InboundReceiptKind
+    status: InboundReceiptStatus
+    source_name: str | None
+    external_reference: str | None
+    planned_date: date | None
+    idempotency_key: str
+    actor: str
+    note: str | None
+    posted_stock_document_uid: str | None
+    line_count: int
+    created_at: datetime
+    updated_at: datetime
+    posted_at: datetime | None
+    cancelled_at: datetime | None
+    lines: list[InboundReceiptLineRead]
 
 
 class StockReconciliationIssueRead(BaseModel):

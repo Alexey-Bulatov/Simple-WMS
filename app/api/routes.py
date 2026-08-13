@@ -19,6 +19,7 @@ from app.models.entities import (
     Aisle,
     Batch,
     EquipmentProfile,
+    InboundReceipt,
     LogisticInventory,
     LogisticTask,
     LogisticShipment,
@@ -110,6 +111,8 @@ from app.schemas import (
     InternalAccountabilityWriteoffRead,
     InternalReturnCreate,
     InternalReturnRead,
+    InboundReceiptCreate,
+    InboundReceiptRead,
     StockReservationConsumeRequest,
     StockReservationCreate,
     StockReservationLogisticUnitRequest,
@@ -187,6 +190,11 @@ from app.internal_issues import (
     internal_return_payload,
     reverse_internal_issue,
 )
+from app.inbound_receipts import (
+    create_inbound_receipt,
+    get_inbound_receipt,
+    inbound_receipt_payload,
+)
 from app.stock_ledger import (
     reverse_stock_document,
     stock_document_payload,
@@ -244,6 +252,8 @@ from app.logistic_tasks import (
 )
 from app.models.enums import (
     LocationKind,
+    InboundReceiptKind,
+    InboundReceiptStatus,
     LogisticUnitStatus,
     StockDocumentStatus,
     StockReservationKind,
@@ -323,6 +333,62 @@ def warehouse_payload_visible(
     if any_assigned:
         return not actual_ids.isdisjoint(scope)
     return bool(actual_ids) and actual_ids.issubset(scope)
+
+
+@router.post("/inbound-receipts", response_model=InboundReceiptRead)
+def api_create_inbound_receipt(
+    payload: InboundReceiptCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    return inbound_receipt_payload(db, create_inbound_receipt(db, payload))
+
+
+@router.get("/inbound-receipts", response_model=list[InboundReceiptRead])
+def api_list_inbound_receipts(
+    request: Request,
+    warehouse_code: str | None = Query(default=None),
+    receipt_kind: InboundReceiptKind | None = Query(default=None),
+    status_filter: InboundReceiptStatus | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(InboundReceipt)
+    if warehouse_code is not None:
+        warehouse_id = db.scalar(
+            select(Warehouse.id).where(
+                Warehouse.code == warehouse_code.strip().upper()
+            )
+        )
+        if warehouse_id is None:
+            return []
+        query = query.where(InboundReceipt.warehouse_id == warehouse_id)
+    if receipt_kind is not None:
+        query = query.where(InboundReceipt.receipt_kind == receipt_kind)
+    if status_filter is not None:
+        query = query.where(InboundReceipt.status == status_filter)
+    receipts = db.scalars(
+        query.order_by(InboundReceipt.created_at.desc(), InboundReceipt.id.desc()).limit(limit)
+    )
+    return [
+        inbound_receipt_payload(db, receipt)
+        for receipt in receipts
+        if warehouse_payload_visible(request, [receipt.warehouse_id])
+    ]
+
+
+@router.get(
+    "/inbound-receipts/{receipt_uid}",
+    response_model=InboundReceiptRead,
+)
+def api_get_inbound_receipt(
+    request: Request,
+    receipt_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    receipt = get_inbound_receipt(db, receipt_uid)
+    if not warehouse_payload_visible(request, [receipt.warehouse_id]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    return inbound_receipt_payload(db, receipt)
 
 
 @router.get("/meta/constants")

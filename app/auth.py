@@ -17,6 +17,7 @@ from app.models.entities import (
     AuthenticationEvent,
     AuthenticationSession,
     EquipmentProfile,
+    InboundReceipt,
     Location,
     LogisticInventory,
     LogisticShipment,
@@ -710,6 +711,8 @@ def mutation_permission(request: Request) -> WarehousePermission | None:
         if tail and tail[-1] in {"reverse", "write-off"}:
             return WarehousePermission.STOCK_CORRECT
         return WarehousePermission.STOCK_CONSUME
+    if root == "inbound-receipts":
+        return WarehousePermission.LOGISTIC_UNIT_RECEIVE
     if root == "stock-documents" and tail and tail[-1] == "reverse":
         return WarehousePermission.STOCK_CORRECT
     if root == "locations" and tail and tail[-1] == "label.print":
@@ -999,6 +1002,12 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
         )
         if item:
             result.update(stock_document_warehouse_ids(db, item))
+    elif root == "inbound-receipts" and object_uid:
+        item = db.scalar(
+            select(InboundReceipt).where(InboundReceipt.uid == object_uid.upper())
+        )
+        if item:
+            result.add(item.warehouse_id)
     elif root == "stock-movements" and object_uid and object_uid.isdigit():
         item = db.get(StockMovement, int(object_uid))
         if item:
@@ -1054,6 +1063,7 @@ async def authorize_api_request(
             "stock-documents",
             "stock-movements",
             "internal-issues",
+            "inbound-receipts",
             "locations",
         }
         if (

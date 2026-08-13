@@ -51,6 +51,18 @@ class StockDocumentStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class InboundReceiptKind(StrEnum):
+    EXPECTED = "expected"
+    UNPLANNED = "unplanned"
+
+
+class InboundReceiptStatus(StrEnum):
+    DRAFT = "draft"
+    RECEIVING = "receiving"
+    POSTED = "posted"
+    CANCELLED = "cancelled"
+
+
 class StockReservationStatus(StrEnum):
     ACTIVE = "active"
     RELEASED = "released"
