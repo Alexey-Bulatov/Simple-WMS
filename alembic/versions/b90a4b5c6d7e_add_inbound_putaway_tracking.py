@@ -23,7 +23,7 @@ def upgrade() -> None:
             sa.Column("placed_at", sa.DateTime(timezone=True), nullable=True)
         )
         batch_op.create_foreign_key(
-            "fk_inbound_receipt_results_placement_stock_document_id_stock_documents",
+            "fk_inbound_result_putaway_document",
             "stock_documents",
             ["placement_stock_document_id"],
             ["id"],
@@ -42,7 +42,7 @@ def downgrade() -> None:
             op.f("ix_inbound_receipt_results_placement_stock_document_id")
         )
         batch_op.drop_constraint(
-            "fk_inbound_receipt_results_placement_stock_document_id_stock_documents",
+            "fk_inbound_result_putaway_document",
             type_="foreignkey",
         )
         batch_op.drop_column("placed_at")
