@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import (
     Batch,
+    InboundReceipt,
     Location,
     LogisticUnit,
     LogisticUnitContent,
@@ -27,6 +28,7 @@ from app.models.entities import (
     utcnow,
 )
 from app.models.enums import (
+    InboundReceiptStatus,
     MeasurementDimension,
     StockDocumentStatus,
     StockReservationStatus,
@@ -517,6 +519,22 @@ def _reverse_content_projection(
     actor: str,
     reason: str,
 ) -> None:
+    if original.document_type == "inbound_receipt":
+        for movement in original.movements:
+            if movement.destination_logistic_unit_id is None:
+                continue
+            _adjust_content_projection(
+                db,
+                movement,
+                movement.destination_logistic_unit_id,
+                direction=Decimal("-1"),
+                operation="inbound_receipt_content_reversed",
+                original=original,
+                reversal=reversal,
+                actor=actor,
+                reason=reason,
+            )
+        return
     if original.document_type not in {
         "logistic_unit_content_add",
         "logistic_unit_content_remove",
@@ -535,6 +553,32 @@ def _reverse_content_projection(
         direction = Decimal("1")
     if logistic_unit_id is None:
         raise _conflict("content movement does not reference a logistic unit")
+
+    _adjust_content_projection(
+        db,
+        movement,
+        logistic_unit_id,
+        direction=direction,
+        operation=operation,
+        original=original,
+        reversal=reversal,
+        actor=actor,
+        reason=reason,
+    )
+
+
+def _adjust_content_projection(
+    db: Session,
+    movement: StockMovement,
+    logistic_unit_id: int,
+    *,
+    direction: Decimal,
+    operation: str,
+    original: StockDocument,
+    reversal: StockDocument,
+    actor: str,
+    reason: str,
+) -> None:
 
     line = db.scalar(
         _content_line_query(movement, logistic_unit_id)
@@ -574,6 +618,45 @@ def _reverse_content_projection(
                 "quantity": str(after_quantity),
                 "original_document_uid": original.uid,
                 "reversal_document_uid": reversal.uid,
+            },
+        )
+    )
+
+
+def _reverse_inbound_receipt(
+    db: Session,
+    original: StockDocument,
+    reversal: StockDocument,
+    *,
+    actor: str,
+    reason: str,
+) -> None:
+    if original.document_type != "inbound_receipt":
+        return
+    receipt = db.scalar(
+        select(InboundReceipt)
+        .where(InboundReceipt.posted_stock_document_id == original.id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if receipt is None or receipt.status != InboundReceiptStatus.POSTED:
+        raise _conflict("posted inbound receipt not found for reversal")
+    receipt.status = InboundReceiptStatus.REVERSED
+    create_time = utcnow()
+    receipt.reversed_at = create_time
+    db.add(
+        OperationEvent(
+            operation="inbound_receipt_reversed",
+            object_type="inbound_receipt",
+            object_uid=receipt.uid,
+            actor=actor,
+            reason=reason,
+            before={"status": InboundReceiptStatus.POSTED.value},
+            after={
+                "status": InboundReceiptStatus.REVERSED.value,
+                "stock_document_uid": original.uid,
+                "reversal_document_uid": reversal.uid,
+                "reversed_at": create_time.isoformat(),
             },
         )
     )
@@ -787,6 +870,13 @@ def reverse_stock_document(
 
     def mark_reversed(reversal: StockDocument) -> None:
         _reverse_content_projection(
+            db,
+            original,
+            reversal,
+            actor=payload.actor,
+            reason=payload.reason,
+        )
+        _reverse_inbound_receipt(
             db,
             original,
             reversal,

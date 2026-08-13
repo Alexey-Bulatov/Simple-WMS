@@ -887,6 +887,64 @@ class InboundReceiptCreate(BaseModel):
         return normalized or None
 
 
+class InboundReceiptActualLineCreate(BaseModel):
+    receipt_line_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int | None = Field(default=None, gt=0)
+    packaging_id: int | None = Field(default=None, gt=0)
+    batch_number: str | None = Field(default=None, max_length=80)
+    production_date: date | None = None
+    expiry_date: date | None = None
+    serial_number: str | None = Field(default=None, max_length=120)
+    quality_status: Literal["released", "quarantine"] | None = None
+    destination_scan: str = Field(min_length=1, max_length=120)
+    item_scan: str = Field(min_length=1, max_length=120)
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("batch_number", "serial_number", "destination_scan", "item_scan")
+    @classmethod
+    def normalize_actual_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("note")
+    @classmethod
+    def normalize_actual_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_actual_quantity_source_and_dates(self):
+        if (self.input_uom_id is None) == (self.packaging_id is None):
+            raise ValueError("use either input_uom_id or packaging_id")
+        if (
+            self.production_date is not None
+            and self.expiry_date is not None
+            and self.expiry_date < self.production_date
+        ):
+            raise ValueError("expiry_date must not precede production_date")
+        return self
+
+
+class InboundReceiptPost(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+    lines: list[InboundReceiptActualLineCreate] = Field(min_length=1, max_length=1000)
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_receipt_post_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
 class StockReservationCreate(BaseModel):
     stock_position_id: int = Field(gt=0)
     input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
@@ -1362,6 +1420,37 @@ class InternalAccountabilityWriteoffRead(BaseModel):
     posted_at: datetime | None
 
 
+class InboundReceiptResultRead(BaseModel):
+    id: int
+    sequence_no: int
+    stock_movement_id: int
+    input_quantity: Decimal
+    input_uom_id: int
+    input_uom_code: str
+    input_uom_symbol: str
+    packaging_id: int | None
+    packaging_code: str | None
+    packaging_name: str | None
+    received_base_quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    base_uom_symbol: str
+    conversion_factor: Decimal
+    batch_id: int | None
+    batch_number: str | None
+    production_date: date | None
+    expiry_date: date | None
+    serial_number: str | None
+    quality_status: Literal["released", "quarantine"]
+    destination_logistic_unit_id: int | None
+    destination_logistic_unit_uid: str | None
+    destination_location_id: int | None
+    destination_location_code: str | None
+    destination_scan: str
+    item_scan: str
+    note: str | None
+
+
 class InboundReceiptLineRead(BaseModel):
     id: int
     line_no: int
@@ -1389,6 +1478,13 @@ class InboundReceiptLineRead(BaseModel):
     serial_number: str | None
     quality_status: Literal["released", "quarantine"]
     note: str | None
+    received_base_quantity: Decimal | None
+    variance_base_quantity: Decimal | None
+    quantity_result: Literal["pending", "exact", "shortage", "excess"]
+    batch_result: Literal["pending", "not_expected", "exact", "mismatch"]
+    serial_result: Literal["pending", "not_expected", "exact", "mismatch"]
+    quality_result: Literal["pending", "exact", "mismatch"]
+    results: list[InboundReceiptResultRead]
 
 
 class InboundReceiptRead(BaseModel):
@@ -1407,9 +1503,15 @@ class InboundReceiptRead(BaseModel):
     note: str | None
     posted_stock_document_uid: str | None
     line_count: int
+    exact_line_count: int
+    shortage_line_count: int
+    excess_line_count: int
+    discrepancy_count: int
+    has_discrepancies: bool
     created_at: datetime
     updated_at: datetime
     posted_at: datetime | None
+    reversed_at: datetime | None
     cancelled_at: datetime | None
     lines: list[InboundReceiptLineRead]
 

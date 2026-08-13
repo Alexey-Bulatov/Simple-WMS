@@ -11,11 +11,20 @@ from sqlalchemy.pool import StaticPool
 from app.api import auth_routes, routes as api_routes
 from app.core.config import Settings, get_settings
 from app.db.session import Base, get_db
-from app.inbound_receipts import create_inbound_receipt, inbound_receipt_payload
+from app.inbound_receipts import (
+    create_inbound_receipt,
+    inbound_receipt_payload,
+    post_inbound_receipt,
+)
 from app.main import app
 from app.models.entities import (
     InboundReceipt,
     InboundReceiptLine,
+    Batch,
+    Location,
+    LogisticUnit,
+    LogisticUnitContent,
+    LogisticUnitType,
     OperationEvent,
     ProductPackaging,
     StockDocument,
@@ -24,14 +33,25 @@ from app.models.entities import (
     StockPosition,
     UnitOfMeasure,
     Warehouse,
+    Zone,
 )
-from app.models.enums import InboundReceiptKind, InboundReceiptStatus
+from app.models.enums import (
+    InboundReceiptKind,
+    InboundReceiptStatus,
+    LocationKind,
+    LogisticUnitStatus,
+    StockDocumentStatus,
+)
 from app.schemas import (
+    InboundReceiptActualLineCreate,
     InboundReceiptCreate,
     InboundReceiptLineCreate,
+    InboundReceiptPost,
     ProductCreate,
+    StockDocumentReverseRequest,
 )
 from app.services import create_product, ensure_reference_catalogs
+from app.stock_ledger import reverse_stock_document
 
 
 @pytest.fixture()
@@ -151,6 +171,75 @@ def receipt_payload(
     )
 
 
+def create_receiving_destination(db, warehouse):
+    zone = Zone(
+        warehouse_id=warehouse.id,
+        code="RCV",
+        name="Приёмка",
+        kind=LocationKind.RECEIVING,
+    )
+    db.add(zone)
+    db.flush()
+    location = Location(
+        warehouse_id=warehouse.id,
+        zone_id=zone.id,
+        code=f"{warehouse.code}-RCV-P01",
+        name="Ячейка приёмки",
+        kind=LocationKind.RECEIVING,
+        capacity_units=10,
+    )
+    box_type = db.scalar(select(LogisticUnitType).where(LogisticUnitType.code == "BOX"))
+    unit = LogisticUnit(
+        uid="BOX-RCV-001",
+        type_id=box_type.id,
+        warehouse_id=warehouse.id,
+        current_location_id=None,
+        status=LogisticUnitStatus.OPEN,
+    )
+    db.add_all([location, unit])
+    db.flush()
+    unit.current_location_id = location.id
+    db.commit()
+    return location, unit
+
+
+def actual_payload(
+    receipt,
+    pieces,
+    destination_scan,
+    *,
+    key="receipt:post:001",
+    quantity="5",
+    packaging_id=None,
+    batch_number=None,
+    production_date=None,
+    expiry_date=None,
+    serial_number=None,
+    quality_status=None,
+    item_scan="FILTER-001",
+):
+    return InboundReceiptPost(
+        idempotency_key=key,
+        actor="receiver",
+        reason="Фактическая приёмка",
+        lines=[
+            InboundReceiptActualLineCreate(
+                receipt_line_id=receipt.lines[0].id,
+                input_quantity=Decimal(quantity),
+                input_uom_id=None if packaging_id else pieces.id,
+                packaging_id=packaging_id,
+                batch_number=batch_number,
+                production_date=production_date,
+                expiry_date=expiry_date,
+                serial_number=serial_number,
+                quality_status=quality_status,
+                destination_scan=destination_scan,
+                item_scan=item_scan,
+            )
+        ],
+    )
+
+
 def test_create_expected_receipt_keeps_quantities_without_posting_stock(db):
     warehouse, product, _, owner, pieces, _, _ = create_context(db)
 
@@ -264,6 +353,7 @@ def test_receipt_rejects_wrong_packaging_and_serial_quantity(db):
                 packaging_id=wrong_packaging.id,
             ),
         )
+
     with pytest.raises(HTTPException, match="must contain one base unit"):
         create_inbound_receipt(
             db,
@@ -277,6 +367,272 @@ def test_receipt_rejects_wrong_packaging_and_serial_quantity(db):
                 serial_number="SER-001",
             ),
         )
+
+
+def test_post_exact_receipt_creates_batch_movement_and_stock_atomically(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    location, _ = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(warehouse, product, owner, pieces),
+    )
+    command = actual_payload(receipt, pieces, location.code)
+
+    posted = post_inbound_receipt(db, receipt.uid, command)
+    repeated = post_inbound_receipt(db, receipt.uid, command)
+    data = inbound_receipt_payload(db, posted)
+
+    assert repeated.id == posted.id
+    assert posted.status == InboundReceiptStatus.POSTED
+    assert posted.posted_stock_document.status == StockDocumentStatus.POSTED
+    assert posted.posted_stock_document.document_type == "inbound_receipt"
+    assert data["has_discrepancies"] is False
+    assert data["exact_line_count"] == 1
+    assert data["lines"][0]["quantity_result"] == "exact"
+    assert data["lines"][0]["batch_result"] == "exact"
+    assert data["lines"][0]["quality_result"] == "exact"
+    assert data["lines"][0]["results"][0]["destination_location_code"] == location.code
+    batch = db.scalar(
+        select(Batch).where(
+            Batch.product_id == product.id,
+            Batch.batch_number == "LOT-2026-08",
+        )
+    )
+    assert batch is not None
+    position = db.scalar(select(StockPosition))
+    assert position.quantity == Decimal("5")
+    assert position.batch_id == batch.id
+    assert position.location_id == location.id
+    assert db.scalar(select(func.count(StockDocument.id))) == 1
+    assert db.scalar(select(func.count(StockMovement.id))) == 1
+
+    with pytest.raises(HTTPException, match="already posted by another command"):
+        post_inbound_receipt(
+            db,
+            receipt.uid,
+            actual_payload(
+                receipt,
+                pieces,
+                location.code,
+                quantity="4",
+            ),
+        )
+
+
+def test_receipt_can_split_actual_packagings_and_report_excess(db):
+    warehouse, product, _, owner, pieces, packaging, _ = create_context(db)
+    location, unit = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:split:draft",
+            quantity="2",
+            packaging_id=packaging.id,
+        ),
+    )
+    command = actual_payload(
+        receipt,
+        pieces,
+        location.code,
+        key="receipt:split:post",
+        quantity="1",
+        packaging_id=packaging.id,
+        item_scan=packaging.barcode,
+    )
+    command.lines.append(
+        InboundReceiptActualLineCreate(
+            receipt_line_id=receipt.lines[0].id,
+            input_quantity=Decimal("2"),
+            packaging_id=packaging.id,
+            destination_scan=unit.uid,
+            item_scan=packaging.code,
+        )
+    )
+
+    posted = post_inbound_receipt(db, receipt.uid, command)
+    data = inbound_receipt_payload(db, posted)
+
+    assert data["excess_line_count"] == 1
+    assert data["discrepancy_count"] == 1
+    assert data["lines"][0]["expected_base_quantity"] == Decimal("24")
+    assert data["lines"][0]["received_base_quantity"] == Decimal("36")
+    assert data["lines"][0]["variance_base_quantity"] == Decimal("12")
+    assert len(data["lines"][0]["results"]) == 2
+    assert sum(
+        db.scalars(select(StockPosition.quantity)),
+        Decimal("0"),
+    ) == Decimal("36")
+    projection = db.scalar(
+        select(LogisticUnitContent).where(
+            LogisticUnitContent.logistic_unit_id == unit.id
+        )
+    )
+    assert projection.quantity == Decimal("24")
+
+
+def test_receipt_reports_shortage_batch_and_quality_mismatch(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    location, _ = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:mismatch:draft",
+        ),
+    )
+
+    posted = post_inbound_receipt(
+        db,
+        receipt.uid,
+        actual_payload(
+            receipt,
+            pieces,
+            location.code,
+            key="receipt:mismatch:post",
+            quantity="3",
+            batch_number="LOT-ACTUAL",
+            production_date=date(2026, 8, 2),
+            expiry_date=date(2027, 8, 2),
+            quality_status="quarantine",
+        ),
+    )
+    line = inbound_receipt_payload(db, posted)["lines"][0]
+
+    assert line["quantity_result"] == "shortage"
+    assert line["variance_base_quantity"] == Decimal("-2")
+    assert line["batch_result"] == "mismatch"
+    assert line["quality_result"] == "mismatch"
+    assert line["results"][0]["quality_status"] == "quarantine"
+    assert db.scalar(select(StockPosition.quality_status)) == "quarantine"
+
+
+def test_new_actual_batch_does_not_inherit_expected_batch_dates(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    location, _ = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:new-batch:draft",
+        ),
+    )
+
+    with pytest.raises(HTTPException, match="new batch requires"):
+        post_inbound_receipt(
+            db,
+            receipt.uid,
+            actual_payload(
+                receipt,
+                pieces,
+                location.code,
+                key="receipt:new-batch:post",
+                batch_number="LOT-WITHOUT-DATES",
+                production_date=None,
+                expiry_date=None,
+            ),
+        )
+
+    db.refresh(receipt)
+    assert receipt.status == InboundReceiptStatus.DRAFT
+    assert db.scalar(select(func.count(Batch.id))) == 0
+    assert db.scalar(select(func.count(StockDocument.id))) == 0
+
+
+def test_failed_actual_receipt_rolls_back_new_batch_and_all_stock(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    location, _ = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:atomic:draft",
+        ),
+    )
+    command = actual_payload(
+        receipt,
+        pieces,
+        location.code,
+        key="receipt:atomic:post",
+        quantity="2",
+        batch_number="LOT-TEMP",
+        production_date=date(2026, 8, 3),
+        expiry_date=date(2027, 8, 3),
+    )
+    command.lines.append(
+        InboundReceiptActualLineCreate(
+            receipt_line_id=receipt.lines[0].id,
+            input_quantity=Decimal("3"),
+            input_uom_id=pieces.id,
+            destination_scan=location.code,
+            item_scan="WRONG-CODE",
+        )
+    )
+
+    with pytest.raises(HTTPException, match="does not match"):
+        post_inbound_receipt(db, receipt.uid, command)
+
+    db.refresh(receipt)
+    assert receipt.status == InboundReceiptStatus.DRAFT
+    assert db.scalar(select(func.count(Batch.id))) == 0
+    assert db.scalar(select(func.count(StockDocument.id))) == 0
+    assert db.scalar(select(func.count(StockMovement.id))) == 0
+    assert db.scalar(select(func.count(StockPosition.id))) == 0
+
+
+def test_reversal_removes_received_stock_and_logistic_unit_projection(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    _, unit = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:reverse:draft",
+        ),
+    )
+    post_inbound_receipt(
+        db,
+        receipt.uid,
+        actual_payload(
+            receipt,
+            pieces,
+            unit.uid,
+            key="receipt:reverse:post",
+        ),
+    )
+    stock_document_uid = receipt.posted_stock_document.uid
+
+    reversal = reverse_stock_document(
+        db,
+        stock_document_uid,
+        StockDocumentReverseRequest(
+            idempotency_key="receipt:reverse:reversal",
+            actor="manager",
+            reason="Ошибочная приёмка",
+        ),
+    )
+
+    db.refresh(receipt)
+    assert reversal.document_type == "stock_reversal"
+    assert receipt.status == InboundReceiptStatus.REVERSED
+    assert receipt.reversed_at is not None
+    assert db.scalar(select(func.count(StockPosition.id))) == 0
+    assert db.scalar(select(func.count(LogisticUnitContent.id))) == 0
 
 
 def test_inbound_receipt_api_creates_lists_and_filters_documents(client, db):
@@ -310,6 +666,52 @@ def test_inbound_receipt_api_creates_lists_and_filters_documents(client, db):
         "/api/inbound-receipts",
         params={"receipt_kind": "unplanned"},
     ).json() == []
+
+
+def test_inbound_receipt_api_posts_actual_quantity(client, db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    location, _ = create_receiving_destination(db, warehouse)
+    created = client.post(
+        "/api/inbound-receipts",
+        json=receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:api:post:draft",
+        ).model_dump(mode="json"),
+    )
+    assert created.status_code == 200
+    receipt = created.json()
+
+    posted = client.post(
+        f"/api/inbound-receipts/{receipt['uid']}/receive",
+        json={
+            "idempotency_key": "receipt:api:post:command",
+            "actor": "api-test",
+            "reason": "Фактическая приёмка через API",
+            "lines": [
+                {
+                    "receipt_line_id": receipt["lines"][0]["id"],
+                    "input_quantity": "5",
+                    "input_uom_id": pieces.id,
+                    "batch_number": "LOT-2026-08",
+                    "production_date": "2026-08-01",
+                    "expiry_date": "2027-08-01",
+                    "destination_scan": location.code,
+                    "item_scan": product.code,
+                }
+            ],
+        },
+    )
+
+    assert posted.status_code == 200
+    data = posted.json()
+    assert data["status"] == "posted"
+    assert data["has_discrepancies"] is False
+    assert data["lines"][0]["quantity_result"] == "exact"
+    assert data["lines"][0]["results"][0]["destination_location_code"] == location.code
+    assert db.scalar(select(StockPosition.quantity)) == Decimal("5")
 
 
 def test_receiving_clerk_is_limited_to_assigned_warehouse(client, db):

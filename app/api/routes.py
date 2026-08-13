@@ -112,6 +112,7 @@ from app.schemas import (
     InternalReturnCreate,
     InternalReturnRead,
     InboundReceiptCreate,
+    InboundReceiptPost,
     InboundReceiptRead,
     StockReservationConsumeRequest,
     StockReservationCreate,
@@ -194,6 +195,7 @@ from app.inbound_receipts import (
     create_inbound_receipt,
     get_inbound_receipt,
     inbound_receipt_payload,
+    post_inbound_receipt,
 )
 from app.stock_ledger import (
     reverse_stock_document,
@@ -389,6 +391,25 @@ def api_get_inbound_receipt(
     if not warehouse_payload_visible(request, [receipt.warehouse_id]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
     return inbound_receipt_payload(db, receipt)
+
+
+@router.post(
+    "/inbound-receipts/{receipt_uid}/receive",
+    response_model=InboundReceiptRead,
+)
+def api_receive_inbound_receipt(
+    request: Request,
+    receipt_uid: str,
+    payload: InboundReceiptPost,
+    db: Session = Depends(get_db),
+) -> dict:
+    receipt = get_inbound_receipt(db, receipt_uid)
+    if not warehouse_payload_visible(request, [receipt.warehouse_id]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    return inbound_receipt_payload(
+        db,
+        post_inbound_receipt(db, receipt_uid, payload),
+    )
 
 
 @router.get("/meta/constants")

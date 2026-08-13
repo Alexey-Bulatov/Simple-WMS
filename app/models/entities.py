@@ -985,6 +985,12 @@ class InboundReceipt(Base):
         unique=True,
         index=True,
     )
+    posting_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+        index=True,
+    )
+    posting_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -992,6 +998,7 @@ class InboundReceipt(Base):
         onupdate=utcnow,
     )
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     warehouse: Mapped[Warehouse] = relationship()
@@ -1053,6 +1060,82 @@ class InboundReceiptLine(Base):
     input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
     base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
     packaging: Mapped[ProductPackaging | None] = relationship()
+    results: Mapped[list["InboundReceiptResult"]] = relationship(
+        back_populates="receipt_line",
+        cascade="all, delete-orphan",
+        order_by="InboundReceiptResult.sequence_no",
+    )
+
+
+class InboundReceiptResult(Base):
+    __tablename__ = "inbound_receipt_results"
+    __table_args__ = (
+        CheckConstraint("input_quantity > 0", name="ck_inbound_result_input_quantity"),
+        CheckConstraint(
+            "received_base_quantity > 0",
+            name="ck_inbound_result_base_quantity",
+        ),
+        CheckConstraint(
+            "conversion_factor > 0",
+            name="ck_inbound_result_conversion_factor",
+        ),
+        CheckConstraint(
+            "(destination_logistic_unit_id IS NOT NULL AND destination_location_id IS NULL) OR "
+            "(destination_logistic_unit_id IS NULL AND destination_location_id IS NOT NULL)",
+            name="ck_inbound_result_single_destination",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    receipt_line_id: Mapped[int] = mapped_column(
+        ForeignKey("inbound_receipt_lines.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer)
+    stock_movement_id: Mapped[int] = mapped_column(
+        ForeignKey("stock_movements.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    packaging_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_packagings.id"),
+        nullable=True,
+        index=True,
+    )
+    received_base_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batches.id"),
+        nullable=True,
+        index=True,
+    )
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    quality_status: Mapped[str] = mapped_column(String(40), index=True)
+    destination_logistic_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistic_units.id"),
+        nullable=True,
+        index=True,
+    )
+    destination_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"),
+        nullable=True,
+        index=True,
+    )
+    destination_scan: Mapped[str] = mapped_column(String(120))
+    item_scan: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    receipt_line: Mapped[InboundReceiptLine] = relationship(back_populates="results")
+    stock_movement: Mapped[StockMovement] = relationship()
+    input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
+    base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
+    packaging: Mapped[ProductPackaging | None] = relationship()
+    batch: Mapped[Batch | None] = relationship()
+    destination_logistic_unit: Mapped[LogisticUnit | None] = relationship()
+    destination_location: Mapped["Location | None"] = relationship()
 
 
 class Zone(Base):

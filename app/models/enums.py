@@ -60,6 +60,7 @@ class InboundReceiptStatus(StrEnum):
     DRAFT = "draft"
     RECEIVING = "receiving"
     POSTED = "posted"
+    REVERSED = "reversed"
     CANCELLED = "cancelled"
 
 
