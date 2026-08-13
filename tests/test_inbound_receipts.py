@@ -16,6 +16,11 @@ from app.inbound_receipts import (
     inbound_receipt_payload,
     post_inbound_receipt,
 )
+from app.logistic_tasks import (
+    complete_logistic_task,
+    putaway_inbound_receipt_result,
+    start_logistic_task,
+)
 from app.main import app
 from app.models.entities import (
     InboundReceipt,
@@ -25,6 +30,7 @@ from app.models.entities import (
     LogisticUnit,
     LogisticUnitContent,
     LogisticUnitType,
+    LogisticTask,
     OperationEvent,
     ProductPackaging,
     StockDocument,
@@ -41,12 +47,16 @@ from app.models.enums import (
     LocationKind,
     LogisticUnitStatus,
     StockDocumentStatus,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
 )
 from app.schemas import (
     InboundReceiptActualLineCreate,
     InboundReceiptCreate,
     InboundReceiptLineCreate,
     InboundReceiptPost,
+    InboundReceiptPutawayRequest,
     ProductCreate,
     StockDocumentReverseRequest,
 )
@@ -201,6 +211,28 @@ def create_receiving_destination(db, warehouse):
     unit.current_location_id = location.id
     db.commit()
     return location, unit
+
+
+def create_storage_destination(db, warehouse):
+    zone = Zone(
+        warehouse_id=warehouse.id,
+        code="ST01",
+        name="Хранение",
+        kind=LocationKind.STORAGE,
+    )
+    db.add(zone)
+    db.flush()
+    location = Location(
+        warehouse_id=warehouse.id,
+        zone_id=zone.id,
+        code=f"{warehouse.code}-ST01-P01",
+        name="Ячейка хранения",
+        kind=LocationKind.STORAGE,
+        capacity_units=10,
+    )
+    db.add(location)
+    db.commit()
+    return location
 
 
 def actual_payload(
@@ -419,6 +451,235 @@ def test_post_exact_receipt_creates_batch_movement_and_stock_atomically(db):
         )
 
 
+def test_exact_receipt_creates_putaway_task_and_places_stock_atomically(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    receiving, _ = create_receiving_destination(db, warehouse)
+    storage = create_storage_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:putaway:draft",
+        ),
+    )
+
+    post_inbound_receipt(
+        db,
+        receipt.uid,
+        actual_payload(
+            receipt,
+            pieces,
+            receiving.code,
+            key="receipt:putaway:post",
+        ),
+    )
+    task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == receipt.uid,
+            LogisticTask.task_type == TaskType.PUTAWAY,
+        )
+    )
+    assert task is not None
+    assert task.status == TaskStatus.NEW
+    assert task.priority == TaskPriority.HIGH
+    assert db.scalar(
+        select(func.count(LogisticTask.id)).where(
+            LogisticTask.task_type == TaskType.RECEIPT_CONTROL
+        )
+    ) == 0
+
+    start_logistic_task(db, task.task_uid, actor="storekeeper")
+    command = InboundReceiptPutawayRequest(
+        idempotency_key="receipt:putaway:movement",
+        target_location_code=storage.code,
+        actor="storekeeper",
+        reason="Размещение после приёмки",
+    )
+    completed = putaway_inbound_receipt_result(db, task.task_uid, command)
+    repeated = putaway_inbound_receipt_result(db, task.task_uid, command)
+
+    assert completed.status == TaskStatus.COMPLETED
+    assert repeated.id == completed.id
+    result = receipt.lines[0].results[0]
+    assert result.placement_stock_document.document_type == "inbound_putaway"
+    assert result.placed_at is not None
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.location_id == receiving.id)
+    ) is None
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.location_id == storage.id)
+    ) == Decimal("5")
+    result_payload = inbound_receipt_payload(db, receipt)["lines"][0]["results"][0]
+    assert result_payload["placement_status"] == "placed"
+    assert result_payload["placement_stock_document_uid"].startswith("PUT-")
+
+
+def test_receipt_discrepancy_requires_control_before_putaway(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    receiving, _ = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:control:draft",
+        ),
+    )
+
+    post_inbound_receipt(
+        db,
+        receipt.uid,
+        actual_payload(
+            receipt,
+            pieces,
+            receiving.code,
+            key="receipt:control:post",
+            quantity="3",
+        ),
+    )
+    control = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == receipt.uid,
+            LogisticTask.task_type == TaskType.RECEIPT_CONTROL,
+        )
+    )
+    assert control is not None
+    assert control.priority == TaskPriority.URGENT
+    assert db.scalar(
+        select(func.count(LogisticTask.id)).where(
+            LogisticTask.task_type == TaskType.PUTAWAY
+        )
+    ) == 0
+    assert inbound_receipt_payload(db, receipt)["lines"][0]["results"][0][
+        "placement_status"
+    ] == "waiting_control"
+
+    start_logistic_task(db, control.task_uid, actor="supervisor")
+    complete_logistic_task(db, control.task_uid, actor="supervisor")
+    putaway = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == receipt.uid,
+            LogisticTask.task_type == TaskType.PUTAWAY,
+        )
+    )
+    assert control.status == TaskStatus.COMPLETED
+    assert putaway is not None
+    assert putaway.status == TaskStatus.NEW
+    assert inbound_receipt_payload(db, receipt)["lines"][0]["results"][0][
+        "placement_status"
+    ] == "ready"
+
+
+def test_putaway_reversal_restores_stock_and_reopens_task(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    receiving, _ = create_receiving_destination(db, warehouse)
+    storage = create_storage_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:putaway-reverse:draft",
+        ),
+    )
+    post_inbound_receipt(
+        db,
+        receipt.uid,
+        actual_payload(
+            receipt,
+            pieces,
+            receiving.code,
+            key="receipt:putaway-reverse:post",
+        ),
+    )
+    task = db.scalar(
+        select(LogisticTask).where(LogisticTask.task_type == TaskType.PUTAWAY)
+    )
+    start_logistic_task(db, task.task_uid, actor="storekeeper")
+    putaway_inbound_receipt_result(
+        db,
+        task.task_uid,
+        InboundReceiptPutawayRequest(
+            idempotency_key="receipt:putaway-reverse:movement",
+            target_location_code=storage.code,
+            actor="storekeeper",
+            reason="Размещение после приёмки",
+        ),
+    )
+    placement_uid = receipt.lines[0].results[0].placement_stock_document.uid
+
+    reverse_stock_document(
+        db,
+        placement_uid,
+        StockDocumentReverseRequest(
+            idempotency_key="receipt:putaway-reverse:reversal",
+            actor="manager",
+            reason="Возврат задания на размещение",
+        ),
+    )
+
+    result = receipt.lines[0].results[0]
+    assert result.placement_stock_document_id is None
+    assert result.placed_at is None
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.completed_at is None
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.location_id == receiving.id)
+    ) == Decimal("5")
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.location_id == storage.id)
+    ) is None
+
+
+def test_receipt_reversal_cancels_pending_putaway_task(db):
+    warehouse, product, _, owner, pieces, _, _ = create_context(db)
+    receiving, _ = create_receiving_destination(db, warehouse)
+    receipt = create_inbound_receipt(
+        db,
+        receipt_payload(
+            warehouse,
+            product,
+            owner,
+            pieces,
+            key="receipt:cancel-task:draft",
+        ),
+    )
+    post_inbound_receipt(
+        db,
+        receipt.uid,
+        actual_payload(
+            receipt,
+            pieces,
+            receiving.code,
+            key="receipt:cancel-task:post",
+        ),
+    )
+    task = db.scalar(
+        select(LogisticTask).where(LogisticTask.task_type == TaskType.PUTAWAY)
+    )
+
+    reverse_stock_document(
+        db,
+        receipt.posted_stock_document.uid,
+        StockDocumentReverseRequest(
+            idempotency_key="receipt:cancel-task:reversal",
+            actor="manager",
+            reason="Отмена ошибочной приёмки",
+        ),
+    )
+
+    assert receipt.status == InboundReceiptStatus.REVERSED
+    assert task.status == TaskStatus.CANCELLED
+    assert db.scalar(select(func.count(StockPosition.id))) == 0
+
+
 def test_receipt_can_split_actual_packagings_and_report_excess(db):
     warehouse, product, _, owner, pieces, packaging, _ = create_context(db)
     location, unit = create_receiving_destination(db, warehouse)
@@ -616,6 +877,14 @@ def test_reversal_removes_received_stock_and_logistic_unit_projection(db):
         ),
     )
     stock_document_uid = receipt.posted_stock_document.uid
+    build_task = db.scalar(
+        select(LogisticTask).where(
+            LogisticTask.object_uid == unit.uid,
+            LogisticTask.task_type == TaskType.BUILD,
+        )
+    )
+    assert build_task is not None
+    assert build_task.status == TaskStatus.NEW
 
     reversal = reverse_stock_document(
         db,
@@ -671,6 +940,7 @@ def test_inbound_receipt_api_creates_lists_and_filters_documents(client, db):
 def test_inbound_receipt_api_posts_actual_quantity(client, db):
     warehouse, product, _, owner, pieces, _, _ = create_context(db)
     location, _ = create_receiving_destination(db, warehouse)
+    storage = create_storage_destination(db, warehouse)
     created = client.post(
         "/api/inbound-receipts",
         json=receipt_payload(
@@ -712,6 +982,28 @@ def test_inbound_receipt_api_posts_actual_quantity(client, db):
     assert data["lines"][0]["quantity_result"] == "exact"
     assert data["lines"][0]["results"][0]["destination_location_code"] == location.code
     assert db.scalar(select(StockPosition.quantity)) == Decimal("5")
+
+    task = db.scalar(
+        select(LogisticTask).where(LogisticTask.task_type == TaskType.PUTAWAY)
+    )
+    started = client.post(
+        f"/api/logistic-tasks/{task.task_uid}/start",
+        json={"actor": "api-test"},
+    )
+    assert started.status_code == 200
+    placed = client.post(
+        f"/api/logistic-tasks/{task.task_uid}/putaway",
+        json={
+            "idempotency_key": "receipt:api:putaway",
+            "target_location_code": storage.code,
+            "actor": "api-test",
+            "reason": "Размещение через API",
+        },
+    )
+    assert placed.status_code == 200
+    assert placed.json()["status"] == "completed"
+    assert placed.json()["object_status"] == "placed"
+    assert db.scalar(select(StockPosition.location_id)) == storage.id
 
 
 def test_receiving_clerk_is_limited_to_assigned_warehouse(client, db):

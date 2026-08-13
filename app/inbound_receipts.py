@@ -616,6 +616,10 @@ def _post_inbound_receipt(
                 "quantity_discrepancy_count": discrepancy_count,
             },
         )
+        db.flush()
+        from app.logistic_tasks import sync_inbound_receipt_tasks
+
+        sync_inbound_receipt_tasks(db, receipt, actor=payload.actor)
 
     try:
         post_stock_document(db, stock_payload, before_commit=finalize)
@@ -680,6 +684,7 @@ def inbound_receipt_payload(db: Session, receipt: InboundReceipt) -> dict:
             result_base_uom = result.base_uom
             result_packaging = result.packaging
             result_batch = result.batch
+            placement_document = result.placement_stock_document
             destination_unit = result.destination_logistic_unit
             destination_location = result.destination_location
             results.append(
@@ -687,6 +692,10 @@ def inbound_receipt_payload(db: Session, receipt: InboundReceipt) -> dict:
                     "id": result.id,
                     "sequence_no": result.sequence_no,
                     "stock_movement_id": result.stock_movement_id,
+                    "placement_stock_document_id": result.placement_stock_document_id,
+                    "placement_stock_document_uid": (
+                        placement_document.uid if placement_document else None
+                    ),
                     "input_quantity": result.input_quantity,
                     "input_uom_id": result.input_uom_id,
                     "input_uom_code": result_input_uom.code,
@@ -714,6 +723,14 @@ def inbound_receipt_payload(db: Session, receipt: InboundReceipt) -> dict:
                     "destination_scan": result.destination_scan,
                     "item_scan": result.item_scan,
                     "note": result.note,
+                    "placement_status": "placed" if placement_document else "not_applicable",
+                    "placed_at": result.placed_at,
+                    "_putaway_applicable": bool(
+                        receipt.status == InboundReceiptStatus.POSTED
+                        and destination_location
+                        and destination_location.kind == LocationKind.RECEIVING
+                        and result.quality_status == "released"
+                    ),
                 }
             )
         received_quantity = (
@@ -813,6 +830,18 @@ def inbound_receipt_payload(db: Session, receipt: InboundReceipt) -> dict:
                 "results": results,
             }
         )
+    control_done = True
+    if discrepancy_count > 0 and receipt.status == InboundReceiptStatus.POSTED:
+        from app.logistic_tasks import receipt_control_completed
+
+        control_done = receipt_control_completed(db, receipt.uid)
+    for line in lines:
+        for result in line["results"]:
+            applicable = result.pop("_putaway_applicable")
+            if result["placement_stock_document_id"] is not None:
+                result["placement_status"] = "placed"
+            elif applicable:
+                result["placement_status"] = "ready" if control_done else "waiting_control"
     return {
         "id": receipt.id,
         "uid": receipt.uid,

@@ -945,6 +945,26 @@ class InboundReceiptPost(BaseModel):
         return normalized
 
 
+class InboundReceiptPutawayRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    target_location_code: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_putaway_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("target_location_code")
+    @classmethod
+    def normalize_putaway_location(cls, value: str) -> str:
+        return value.strip().upper()
+
+
 class StockReservationCreate(BaseModel):
     stock_position_id: int = Field(gt=0)
     input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
@@ -1424,6 +1444,8 @@ class InboundReceiptResultRead(BaseModel):
     id: int
     sequence_no: int
     stock_movement_id: int
+    placement_stock_document_id: int | None
+    placement_stock_document_uid: str | None
     input_quantity: Decimal
     input_uom_id: int
     input_uom_code: str
@@ -1449,6 +1471,8 @@ class InboundReceiptResultRead(BaseModel):
     destination_scan: str
     item_scan: str
     note: str | None
+    placement_status: Literal["waiting_control", "ready", "placed", "not_applicable"]
+    placed_at: datetime | None
 
 
 class InboundReceiptLineRead(BaseModel):

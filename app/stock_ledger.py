@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.entities import (
     Batch,
     InboundReceipt,
+    InboundReceiptResult,
     Location,
     LogisticUnit,
     LogisticUnitContent,
@@ -33,6 +34,7 @@ from app.models.enums import (
     StockDocumentStatus,
     StockReservationStatus,
     TaskStatus,
+    TaskType,
 )
 from app.schemas import StockDocumentPost, StockDocumentReverseRequest, StockMovementPost
 from app.stock import (
@@ -660,6 +662,70 @@ def _reverse_inbound_receipt(
             },
         )
     )
+    from app.logistic_tasks import sync_inbound_receipt_tasks
+
+    sync_inbound_receipt_tasks(db, receipt, actor=actor)
+
+
+def _reverse_inbound_putaway(
+    db: Session,
+    original: StockDocument,
+    reversal: StockDocument,
+    *,
+    actor: str,
+    reason: str,
+) -> None:
+    if original.document_type != "inbound_putaway":
+        return
+    result = db.scalar(
+        select(InboundReceiptResult)
+        .where(InboundReceiptResult.placement_stock_document_id == original.id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if result is None:
+        raise _conflict("inbound putaway result not found for reversal")
+    receipt = result.receipt_line.receipt
+    result.placement_stock_document_id = None
+    result.placed_at = None
+    task = next(
+        (
+            item
+            for item in db.scalars(
+                select(LogisticTask).where(
+                    LogisticTask.task_type == TaskType.PUTAWAY,
+                    LogisticTask.object_uid == receipt.uid,
+                    LogisticTask.status == TaskStatus.COMPLETED,
+                )
+            )
+            if (item.parameters or {}).get("receipt_result_id") == result.id
+        ),
+        None,
+    )
+    if task is not None:
+        task.status = (
+            TaskStatus.IN_PROGRESS if task.assigned_to else TaskStatus.NEW
+        )
+        task.completed_at = None
+    db.add(
+        OperationEvent(
+            operation="inbound_putaway_reversed",
+            object_type="inbound_receipt",
+            object_uid=receipt.uid,
+            actor=actor,
+            reason=reason,
+            before={
+                "receipt_result_id": result.id,
+                "stock_document_uid": original.uid,
+                "task_uid": task.task_uid if task else None,
+            },
+            after={
+                "receipt_result_id": result.id,
+                "reversal_document_uid": reversal.uid,
+                "task_status": task.status.value if task else None,
+            },
+        )
+    )
 
 
 def _reverse_reservation_consumption(
@@ -877,6 +943,13 @@ def reverse_stock_document(
             reason=payload.reason,
         )
         _reverse_inbound_receipt(
+            db,
+            original,
+            reversal,
+            actor=payload.actor,
+            reason=payload.reason,
+        )
+        _reverse_inbound_putaway(
             db,
             original,
             reversal,

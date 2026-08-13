@@ -67,7 +67,7 @@ def console_markup() -> str:
 
 
 def document(title: str, body_class: str, body: str, script: str) -> str:
-    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/static/universal.css?v=20260813-2"></head><body class="{body_class}">{body}<div id="toast" class="toast" hidden></div><script src="{script}" defer></script><script src="/static/universal-auth-shell.js" defer></script></body></html>"""
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/static/universal.css?v=20260813-2"></head><body class="{body_class}">{body}<div id="toast" class="toast" hidden></div><script src="{script}?v=20260814-1" defer></script><script src="/static/universal-auth-shell.js?v=20260814-1" defer></script></body></html>"""
 
 
 @router.get("/", include_in_schema=False)

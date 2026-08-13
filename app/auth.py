@@ -698,7 +698,7 @@ def mutation_permission(request: Request) -> WarehousePermission | None:
             return WarehousePermission.INVENTORY_RESOLVE
         return WarehousePermission.INVENTORY_COUNT
     if root == "logistic-tasks":
-        if tail and tail[-1] in {"start", "complete"}:
+        if tail and tail[-1] in {"start", "complete", "putaway"}:
             return WarehousePermission.TASK_EXECUTE
         return WarehousePermission.TASK_DISPATCH
     if root in {"stock-reservations", "stock-reservation-requests"}:

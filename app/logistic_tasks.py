@@ -1,3 +1,5 @@
+import hashlib
+from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -5,16 +7,20 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import CODE_SEPARATOR, LOGISTIC_TASK_CODE_PREFIX
 from app.models.entities import (
+    InboundReceipt,
+    InboundReceiptResult,
     Location,
     LogisticInventory,
     LogisticShipment,
     LogisticTask,
     LogisticTransfer,
     LogisticUnit,
+    StockDocument,
     Warehouse,
     utcnow,
 )
 from app.models.enums import (
+    InboundReceiptStatus,
     InventoryStatus,
     LocationKind,
     LogisticUnitStatus,
@@ -24,19 +30,28 @@ from app.models.enums import (
     TaskType,
     TransferStatus,
 )
-from app.schemas import LogisticTaskCreate
+from app.schemas import (
+    InboundReceiptPutawayRequest,
+    LogisticTaskCreate,
+    StockDocumentPost,
+    StockMovementPost,
+)
 from app.services import (
     bad_request,
     commit_or_409,
+    conflict,
     create_event,
     get_active_location,
     not_found,
 )
+from app.stock import effective_logistic_unit_holder
 
 
 TASK_OBJECT_TYPES = {
     TaskType.BUILD: "logistic_unit",
     TaskType.PLACE: "logistic_unit",
+    TaskType.RECEIPT_CONTROL: "inbound_receipt",
+    TaskType.PUTAWAY: "inbound_receipt",
     TaskType.MOVE: "logistic_unit",
     TaskType.SHIP: "logistic_shipment",
     TaskType.INVENTORY: "logistic_inventory",
@@ -46,6 +61,8 @@ TASK_OBJECT_TYPES = {
 TASK_TITLES = {
     TaskType.BUILD: "Завершить формирование логистической единицы",
     TaskType.PLACE: "Разместить логистическую единицу",
+    TaskType.RECEIPT_CONTROL: "Проверить расхождения приёмки",
+    TaskType.PUTAWAY: "Разместить принятый товар",
     TaskType.MOVE: "Переместить логистическую единицу",
     TaskType.SHIP: "Обработать отгрузку",
     TaskType.INVENTORY: "Провести инвентаризацию",
@@ -57,6 +74,7 @@ OBJECT_URL_PREFIXES = {
     "logistic_shipment": "/api/logistic-shipments",
     "logistic_inventory": "/api/logistic-inventories",
     "logistic_transfer": "/api/logistic-transfers",
+    "inbound_receipt": "/api/inbound-receipts",
 }
 
 ACTIVE_TASK_STATUSES = {
@@ -139,6 +157,75 @@ def get_task_transfer(db: Session, object_uid: str) -> LogisticTransfer:
     return transfer
 
 
+def get_task_inbound_receipt(db: Session, object_uid: str) -> InboundReceipt:
+    receipt = db.scalar(
+        select(InboundReceipt).where(
+            InboundReceipt.uid == object_uid.strip().upper()
+        )
+    )
+    if receipt is None:
+        raise not_found("inbound_receipt")
+    return receipt
+
+
+def get_task_inbound_result(
+    db: Session,
+    receipt: InboundReceipt,
+    parameters: dict,
+    *,
+    for_update: bool = False,
+) -> InboundReceiptResult:
+    result_id = parameters.get("receipt_result_id")
+    if not isinstance(result_id, int):
+        raise bad_request("putaway task requires receipt_result_id")
+    query = (
+        select(InboundReceiptResult)
+        .join(InboundReceiptResult.receipt_line)
+        .where(
+            InboundReceiptResult.id == result_id,
+            InboundReceiptResult.receipt_line.has(receipt_id=receipt.id),
+        )
+    )
+    if for_update:
+        query = query.with_for_update()
+    result = db.scalar(query)
+    if result is None:
+        raise bad_request("receipt result does not belong to the inbound receipt")
+    return result
+
+
+def inbound_receipt_has_discrepancies(receipt: InboundReceipt) -> bool:
+    for line in receipt.lines:
+        received = sum(
+            (result.received_base_quantity for result in line.results),
+            Decimal("0"),
+        )
+        if received != line.expected_base_quantity:
+            return True
+        if line.batch_number is not None and {
+            result.batch.batch_number if result.batch else None
+            for result in line.results
+        } != {line.batch_number}:
+            return True
+        if line.serial_number is not None and {
+            result.serial_number for result in line.results
+        } != {line.serial_number}:
+            return True
+        if {result.quality_status for result in line.results} != {line.quality_status}:
+            return True
+    return False
+
+
+def receipt_control_completed(db: Session, receipt_uid: str) -> bool:
+    return db.scalar(
+        select(LogisticTask.id).where(
+            LogisticTask.task_type == TaskType.RECEIPT_CONTROL,
+            LogisticTask.object_uid == receipt_uid,
+            LogisticTask.status == TaskStatus.COMPLETED,
+        )
+    ) is not None
+
+
 def task_object_status(db: Session, task: LogisticTask) -> str | None:
     if task.object_type == "logistic_unit":
         return get_task_unit(db, task.object_uid).status.value
@@ -148,6 +235,12 @@ def task_object_status(db: Session, task: LogisticTask) -> str | None:
         return get_task_inventory(db, task.object_uid).status.value
     if task.object_type == "logistic_transfer":
         return get_task_transfer(db, task.object_uid).status.value
+    if task.object_type == "inbound_receipt":
+        receipt = get_task_inbound_receipt(db, task.object_uid)
+        if task.task_type == TaskType.PUTAWAY:
+            result = get_task_inbound_result(db, receipt, task.parameters or {})
+            return "placed" if result.placement_stock_document_id else "ready"
+        return receipt.status.value
     return None
 
 
@@ -238,6 +331,40 @@ def validate_unit_task(
     return unit
 
 
+def validate_inbound_receipt_task(
+    db: Session,
+    *,
+    warehouse: Warehouse,
+    task_type: TaskType,
+    object_uid: str,
+    parameters: dict,
+) -> InboundReceipt:
+    receipt = get_task_inbound_receipt(db, object_uid)
+    if receipt.warehouse_id != warehouse.id:
+        raise bad_request("inbound receipt belongs to another warehouse")
+    if receipt.status != InboundReceiptStatus.POSTED:
+        raise bad_request("inbound receipt task requires a posted receipt")
+    if task_type == TaskType.RECEIPT_CONTROL:
+        if not inbound_receipt_has_discrepancies(receipt):
+            raise bad_request("inbound receipt has no discrepancies to control")
+        return receipt
+    if inbound_receipt_has_discrepancies(receipt) and not receipt_control_completed(
+        db, receipt.uid
+    ):
+        raise bad_request("inbound receipt discrepancies must be controlled first")
+    result = get_task_inbound_result(db, receipt, parameters)
+    if result.placement_stock_document_id is not None:
+        raise bad_request("receipt result is already placed")
+    if result.destination_location_id is None:
+        raise bad_request("logistic unit receipt result uses the unit placement workflow")
+    source = db.get(Location, result.destination_location_id)
+    if source is None or source.kind != LocationKind.RECEIVING:
+        raise bad_request("putaway task requires stock in a receiving location")
+    if result.quality_status != "released":
+        raise bad_request("quarantine stock cannot be placed without a quality decision")
+    return receipt
+
+
 def validate_document_task(
     db: Session,
     *,
@@ -246,6 +373,14 @@ def validate_document_task(
     object_uid: str,
     parameters: dict,
 ) -> object:
+    if task_type in {TaskType.RECEIPT_CONTROL, TaskType.PUTAWAY}:
+        return validate_inbound_receipt_task(
+            db,
+            warehouse=warehouse,
+            task_type=task_type,
+            object_uid=object_uid,
+            parameters=parameters,
+        )
     if task_type == TaskType.SHIP:
         shipment = get_task_shipment(db, object_uid)
         if shipment.warehouse_id != warehouse.id:
@@ -323,12 +458,16 @@ def create_logistic_task(
             object_uid=object_uid,
             parameters=parameters,
         )
-    duplicate = db.scalar(
-        select(LogisticTask).where(
-            LogisticTask.task_type == payload.task_type,
-            LogisticTask.object_uid == object_uid,
-            LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
-        )
+    duplicate = active_logistic_task(
+        db,
+        task_type=payload.task_type,
+        object_uid=object_uid,
+        phase=(parameters.get("phase") if payload.task_type == TaskType.TRANSFER else None),
+        receipt_result_id=(
+            parameters.get("receipt_result_id")
+            if payload.task_type == TaskType.PUTAWAY
+            else None
+        ),
     )
     if duplicate is not None:
         if not automatic and (duplicate.parameters or {}).get(
@@ -482,6 +621,15 @@ def task_operation_is_complete(db: Session, task: LogisticTask) -> bool:
                 TransferStatus.COMPLETED,
             }
         return transfer.status == TransferStatus.COMPLETED
+    if task.object_type == "inbound_receipt":
+        receipt = get_task_inbound_receipt(db, task.object_uid)
+        if receipt.status != InboundReceiptStatus.POSTED:
+            return False
+        if task.task_type == TaskType.RECEIPT_CONTROL:
+            return inbound_receipt_has_discrepancies(receipt)
+        if task.task_type == TaskType.PUTAWAY:
+            result = get_task_inbound_result(db, receipt, parameters)
+            return result.placement_stock_document_id is not None
     return False
 
 
@@ -491,6 +639,7 @@ def active_logistic_task(
     task_type: TaskType,
     object_uid: str,
     phase: str | None = None,
+    receipt_result_id: int | None = None,
 ) -> LogisticTask | None:
     tasks = list(
         db.scalars(
@@ -503,8 +652,18 @@ def active_logistic_task(
             .order_by(LogisticTask.created_at)
         )
     )
-    if phase is None:
+    if phase is None and receipt_result_id is None:
         return tasks[0] if tasks else None
+    if receipt_result_id is not None:
+        return next(
+            (
+                task
+                for task in tasks
+                if (task.parameters or {}).get("receipt_result_id")
+                == receipt_result_id
+            ),
+            None,
+        )
     return next(
         (
             task
@@ -583,11 +742,17 @@ def ensure_logistic_task(
         if task_type == TaskType.TRANSFER
         else None
     )
+    receipt_result_id = (
+        normalized_parameters.get("receipt_result_id")
+        if task_type == TaskType.PUTAWAY
+        else None
+    )
     existing = active_logistic_task(
         db,
         task_type=task_type,
         object_uid=object_uid,
         phase=phase,
+        receipt_result_id=receipt_result_id,
     )
     if existing is not None:
         return existing
@@ -805,6 +970,223 @@ def sync_logistic_transfer_tasks(
         complete_logistic_task_automatically(db, receive_task, actor=actor)
 
 
+def sync_inbound_receipt_tasks(
+    db: Session,
+    receipt: InboundReceipt,
+    *,
+    actor: str,
+) -> None:
+    db.flush()
+    active_tasks = list(
+        db.scalars(
+            select(LogisticTask).where(
+                LogisticTask.object_type == "inbound_receipt",
+                LogisticTask.object_uid == receipt.uid,
+                LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+            )
+        )
+    )
+    if receipt.status != InboundReceiptStatus.POSTED:
+        for task in active_tasks:
+            cancel_logistic_task_automatically(db, task, actor=actor)
+        return
+
+    has_discrepancies = inbound_receipt_has_discrepancies(receipt)
+    control_done = receipt_control_completed(db, receipt.uid)
+    control_task = active_logistic_task(
+        db,
+        task_type=TaskType.RECEIPT_CONTROL,
+        object_uid=receipt.uid,
+    )
+    if has_discrepancies and not control_done:
+        for task in active_tasks:
+            if task.task_type == TaskType.PUTAWAY:
+                cancel_logistic_task_automatically(db, task, actor=actor)
+        if control_task is None:
+            ensure_logistic_task(
+                db,
+                warehouse_code=receipt.warehouse.code,
+                task_type=TaskType.RECEIPT_CONTROL,
+                object_uid=receipt.uid,
+                actor=actor,
+                priority=TaskPriority.URGENT,
+                title=f"Проверить расхождения {receipt.uid}",
+                parameters={
+                    "receipt_uid": receipt.uid,
+                    "discrepancy_control": True,
+                },
+            )
+        return
+    if control_task is not None:
+        cancel_logistic_task_automatically(db, control_task, actor=actor)
+
+    synced_units: set[int] = set()
+    for line in receipt.lines:
+        for result in line.results:
+            if result.placement_stock_document_id is not None:
+                task = active_logistic_task(
+                    db,
+                    task_type=TaskType.PUTAWAY,
+                    object_uid=receipt.uid,
+                    receipt_result_id=result.id,
+                )
+                if task is not None:
+                    complete_logistic_task_automatically(db, task, actor=actor)
+                continue
+            if result.quality_status != "released":
+                continue
+            if result.destination_location_id is not None:
+                source = db.get(Location, result.destination_location_id)
+                if source is None or source.kind != LocationKind.RECEIVING:
+                    continue
+                ensure_logistic_task(
+                    db,
+                    warehouse_code=receipt.warehouse.code,
+                    task_type=TaskType.PUTAWAY,
+                    object_uid=receipt.uid,
+                    actor=actor,
+                    priority=TaskPriority.HIGH,
+                    title=(
+                        f"Разместить {line.product.code}: "
+                        f"{result.received_base_quantity} {result.base_uom.symbol}"
+                    ),
+                    parameters={
+                        "receipt_uid": receipt.uid,
+                        "receipt_result_id": result.id,
+                        "product_code": line.product.code,
+                        "product_name": line.product.name,
+                        "quantity": str(result.received_base_quantity),
+                        "uom_symbol": result.base_uom.symbol,
+                        "source_location_code": source.code,
+                    },
+                )
+                continue
+            unit = result.destination_logistic_unit
+            if unit is None:
+                continue
+            root, location = effective_logistic_unit_holder(db, unit)
+            if (
+                root.id not in synced_units
+                and location is not None
+                and location.kind == LocationKind.RECEIVING
+            ):
+                synced_units.add(root.id)
+                sync_logistic_unit_tasks(db, root, actor=actor)
+
+
+def putaway_inbound_receipt_result(
+    db: Session,
+    task_uid: str,
+    payload: InboundReceiptPutawayRequest,
+) -> LogisticTask:
+    task = get_logistic_task(db, task_uid, for_update=True)
+    if task.task_type != TaskType.PUTAWAY or task.object_type != "inbound_receipt":
+        raise bad_request("task is not an inbound putaway task")
+    receipt = get_task_inbound_receipt(db, task.object_uid)
+    result = get_task_inbound_result(
+        db,
+        receipt,
+        task.parameters or {},
+        for_update=True,
+    )
+    if result.placement_stock_document_id is not None:
+        document = db.get(StockDocument, result.placement_stock_document_id)
+        attributes = document.attributes if document is not None else {}
+        if (
+            document is not None
+            and document.idempotency_key == payload.idempotency_key
+            and document.actor == payload.actor
+            and document.reason == payload.reason
+            and attributes.get("target_location_code") == payload.target_location_code
+        ):
+            return task
+        raise conflict("receipt result is already placed by another command")
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise bad_request("putaway task must be started before placement")
+    if task.assigned_to and task.assigned_to != payload.actor:
+        raise bad_request("task is assigned to another operator")
+    if receipt.status != InboundReceiptStatus.POSTED:
+        raise bad_request("inbound receipt is not available for placement")
+    if inbound_receipt_has_discrepancies(receipt) and not receipt_control_completed(
+        db, receipt.uid
+    ):
+        raise bad_request("inbound receipt discrepancies must be controlled first")
+    if result.destination_location_id is None:
+        raise bad_request("logistic unit stock must be placed with its logistic unit")
+    source = db.get(Location, result.destination_location_id)
+    if source is None or source.kind != LocationKind.RECEIVING:
+        raise bad_request("receipt stock is not in a receiving location")
+    target = get_active_location(db, payload.target_location_code)
+    if target.warehouse_id != receipt.warehouse_id or target.kind != LocationKind.STORAGE:
+        raise bad_request("putaway target must be a storage location in the receipt warehouse")
+    if result.quality_status != "released":
+        raise bad_request("quarantine stock cannot be placed without a quality decision")
+
+    stock_payload = StockDocumentPost(
+        uid=(
+            "PUT-"
+            f"{hashlib.sha256(payload.idempotency_key.encode()).hexdigest()[:20].upper()}"
+        ),
+        document_type="inbound_putaway",
+        reference_type="inbound_receipt_result",
+        reference_uid=f"{receipt.uid}:{result.id}",
+        idempotency_key=payload.idempotency_key,
+        actor=payload.actor,
+        reason=payload.reason,
+        attributes={
+            "receipt_id": receipt.id,
+            "receipt_uid": receipt.uid,
+            "receipt_result_id": result.id,
+            "task_uid": task.task_uid,
+            "source_location_code": source.code,
+            "target_location_code": target.code,
+        },
+        movements=[
+            StockMovementPost(
+                product_id=result.receipt_line.product_id,
+                batch_id=result.batch_id,
+                serial_number=result.serial_number,
+                owner_id=result.receipt_line.owner_id,
+                source_quality_status=result.quality_status,
+                destination_quality_status=result.quality_status,
+                input_quantity=result.received_base_quantity,
+                input_uom_id=result.base_uom_id,
+                source_location_id=source.id,
+                destination_location_id=target.id,
+            )
+        ],
+    )
+
+    def finalize(document: StockDocument) -> None:
+        result.placement_stock_document_id = document.id
+        result.placed_at = utcnow()
+        complete_logistic_task_automatically(db, task, actor=payload.actor)
+        create_event(
+            db,
+            operation="inbound_receipt_result_placed",
+            object_type="inbound_receipt",
+            object_uid=receipt.uid,
+            actor=payload.actor,
+            reason=payload.reason,
+            before={
+                "receipt_result_id": result.id,
+                "location_code": source.code,
+            },
+            after={
+                "receipt_result_id": result.id,
+                "location_code": target.code,
+                "stock_document_uid": document.uid,
+                "task_uid": task.task_uid,
+            },
+        )
+
+    from app.stock_ledger import post_stock_document
+
+    post_stock_document(db, stock_payload, before_commit=finalize)
+    db.refresh(task)
+    return task
+
+
 def sync_logistic_tasks(
     db: Session,
     *,
@@ -849,6 +1231,12 @@ def sync_logistic_tasks(
             sync_logistic_transfer_tasks(
                 db,
                 get_task_transfer(db, task.object_uid),
+                actor=actor,
+            )
+        elif task.object_type == "inbound_receipt":
+            sync_inbound_receipt_tasks(
+                db,
+                get_task_inbound_receipt(db, task.object_uid),
                 actor=actor,
             )
     location_ids = select(Location.id).where(Location.warehouse_id == warehouse.id)
@@ -898,6 +1286,13 @@ def sync_logistic_tasks(
         )
     ):
         sync_logistic_transfer_tasks(db, transfer, actor=actor)
+    for receipt in db.scalars(
+        select(InboundReceipt).where(
+            InboundReceipt.warehouse_id == warehouse.id,
+            InboundReceipt.status == InboundReceiptStatus.POSTED,
+        )
+    ):
+        sync_inbound_receipt_tasks(db, receipt, actor=actor)
     db.commit()
     return list(
         db.scalars(
@@ -944,6 +1339,12 @@ def complete_logistic_task(
             "object_status": task_object_status(db, task),
         },
     )
+    if task.task_type == TaskType.RECEIPT_CONTROL:
+        sync_inbound_receipt_tasks(
+            db,
+            get_task_inbound_receipt(db, task.object_uid),
+            actor=actor,
+        )
     db.commit()
     db.refresh(task)
     return task
@@ -999,6 +1400,12 @@ def reopen_logistic_task(
         before=before,
         after={"status": task.status.value},
     )
+    if task.task_type == TaskType.RECEIPT_CONTROL:
+        sync_inbound_receipt_tasks(
+            db,
+            get_task_inbound_receipt(db, task.object_uid),
+            actor=actor,
+        )
     db.commit()
     db.refresh(task)
     return task

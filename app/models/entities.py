@@ -1097,6 +1097,12 @@ class InboundReceiptResult(Base):
         unique=True,
         index=True,
     )
+    placement_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
     input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
     packaging_id: Mapped[int | None] = mapped_column(
@@ -1127,9 +1133,13 @@ class InboundReceiptResult(Base):
     destination_scan: Mapped[str] = mapped_column(String(120))
     item_scan: Mapped[str] = mapped_column(String(120))
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     receipt_line: Mapped[InboundReceiptLine] = relationship(back_populates="results")
     stock_movement: Mapped[StockMovement] = relationship()
+    placement_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[placement_stock_document_id]
+    )
     input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
     base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
     packaging: Mapped[ProductPackaging | None] = relationship()

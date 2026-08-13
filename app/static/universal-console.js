@@ -6,11 +6,14 @@
     unitConfirmed: false,
     scanMode: null,
     targetLocation: null,
+    commandKey: null,
   };
   const $ = (id) => document.getElementById(id);
   const typeLabels = {
     build: "Формирование",
     place: "Размещение",
+    receipt_control: "Контроль приёмки",
+    putaway: "Размещение товара",
     move: "Перемещение",
     ship: "Отгрузка",
     inventory: "Инвентаризация",
@@ -22,6 +25,7 @@
     open: "Открыта", closed: "Закрыта", available: "Доступна", blocked: "Заблокирована",
     quarantine: "Карантин", draft: "Черновик", reserved: "Резерв", expedition: "Экспедиция",
     loading: "Погрузка", in_transit: "В пути", receiving: "Приёмка", completed: "Завершено",
+    posted: "Проведено", placed: "Размещено", ready: "Готово",
   };
 
   function esc(value) {
@@ -105,6 +109,7 @@
     state.unitConfirmed = false;
     state.scanMode = null;
     state.targetLocation = null;
+    state.commandKey = null;
     $("emptyOperation").hidden = true;
     $("activeOperation").hidden = false;
     renderQueue();
@@ -123,6 +128,10 @@
     if (task.object_type === "logistic_transfer") {
       return [fact("Статус", objectStatusLabels[object.status] || object.status), fact("Маршрут", `${object.source_warehouse_code} → ${object.destination_warehouse_code}`), fact("Единиц", object.unit_count), fact("Принято", object.received_count)].join("");
     }
+    if (task.object_type === "inbound_receipt") {
+      if (task.task_type === "putaway") return [fact("Документ", object.uid), fact("Товар", task.parameters?.product_name || task.parameters?.product_code), fact("Количество", `${task.parameters?.quantity || "—"} ${task.parameters?.uom_symbol || ""}`), fact("Откуда", task.parameters?.source_location_code)].join("");
+      return [fact("Документ", object.uid), fact("Строк", object.line_count), fact("Расхождений", object.discrepancy_count), fact("Источник", object.source_name)].join("");
+    }
     return [fact("Прогресс", `${object.progress_percent || 0}%`), fact("Ячеек", `${object.checked_locations || 0} / ${object.total_locations || 0}`), fact("Расхождений", object.unresolved_problem_count || 0), fact("Текущая", object.current_location_code)].join("");
   }
 
@@ -130,7 +139,10 @@
     const task = state.task;
     const object = state.object || {};
     if (task.status === "new") return { text: "Задание готово к выполнению.", hint: "", scan: false };
+    if (task.status === "completed") return { text: "Задание выполнено.", hint: "", scan: false };
     if (task.task_type === "build") return { text: `Отсканируйте ${task.object_uid}, чтобы закрыть формирование.`, hint: "Код логистической единицы", scan: true };
+    if (task.task_type === "receipt_control") return { text: "Проверьте отмеченные расхождения и подтвердите контроль.", hint: "", scan: false };
+    if (task.task_type === "putaway") return { text: `Товар находится в ${task.parameters?.source_location_code}. Отсканируйте целевую складскую ячейку.`, hint: "Складская ячейка", scan: true };
     if (["place", "move"].includes(task.task_type)) {
       return state.unitConfirmed
         ? { text: "Единица подтверждена. Отсканируйте целевую ячейку.", hint: task.parameters?.target_location_code ? `Ожидается ${task.parameters.target_location_code}` : "Код ячейки", scan: true }
@@ -159,6 +171,7 @@
     const object = state.object || {};
     if (task.status === "new") return button("Начать", "start");
     if (task.status === "completed") return button("Следующее задание", "next");
+    if (task.task_type === "receipt_control") return button("Подтвердить контроль", "confirm-receipt-control");
     if (task.task_type === "ship") {
       let html = "";
       if (object.status === "reserved") html += button("Передать в экспедицию", "stage", "secondary");
@@ -227,6 +240,17 @@
       await post(`/api/logistic-units/${encodeURIComponent(task.object_uid)}/close`, { actor: actor(), reason: "Выполнено из задания" });
       return refreshCurrent("Формирование завершено.");
     }
+    if (task.task_type === "putaway") {
+      state.commandKey ||= `putaway:${task.task_uid}:${crypto.randomUUID()}`;
+      await post(`/api/logistic-tasks/${encodeURIComponent(task.task_uid)}/putaway`, {
+        idempotency_key: state.commandKey,
+        target_location_code: code,
+        actor: actor(),
+        reason: "Размещение принятого товара",
+      });
+      state.commandKey = null;
+      return refreshCurrent("Товар размещён.");
+    }
     if (["place", "move"].includes(task.task_type)) {
       if (!state.unitConfirmed) {
         if (code !== task.object_uid.toUpperCase()) throw new Error(`Ожидается ${task.object_uid}`);
@@ -281,6 +305,10 @@
       return;
     }
     if (action === "next") return clearTask();
+    if (action === "confirm-receipt-control") {
+      await post(`/api/logistic-tasks/${encodeURIComponent(task.task_uid)}/complete`, { actor: actor() });
+      return refreshCurrent("Расхождения проверены.");
+    }
     if (action === "stage") { state.scanMode = "stage"; renderOperation(); return; }
     if (action === "change-location") { state.targetLocation = null; renderOperation(); return; }
     if (action === "close-shipment") {
@@ -304,6 +332,7 @@
     state.unitConfirmed = false;
     state.scanMode = null;
     state.targetLocation = null;
+    state.commandKey = null;
     $("activeOperation").hidden = true;
     $("emptyOperation").hidden = false;
     renderQueue();

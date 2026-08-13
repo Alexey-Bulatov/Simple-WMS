@@ -189,6 +189,8 @@ class InventoryLocationStatus(StrEnum):
 class TaskType(StrEnum):
     BUILD = "build"
     PLACE = "place"
+    RECEIPT_CONTROL = "receipt_control"
+    PUTAWAY = "putaway"
     MOVE = "move"
     SHIP = "ship"
     INVENTORY = "inventory"
