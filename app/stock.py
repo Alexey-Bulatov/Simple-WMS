@@ -244,11 +244,11 @@ def stock_position_payload(db: Session, position: StockPosition) -> dict:
     reserved = Decimal("0")
     in_transit = Decimal("0")
     blocked = Decimal("0")
-    if not quality_allowed or holder_status in {
-        LogisticUnitStatus.BLOCKED,
-        LogisticUnitStatus.QUARANTINE,
-    }:
+    quarantine = Decimal("0")
+    if holder_status == LogisticUnitStatus.BLOCKED or not operation_allowed:
         blocked = quantity
+    elif holder_status == LogisticUnitStatus.QUARANTINE or not quality_allowed:
+        quarantine = quantity
     elif holder_status in RESERVED_UNIT_STATUSES:
         reserved = quantity
     elif holder_status == LogisticUnitStatus.IN_TRANSIT:
@@ -280,6 +280,7 @@ def stock_position_payload(db: Session, position: StockPosition) -> dict:
         "reserved_quantity": reserved,
         "in_transit_quantity": in_transit,
         "blocked_quantity": blocked,
+        "quarantine_quantity": quarantine,
         "base_uom_id": product.base_uom_id if product else None,
         "base_uom_code": base_uom.code if base_uom else None,
         "base_uom_symbol": base_uom.symbol if base_uom else None,

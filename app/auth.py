@@ -706,6 +706,10 @@ def mutation_permission(request: Request) -> WarehousePermission | None:
         if tail and tail[-1] == "consume":
             return WarehousePermission.STOCK_CONSUME
         return WarehousePermission.STOCK_RESERVE
+    if root == "internal-issues":
+        if tail and tail[-1] == "reverse":
+            return WarehousePermission.STOCK_CORRECT
+        return WarehousePermission.STOCK_CONSUME
     if root == "stock-documents" and tail and tail[-1] == "reverse":
         return WarehousePermission.STOCK_CORRECT
     if root == "locations" and tail and tail[-1] == "label.print":
@@ -720,6 +724,7 @@ def mutation_permission(request: Request) -> WarehousePermission | None:
         "products",
         "product-packagings",
         "stock-owners",
+        "stock-recipients",
         "batches",
         "import",
     }:
@@ -849,6 +854,18 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
         warehouse_id = _warehouse_id_for_position(db, position) if position else None
         if warehouse_id is not None:
             result.add(warehouse_id)
+    lines = payload.get("lines")
+    if isinstance(lines, list):
+        line_position_ids = {
+            line.get("stock_position_id")
+            for line in lines
+            if isinstance(line, dict) and isinstance(line.get("stock_position_id"), int)
+        }
+        for line_position_id in line_position_ids:
+            position = db.get(StockPosition, line_position_id)
+            warehouse_id = _warehouse_id_for_position(db, position) if position else None
+            if warehouse_id is not None:
+                result.add(warehouse_id)
     location_codes = {
         value.strip().upper()
         for key in ("location_code", "source_location_code", "destination_location_code")
@@ -973,6 +990,15 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
         )
         if item:
             result.update(stock_document_warehouse_ids(db, item))
+    elif root == "internal-issues" and object_uid:
+        item = db.scalar(
+            select(StockDocument).where(
+                StockDocument.uid == object_uid.upper(),
+                StockDocument.document_type == "internal_issue",
+            )
+        )
+        if item:
+            result.update(stock_document_warehouse_ids(db, item))
     elif root == "stock-movements" and object_uid and object_uid.isdigit():
         item = db.get(StockMovement, int(object_uid))
         if item:
@@ -1027,6 +1053,7 @@ async def authorize_api_request(
             "stock-reservation-requests",
             "stock-documents",
             "stock-movements",
+            "internal-issues",
             "locations",
         }
         if (

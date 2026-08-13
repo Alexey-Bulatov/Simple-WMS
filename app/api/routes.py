@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,7 @@ from app.models.entities import (
     RackLevel,
     RackSection,
     StockOwner,
+    StockRecipient,
     StockDocument,
     StockMovement,
     StockPosition,
@@ -93,12 +94,18 @@ from app.schemas import (
     RackSectionRead,
     StockOwnerCreate,
     StockOwnerRead,
+    StockRecipientCreate,
+    StockRecipientRead,
+    StockRecipientUpdate,
+    StockSearchRead,
     StockDocumentDetailRead,
     StockDocumentRead,
     StockDocumentReverseRequest,
     StockMovementRead,
     StockPositionRead,
     StockReconciliationRead,
+    InternalIssueCreate,
+    InternalIssueRead,
     StockReservationConsumeRequest,
     StockReservationCreate,
     StockReservationLogisticUnitRequest,
@@ -139,6 +146,7 @@ from app.services import (
     create_rack_level,
     create_rack_section,
     create_stock_owner,
+    create_stock_recipient,
     create_unit_of_measure,
     create_warehouse,
     create_zone,
@@ -147,6 +155,7 @@ from app.services import (
     not_found,
     update_equipment_profile,
     update_warehouse,
+    update_stock_recipient,
     disassemble_logistic_unit,
     get_logistic_unit,
     hold_logistic_unit,
@@ -160,6 +169,14 @@ from app.services import (
     reopen_logistic_unit,
 )
 from app.stock import stock_position_payload
+from app.stock_search import search_stock
+from app.internal_issues import (
+    INTERNAL_ISSUE_DOCUMENT_TYPE,
+    create_internal_issue,
+    get_internal_issue,
+    internal_issue_payload,
+    reverse_internal_issue,
+)
 from app.stock_ledger import (
     reverse_stock_document,
     stock_document_payload,
@@ -222,6 +239,7 @@ from app.models.enums import (
     StockReservationKind,
     StockReservationResult,
     StockReservationStatus,
+    StockRecipientKind,
     TaskStatus,
     TaskType,
     TransferKind,
@@ -1489,6 +1507,62 @@ def api_list_stock_owners(
     return list(db.scalars(query.order_by(StockOwner.code)))
 
 
+@router.post("/stock-recipients", response_model=StockRecipientRead)
+def api_create_stock_recipient(
+    payload: StockRecipientCreate,
+    db: Session = Depends(get_db),
+) -> StockRecipient:
+    return create_stock_recipient(db, payload)
+
+
+@router.get("/stock-recipients", response_model=list[StockRecipientRead])
+def api_list_stock_recipients(
+    kind: StockRecipientKind | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> list[StockRecipient]:
+    query = select(StockRecipient)
+    if kind is not None:
+        query = query.where(StockRecipient.kind == kind)
+    if active_only:
+        query = query.where(StockRecipient.is_active.is_(True))
+    return list(db.scalars(query.order_by(StockRecipient.kind, StockRecipient.code)))
+
+
+@router.put("/stock-recipients/{recipient_id}", response_model=StockRecipientRead)
+def api_update_stock_recipient(
+    recipient_id: int,
+    payload: StockRecipientUpdate,
+    db: Session = Depends(get_db),
+) -> StockRecipient:
+    return update_stock_recipient(db, recipient_id, payload)
+
+
+@router.get("/stock-search", response_model=StockSearchRead)
+def api_search_stock(
+    request: Request,
+    query: str = Query(min_length=1, max_length=120),
+    warehouse_id: int | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> dict:
+    scope = request_warehouse_scope(request)
+    if warehouse_id is not None and scope is not None and warehouse_id not in scope:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="warehouse is unavailable",
+        )
+    return search_stock(
+        db,
+        query,
+        warehouse_scope=scope,
+        warehouse_id=warehouse_id,
+        active_only=active_only,
+        limit=limit,
+    )
+
+
 @router.get("/stock-positions", response_model=list[StockPositionRead])
 def api_list_stock_positions(
     request: Request,
@@ -1717,6 +1791,69 @@ def api_consume_stock_reservation(
 @router.get("/stock-reconciliation", response_model=StockReconciliationRead)
 def api_reconcile_stock_positions(db: Session = Depends(get_db)) -> dict:
     return reconcile_stock_positions(db)
+
+
+@router.post("/internal-issues", response_model=InternalIssueRead)
+def api_create_internal_issue(
+    request: Request,
+    payload: InternalIssueCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    document = create_internal_issue(
+        db,
+        payload,
+        warehouse_scope=request_warehouse_scope(request),
+    )
+    return internal_issue_payload(db, document)
+
+
+@router.get("/internal-issues", response_model=list[InternalIssueRead])
+def api_list_internal_issues(
+    request: Request,
+    recipient_id: int | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(StockDocument).where(
+        StockDocument.document_type == INTERNAL_ISSUE_DOCUMENT_TYPE
+    )
+    documents = db.scalars(
+        query.order_by(StockDocument.created_at.desc(), StockDocument.id.desc()).limit(limit)
+    )
+    payloads = [internal_issue_payload(db, document) for document in documents]
+    if recipient_id is not None:
+        payloads = [item for item in payloads if item["recipient_id"] == recipient_id]
+    return [
+        item
+        for item in payloads
+        if warehouse_payload_visible(request, item["warehouse_ids"], any_assigned=True)
+    ]
+
+
+@router.get("/internal-issues/{issue_uid}", response_model=InternalIssueRead)
+def api_get_internal_issue(
+    request: Request,
+    issue_uid: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    payload = internal_issue_payload(db, get_internal_issue(db, issue_uid))
+    if not warehouse_payload_visible(request, payload["warehouse_ids"], any_assigned=True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    return payload
+
+
+@router.post("/internal-issues/{issue_uid}/reverse", response_model=InternalIssueRead)
+def api_reverse_internal_issue(
+    request: Request,
+    issue_uid: str,
+    payload: StockDocumentReverseRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    document = reverse_internal_issue(db, issue_uid, payload)
+    result = internal_issue_payload(db, document)
+    if not warehouse_payload_visible(request, result["warehouse_ids"], any_assigned=True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    return result
 
 
 @router.get("/stock-documents", response_model=list[StockDocumentRead])

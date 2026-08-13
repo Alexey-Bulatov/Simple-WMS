@@ -9,7 +9,8 @@ def navigation(active: str) -> str:
     links = (
         ("work", "/work", "Рабочее место", False),
         ("terminal", "/terminal", "ТСД", False),
-        ("cards", "/cards", "Поиск", False),
+        ("stock", "/stock", "Номенклатура", False),
+        ("cards", "/cards", "Объекты", False),
         ("demo", "/demo", "Демо", False),
         ("api", "/docs", "API", False),
         ("settings", "/settings", "Настройки", True),
@@ -104,6 +105,54 @@ def cards_page() -> str:
     <main class="cards-page-main"><aside class="search-panel"><span class="eyebrow">Прослеживаемость</span><h1>Поиск объекта</h1><div id="cardMessage" class="message">Отсканируйте единицу или ячейку.</div><label for="cardCode">Код</label><input id="cardCode" class="scan-input mono" autocomplete="off" autofocus placeholder="PLT-... / WH01-..."><div class="segmented"><button class="active" data-card-kind="auto" type="button">Авто</button><button data-card-kind="unit" type="button">Единица</button><button data-card-kind="location" type="button">Ячейка</button></div><button id="openCard" class="primary" type="button">Открыть</button><div class="quick-head"><b>Быстрый список</b><select id="cardWarehouse"></select></div><div class="segmented"><button id="listUnits" class="active" type="button">Единицы</button><button id="listLocations" type="button">Ячейки</button></div><div id="quickList" class="quick-list"></div></aside><section id="cardView" class="card-view"><div class="empty-operation"><div class="empty-symbol">i</div><h2>Карточка не выбрана</h2><p>Здесь будут состав, местонахождение, задания и история.</p></div></section></main>
     """
     return document("Карточки Simple WMS", "cards-page", body, "/static/universal-cards.js")
+
+
+@router.get("/stock", response_class=HTMLResponse, include_in_schema=False)
+def stock_page() -> str:
+    body = f"""
+    <header class="product-header"><a class="brand" href="/work">Simple WMS</a><nav>{navigation("stock")}</nav></header>
+    <main class="stock-page-main">
+      <section class="stock-search-panel">
+        <div class="panel-head"><div><span class="eyebrow">SCN-02</span><h1>Номенклатура и остатки</h1></div></div>
+        <form id="stockSearchForm" class="stock-search-form">
+          <label><span>Склад</span><select id="stockWarehouse"><option value="">Все доступные склады</option></select></label>
+          <label><span>Название, артикул или штрихкод</span><input id="stockQuery" class="scan-input" autocomplete="off" autofocus placeholder="Например, перчатки"></label>
+          <button class="primary" type="submit">Найти</button>
+        </form>
+        <div id="stockSearchMessage" class="message">Введите название, код или отсканируйте упаковку.</div>
+        <div id="stockSearchResults" class="stock-search-results"></div>
+      </section>
+      <section id="stockDetail" class="stock-detail-panel">
+        <div class="empty-operation"><div class="empty-symbol">i</div><h2>Номенклатура не выбрана</h2><p>Здесь появятся общий и доступный остаток, ячейки, логистические единицы и партии.</p></div>
+      </section>
+      <section id="issuePanel" class="issue-panel" hidden>
+        <div class="panel-head"><div><span class="eyebrow">SCN-08</span><h2>Внутренняя выдача</h2></div><button id="closeIssue" class="icon-button" type="button" title="Закрыть" aria-label="Закрыть">×</button></div>
+        <div class="rail"><div class="rail-step done"><span>1</span><b>Источник</b></div><div class="rail-step active"><span>2</span><b>Получатель</b></div><div class="rail-step"><span>3</span><b>Списание</b></div></div>
+        <div id="issueFacts" class="facts"></div>
+        <form id="issueForm" class="issue-form">
+          <label><span>Получатель</span><select id="issueRecipient" required></select></label>
+          <label><span>Количество</span><input id="issueQuantity" type="number" min="0.000001" step="0.000001" required></label>
+          <label><span>Единица</span><select id="issueUom" required></select></label>
+          <label><span>Номер заявки</span><input id="issueRequestReference" maxlength="120" placeholder="Необязательно"></label>
+          <label class="issue-span"><span>Основание выдачи</span><textarea id="issueReason" maxlength="500" required placeholder="Для чего и на каком основании выдаётся"></textarea></label>
+          <label><span>Скан источника</span><input id="issueSourceScan" class="mono" autocomplete="off" required></label>
+          <label><span>Скан товара или упаковки</span><input id="issueItemScan" class="mono" autocomplete="off" required></label>
+          <button class="primary issue-span" type="submit">Подтвердить выдачу</button>
+        </form>
+        <div id="issueMessage" class="message">Скан источника и товара защищает от выдачи не из той ячейки.</div>
+      </section>
+      <section class="recent-issues-panel">
+        <div class="panel-head"><div><span class="eyebrow">Последние операции</span><h2>Внутренние выдачи</h2></div><button id="refreshIssues" class="icon-button" type="button" title="Обновить" aria-label="Обновить">↻</button></div>
+        <div id="recentIssues" class="data-list"></div>
+      </section>
+    </main>
+    """
+    return document(
+        "Номенклатура Simple WMS",
+        "stock-page",
+        body,
+        "/static/universal-stock.js?v=20260813",
+    )
 
 
 @router.get("/demo", response_class=HTMLResponse, include_in_schema=False)
@@ -211,6 +260,7 @@ def settings_page() -> str:
         <button class="active" data-settings-tab="warehouses" type="button">Склады</button>
         <button data-settings-tab="users" type="button">Пользователи</button>
         <button data-settings-tab="workstations" type="button">Рабочие места</button>
+        <button data-settings-tab="recipients" type="button">Получатели</button>
         <button data-settings-tab="equipment" type="button">Оборудование</button>
       </div>
 
@@ -264,6 +314,21 @@ def settings_page() -> str:
           </div>
         </form>
         <section class="settings-list-panel"><div class="panel-head"><div><span class="eyebrow">Авторизация</span><h2>Рабочие места</h2></div></div><div id="workstationList" class="settings-list"></div></section>
+      </section>
+
+      <section class="settings-view" data-settings-view="recipients" hidden>
+        <form id="recipientForm" class="settings-form-panel">
+          <div class="panel-head"><div><span class="eyebrow">Внутренняя выдача</span><h2 id="recipientFormTitle">Новый получатель</h2></div></div>
+          <div class="settings-form-body">
+            <input id="recipientId" type="hidden">
+            <label><span>Код</span><input id="recipientCode" class="mono" maxlength="64" required></label>
+            <label><span>Название или ФИО</span><input id="recipientName" maxlength="200" required></label>
+            <label><span>Тип</span><select id="recipientKind" required><option value="employee">Сотрудник</option><option value="department">Подразделение</option><option value="workplace">Рабочее место</option></select></label>
+            <label class="check-row"><input id="recipientActive" type="checkbox" checked><span>Получатель активен</span></label>
+            <div class="form-actions"><button class="primary" type="submit">Сохранить</button><button id="recipientReset" type="button">Очистить</button></div>
+          </div>
+        </form>
+        <section class="settings-list-panel"><div class="panel-head"><div><span class="eyebrow">Справочник</span><h2>Получатели</h2></div></div><div id="recipientList" class="settings-list"></div></section>
       </section>
 
       <section class="settings-view" data-settings-view="equipment" hidden>

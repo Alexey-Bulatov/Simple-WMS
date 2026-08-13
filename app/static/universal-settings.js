@@ -1,6 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { user: null, warehouses: [], users: [], roles: [], workstations: [], equipment: [] };
+  const state = { user: null, warehouses: [], users: [], roles: [], workstations: [], recipients: [], equipment: [] };
 
   const roleLabels = {
     production_operator: "Оператор производства",
@@ -15,6 +15,7 @@
   };
   const kindLabels = { printer: "Принтер", scanner: "Сканер", terminal: "ТСД", scale: "Весы", other: "Другое" };
   const connectionLabels = { pdf: "PDF", system_queue: "Системная очередь", raw_tcp: "RAW TCP", keyboard: "Клавиатура", camera: "Камера", web: "Веб", serial: "COM / Serial", usb: "USB" };
+  const recipientLabels = { employee: "Сотрудник", department: "Подразделение", workplace: "Рабочее место" };
   const permissionLabels = {
     "logistic_unit.create": "Создание логистических единиц", "logistic_unit.receive": "Приёмка", "logistic_unit.pack": "Формирование и упаковка", "logistic_unit.move": "Размещение и перемещение", "logistic_unit.hold": "Блокировка и карантин", "logistic_unit.release": "Снятие блокировки", "logistic_unit.disassemble": "Расформирование", "shipment.operate": "Отгрузка", "transfer.operate": "Межскладские передачи", "inventory.count": "Проведение инвентаризации", "inventory.resolve": "Разбор расхождений", "task.execute": "Выполнение заданий", "task.dispatch": "Назначение заданий", "stock.reserve": "Резервирование", "stock.release_reservation": "Снятие резерва", "stock.consume": "Списание и выдача", "stock.correct": "Корректировка остатков", "label.print": "Печать этикеток", "catalog.manage": "Справочники", "warehouse_structure.manage": "Структура склада", "system.administer": "Настройки системы", "demo.manage": "Демо-данные",
   };
@@ -105,6 +106,14 @@
     })).join("") : empty("Рабочих мест пока нет");
   }
 
+  function renderRecipients() {
+    $("recipientList").innerHTML = state.recipients.length ? state.recipients.map((item) => row({
+      kind: "recipient", id: item.id, title: `${item.code} · ${item.name}`,
+      meta: recipientLabels[item.kind] || item.kind,
+      side: '<small>Изменить</small>', active: item.is_active,
+    })).join("") : empty("Получателей пока нет");
+  }
+
   function equipmentAddress(item) {
     if (item.connection_type === "raw_tcp") return `${item.host}:${item.port}`;
     if (item.connection_type === "system_queue") return item.queue_name;
@@ -133,6 +142,10 @@
     $("workstationForm").reset(); $("workstationId").value = ""; $("workstationCode").readOnly = false; $("workstationActive").checked = true; $("workstationPass").checked = true; $("workstationFormTitle").textContent = "Новое рабочее место"; $("workstationWarehouse").innerHTML = warehouseOptions();
   }
 
+  function resetRecipient() {
+    $("recipientForm").reset(); $("recipientId").value = ""; $("recipientCode").readOnly = false; $("recipientKind").value = "employee"; $("recipientActive").checked = true; $("recipientActive").disabled = true; $("recipientFormTitle").textContent = "Новый получатель";
+  }
+
   function resetEquipment() {
     $("equipmentForm").reset(); $("equipmentId").value = ""; $("equipmentCode").readOnly = false; $("equipmentConnection").value = "raw_tcp"; $("equipmentKind").value = "printer"; $("equipmentParameters").value = "{}"; $("equipmentActive").checked = true; $("equipmentFormTitle").textContent = "Новый профиль оборудования"; $("equipmentWarehouse").innerHTML = warehouseOptions("", true); updateConnectionFields();
   }
@@ -152,6 +165,11 @@
     $("workstationId").value = item.id; $("workstationCode").value = item.code; $("workstationCode").readOnly = true; $("workstationName").value = item.name; $("workstationWarehouse").innerHTML = warehouseOptions(item.warehouse_id); $("workstationPass").checked = item.pass_login_enabled; $("workstationActive").checked = item.is_active; $("workstationFormTitle").textContent = item.name; $("workstationName").focus();
   }
 
+  function editRecipient(id) {
+    const item = state.recipients.find((row) => row.id === id); if (!item) return;
+    $("recipientId").value = item.id; $("recipientCode").value = item.code; $("recipientCode").readOnly = true; $("recipientName").value = item.name; $("recipientKind").value = item.kind; $("recipientActive").checked = item.is_active; $("recipientActive").disabled = false; $("recipientFormTitle").textContent = item.name; $("recipientName").focus();
+  }
+
   function editEquipment(id) {
     const item = state.equipment.find((row) => row.id === id); if (!item) return;
     $("equipmentId").value = item.id; $("equipmentCode").value = item.code; $("equipmentCode").readOnly = true; $("equipmentName").value = item.name; $("equipmentKind").value = item.device_kind; $("equipmentConnection").value = item.connection_type; $("equipmentManufacturer").value = item.manufacturer || ""; $("equipmentModel").value = item.model || ""; $("equipmentWarehouse").innerHTML = warehouseOptions(item.warehouse_id || "", true); $("equipmentDriver").value = item.driver_code || ""; $("equipmentHost").value = item.host || ""; $("equipmentPort").value = item.port || ""; $("equipmentQueue").value = item.queue_name || ""; $("equipmentSerial").value = item.serial_device || ""; $("equipmentParameters").value = JSON.stringify(item.parameters || {}, null, 2); $("equipmentDefault").checked = item.is_default; $("equipmentActive").checked = item.is_active; $("equipmentFormTitle").textContent = item.name; updateConnectionFields(); $("equipmentName").focus();
@@ -166,11 +184,11 @@
   }
 
   async function reloadAll(successText = "Настройки загружены.") {
-    const [warehouses, users, roles, workstations, equipment] = await Promise.all([
-      api("/api/warehouses"), api("/api/auth/admin/users"), api("/api/auth/roles"), api("/api/auth/admin/workstations"), api("/api/equipment-profiles"),
+    const [warehouses, users, roles, workstations, recipients, equipment] = await Promise.all([
+      api("/api/warehouses"), api("/api/auth/admin/users"), api("/api/auth/roles"), api("/api/auth/admin/workstations"), api("/api/stock-recipients?active_only=false"), api("/api/equipment-profiles"),
     ]);
-    state.warehouses = warehouses; state.users = users; state.roles = roles; state.workstations = workstations; state.equipment = equipment;
-    renderWarehouses(); renderUsers(); renderRolePermissions(); renderWorkstations(); renderEquipment(); message(successText);
+    state.warehouses = warehouses; state.users = users; state.roles = roles; state.workstations = workstations; state.recipients = recipients; state.equipment = equipment;
+    renderWarehouses(); renderUsers(); renderRolePermissions(); renderWorkstations(); renderRecipients(); renderEquipment(); message(successText);
   }
 
   function bindForms() {
@@ -198,6 +216,14 @@
         resetWorkstation(); await reloadAll("Рабочее место сохранено.");
       } catch (error) { message(error.message, true); }
     });
+    $("recipientForm").addEventListener("submit", async (event) => {
+      event.preventDefault(); const id = $("recipientId").value;
+      try {
+        const common = { name: $("recipientName").value, kind: $("recipientKind").value };
+        await api(id ? `/api/stock-recipients/${id}` : "/api/stock-recipients", { method: id ? "PUT" : "POST", body: JSON.stringify(id ? { ...common, is_active: $("recipientActive").checked } : { ...common, code: $("recipientCode").value }) });
+        resetRecipient(); await reloadAll("Получатель сохранён.");
+      } catch (error) { message(error.message, true); }
+    });
     $("equipmentForm").addEventListener("submit", async (event) => {
       event.preventDefault(); const id = $("equipmentId").value;
       try {
@@ -218,17 +244,17 @@
       document.querySelectorAll("[data-settings-view]").forEach((view) => { view.hidden = view.dataset.settingsView !== tab; });
       history.replaceState(null, "", `#${tab}`);
     }));
-    $("warehouseReset").addEventListener("click", resetWarehouse); $("userReset").addEventListener("click", resetUser); $("workstationReset").addEventListener("click", resetWorkstation); $("equipmentReset").addEventListener("click", resetEquipment); $("equipmentConnection").addEventListener("change", updateConnectionFields);
+    $("warehouseReset").addEventListener("click", resetWarehouse); $("userReset").addEventListener("click", resetUser); $("workstationReset").addEventListener("click", resetWorkstation); $("recipientReset").addEventListener("click", resetRecipient); $("equipmentReset").addEventListener("click", resetEquipment); $("equipmentConnection").addEventListener("change", updateConnectionFields);
     $("userRole").addEventListener("change", () => renderRolePermissions());
     $("userWarehouses").addEventListener("change", () => renderUserWarehouseControls(selectedWarehouseIds(), $("userDefaultWarehouse").value));
     document.addEventListener("click", (event) => {
       const target = event.target.closest("[data-edit-kind]"); if (!target) return; const id = Number(target.dataset.editId);
-      ({ warehouse: editWarehouse, user: editUser, workstation: editWorkstation, equipment: editEquipment })[target.dataset.editKind]?.(id);
+      ({ warehouse: editWarehouse, user: editUser, workstation: editWorkstation, recipient: editRecipient, equipment: editEquipment })[target.dataset.editKind]?.(id);
     });
   }
 
   async function start() {
-    bindForms(); bindControls(); resetWarehouse(); resetUser(); resetWorkstation(); resetEquipment();
+    bindForms(); bindControls(); resetWarehouse(); resetUser(); resetWorkstation(); resetRecipient(); resetEquipment();
     try {
       state.user = await api("/api/auth/me");
       if (state.user.role !== "admin") { message("Раздел доступен только администратору.", true); document.querySelectorAll("form button").forEach((button) => { button.disabled = true; }); return; }

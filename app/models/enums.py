@@ -68,6 +68,12 @@ class StockReservationResult(StrEnum):
     NONE = "none"
 
 
+class StockRecipientKind(StrEnum):
+    EMPLOYEE = "employee"
+    DEPARTMENT = "department"
+    WORKPLACE = "workplace"
+
+
 class AuthenticationMethod(StrEnum):
     PASSWORD = "password"
     ACCESS_PASS = "access_pass"

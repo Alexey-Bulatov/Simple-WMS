@@ -20,6 +20,7 @@ from app.models.enums import (
     StockReservationKind,
     StockReservationResult,
     StockReservationStatus,
+    StockRecipientKind,
     TransferKind,
     TransferStatus,
     TaskPriority,
@@ -579,6 +580,50 @@ class StockOwnerRead(StockOwnerCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class StockRecipientCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    kind: StockRecipientKind
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class StockRecipientUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    kind: StockRecipientKind
+    is_active: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class StockRecipientRead(StockRecipientCreate):
+    id: int
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class StockPositionRead(BaseModel):
     id: int
     product_id: int
@@ -596,6 +641,7 @@ class StockPositionRead(BaseModel):
     reserved_quantity: Decimal
     in_transit_quantity: Decimal
     blocked_quantity: Decimal
+    quarantine_quantity: Decimal
     base_uom_id: int
     base_uom_code: str
     base_uom_symbol: str
@@ -610,6 +656,93 @@ class StockPositionRead(BaseModel):
     warehouse_code: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class StockSearchPackagingRead(BaseModel):
+    id: int
+    code: str
+    name: str
+    barcode: str | None
+    quantity: Decimal
+    uom_id: int
+    uom_code: str
+    uom_symbol: str
+    base_quantity: Decimal
+    matched: bool = False
+
+
+class StockSearchItemRead(BaseModel):
+    product_id: int
+    product_code: str
+    product_name: str
+    is_active: bool
+    base_uom_id: int | None
+    base_uom_code: str | None
+    base_uom_symbol: str | None
+    base_uom_dimension: MeasurementDimension | None
+    total_quantity: Decimal
+    available_quantity: Decimal
+    reserved_quantity: Decimal
+    quarantine_quantity: Decimal
+    blocked_quantity: Decimal
+    in_transit_quantity: Decimal
+    match_reason: str
+    packagings: list[StockSearchPackagingRead]
+    positions: list[StockPositionRead]
+
+
+class StockSearchRead(BaseModel):
+    query: str
+    result: Literal["none", "exact", "multiple"]
+    items: list[StockSearchItemRead]
+
+
+class InternalIssueLineCreate(BaseModel):
+    stock_position_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int | None = Field(default=None, gt=0)
+    packaging_id: int | None = Field(default=None, gt=0)
+    source_scan: str | None = Field(default=None, max_length=120)
+    item_scan: str | None = Field(default=None, max_length=120)
+
+    @field_validator("source_scan", "item_scan")
+    @classmethod
+    def normalize_scan(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_input_unit(self):
+        if (self.input_uom_id is None) == (self.packaging_id is None):
+            raise ValueError("use either input_uom_id or packaging_id")
+        return self
+
+
+class InternalIssueCreate(BaseModel):
+    recipient_id: int = Field(gt=0)
+    reason: str = Field(min_length=1, max_length=500)
+    request_reference: str | None = Field(default=None, max_length=120)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    lines: list[InternalIssueLineCreate] = Field(min_length=1, max_length=100)
+
+    @field_validator("reason", "idempotency_key", "actor")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("request_reference")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class StockReservationCreate(BaseModel):
@@ -1000,6 +1133,25 @@ class StockDocumentRead(BaseModel):
 
 
 class StockDocumentDetailRead(StockDocumentRead):
+    movements: list[StockMovementRead]
+
+
+class InternalIssueRead(BaseModel):
+    uid: str
+    status: StockDocumentStatus
+    recipient_id: int
+    recipient_code: str
+    recipient_name: str
+    recipient_kind: StockRecipientKind
+    request_reference: str | None
+    actor: str
+    reason: str
+    idempotency_key: str
+    warehouse_ids: list[int]
+    warehouse_codes: list[str]
+    created_at: datetime
+    posted_at: datetime | None
+    reversed_at: datetime | None
     movements: list[StockMovementRead]
 
 

@@ -43,6 +43,7 @@ from app.models.entities import (
     RackSection,
     StockDocument,
     StockOwner,
+    StockRecipient,
     UnitOfMeasure,
     User,
     Warehouse,
@@ -78,6 +79,8 @@ from app.schemas import (
     StockDocumentPost,
     StockMovementPost,
     StockOwnerCreate,
+    StockRecipientCreate,
+    StockRecipientUpdate,
     UserCreate,
     UnitOfMeasureCreate,
     WarehouseCreate,
@@ -1441,6 +1444,57 @@ def create_stock_owner(db: Session, payload: StockOwnerCreate) -> StockOwner:
     commit_or_409(db, "stock owner code already exists")
     db.refresh(owner)
     return owner
+
+
+def create_stock_recipient(
+    db: Session,
+    payload: StockRecipientCreate,
+) -> StockRecipient:
+    recipient = StockRecipient(**payload.model_dump())
+    db.add(recipient)
+    create_event(
+        db,
+        operation="stock_recipient_created",
+        object_type="stock_recipient",
+        object_uid=recipient.code,
+        after={"name": recipient.name, "kind": recipient.kind.value},
+    )
+    commit_or_409(db, "stock recipient code already exists")
+    db.refresh(recipient)
+    return recipient
+
+
+def update_stock_recipient(
+    db: Session,
+    recipient_id: int,
+    payload: StockRecipientUpdate,
+) -> StockRecipient:
+    recipient = db.get(StockRecipient, recipient_id)
+    if recipient is None:
+        raise not_found("stock_recipient")
+    before = {
+        "name": recipient.name,
+        "kind": recipient.kind.value,
+        "is_active": recipient.is_active,
+    }
+    recipient.name = payload.name
+    recipient.kind = payload.kind
+    recipient.is_active = payload.is_active
+    create_event(
+        db,
+        operation="stock_recipient_updated",
+        object_type="stock_recipient",
+        object_uid=recipient.code,
+        before=before,
+        after={
+            "name": recipient.name,
+            "kind": recipient.kind.value,
+            "is_active": recipient.is_active,
+        },
+    )
+    db.commit()
+    db.refresh(recipient)
+    return recipient
 
 
 def create_batch(db: Session, payload: BatchCreate) -> Batch:

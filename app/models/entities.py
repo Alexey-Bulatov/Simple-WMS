@@ -36,6 +36,7 @@ from app.models.enums import (
     StockReservationKind,
     StockReservationResult,
     StockReservationStatus,
+    StockRecipientKind,
     TransferKind,
     TransferStatus,
     TaskPriority,
@@ -445,6 +446,20 @@ class StockOwner(Base):
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
     is_internal: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StockRecipient(Base):
+    __tablename__ = "stock_recipients"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    kind: Mapped[StockRecipientKind] = mapped_column(
+        Enum(StockRecipientKind, native_enum=False, length=24),
+        index=True,
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
