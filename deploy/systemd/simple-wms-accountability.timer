@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Simple WMS accountability normative writeoff
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=5m
+Unit=simple-wms-accountability.service
+
+[Install]
+WantedBy=timers.target

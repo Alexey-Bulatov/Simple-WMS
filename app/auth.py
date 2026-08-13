@@ -707,7 +707,7 @@ def mutation_permission(request: Request) -> WarehousePermission | None:
             return WarehousePermission.STOCK_CONSUME
         return WarehousePermission.STOCK_RESERVE
     if root == "internal-issues":
-        if tail and tail[-1] == "reverse":
+        if tail and tail[-1] in {"reverse", "write-off"}:
             return WarehousePermission.STOCK_CORRECT
         return WarehousePermission.STOCK_CONSUME
     if root == "stock-documents" and tail and tail[-1] == "reverse":

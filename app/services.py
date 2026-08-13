@@ -1387,6 +1387,7 @@ def create_product(db: Session, payload: ProductCreate) -> Product:
             "name": data["name"],
             "base_uom_id": data["base_uom_id"],
             "shelf_life_days": data["shelf_life_days"],
+            "accountability_period_days": data["accountability_period_days"],
         },
     )
     commit_or_409(db, "product already exists")

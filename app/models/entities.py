@@ -379,6 +379,12 @@ class LogisticUnitContent(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        CheckConstraint(
+            "accountability_period_days IS NULL OR accountability_period_days > 0",
+            name="ck_product_accountability_period_days",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -386,6 +392,7 @@ class Product(Base):
     unit: Mapped[str] = mapped_column(String(32), default=DEFAULT_UNIT)
     base_uom_id: Mapped[int | None] = mapped_column(ForeignKey("units_of_measure.id"), nullable=True, index=True)
     shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    accountability_period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     batches: Mapped[list["Batch"]] = relationship(back_populates="product")

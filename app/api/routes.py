@@ -106,6 +106,10 @@ from app.schemas import (
     StockReconciliationRead,
     InternalIssueCreate,
     InternalIssueRead,
+    InternalAccountabilityWriteoffCreate,
+    InternalAccountabilityWriteoffRead,
+    InternalReturnCreate,
+    InternalReturnRead,
     StockReservationConsumeRequest,
     StockReservationCreate,
     StockReservationLogisticUnitRequest,
@@ -171,10 +175,16 @@ from app.services import (
 from app.stock import stock_position_payload
 from app.stock_search import search_stock
 from app.internal_issues import (
+    INTERNAL_ACCOUNTABILITY_WRITEOFF_DOCUMENT_TYPE,
     INTERNAL_ISSUE_DOCUMENT_TYPE,
+    INTERNAL_RETURN_DOCUMENT_TYPE,
+    accountability_writeoff_payload,
+    create_accountability_writeoff,
     create_internal_issue,
+    create_internal_return,
     get_internal_issue,
     internal_issue_payload,
+    internal_return_payload,
     reverse_internal_issue,
 )
 from app.stock_ledger import (
@@ -1828,6 +1838,107 @@ def api_list_internal_issues(
         for item in payloads
         if warehouse_payload_visible(request, item["warehouse_ids"], any_assigned=True)
     ]
+
+
+@router.post(
+    "/internal-issues/{issue_uid}/returns",
+    response_model=InternalReturnRead,
+)
+def api_create_internal_return(
+    request: Request,
+    issue_uid: str,
+    payload: InternalReturnCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    document = create_internal_return(
+        db,
+        issue_uid,
+        payload,
+        warehouse_scope=request_warehouse_scope(request),
+    )
+    return internal_return_payload(db, document)
+
+
+@router.get(
+    "/internal-issues/{issue_uid}/returns",
+    response_model=list[InternalReturnRead],
+)
+def api_list_internal_returns(
+    request: Request,
+    issue_uid: str,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    issue = get_internal_issue(db, issue_uid)
+    issue_data = internal_issue_payload(db, issue)
+    if not warehouse_payload_visible(
+        request,
+        issue_data["warehouse_ids"],
+        any_assigned=True,
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    documents = db.scalars(
+        select(StockDocument)
+        .where(
+            StockDocument.document_type == INTERNAL_RETURN_DOCUMENT_TYPE,
+            StockDocument.reference_type == INTERNAL_ISSUE_DOCUMENT_TYPE,
+            StockDocument.reference_uid == issue.uid,
+        )
+        .order_by(StockDocument.created_at.desc(), StockDocument.id.desc())
+    )
+    return [internal_return_payload(db, document) for document in documents]
+
+
+@router.post(
+    "/internal-issues/{issue_uid}/write-off",
+    response_model=InternalAccountabilityWriteoffRead,
+)
+def api_write_off_internal_issue_accountability(
+    request: Request,
+    issue_uid: str,
+    payload: InternalAccountabilityWriteoffCreate,
+    db: Session = Depends(get_db),
+) -> dict:
+    issue_data = internal_issue_payload(db, get_internal_issue(db, issue_uid))
+    if not warehouse_payload_visible(
+        request,
+        issue_data["warehouse_ids"],
+        any_assigned=True,
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    return accountability_writeoff_payload(
+        db,
+        create_accountability_writeoff(db, issue_uid, payload),
+    )
+
+
+@router.get(
+    "/internal-issues/{issue_uid}/write-offs",
+    response_model=list[InternalAccountabilityWriteoffRead],
+)
+def api_list_internal_issue_writeoffs(
+    request: Request,
+    issue_uid: str,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    issue = get_internal_issue(db, issue_uid)
+    issue_data = internal_issue_payload(db, issue)
+    if not warehouse_payload_visible(
+        request,
+        issue_data["warehouse_ids"],
+        any_assigned=True,
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="warehouse is unavailable")
+    documents = db.scalars(
+        select(StockDocument)
+        .where(
+            StockDocument.document_type
+            == INTERNAL_ACCOUNTABILITY_WRITEOFF_DOCUMENT_TYPE,
+            StockDocument.reference_type == INTERNAL_ISSUE_DOCUMENT_TYPE,
+            StockDocument.reference_uid == issue.uid,
+        )
+        .order_by(StockDocument.created_at.desc(), StockDocument.id.desc())
+    )
+    return [accountability_writeoff_payload(db, document) for document in documents]
 
 
 @router.get("/internal-issues/{issue_uid}", response_model=InternalIssueRead)

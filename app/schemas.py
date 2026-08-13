@@ -539,6 +539,7 @@ class ProductCreate(BaseModel):
     unit: str = DEFAULT_UNIT
     base_uom_id: int | None = None
     shelf_life_days: int | None = Field(default=None, ge=1)
+    accountability_period_days: int | None = Field(default=None, ge=1)
 
 
 class ProductRead(ProductCreate):
@@ -680,6 +681,7 @@ class StockSearchItemRead(BaseModel):
     base_uom_code: str | None
     base_uom_symbol: str | None
     base_uom_dimension: MeasurementDimension | None
+    accountability_period_days: int | None
     total_quantity: Decimal
     available_quantity: Decimal
     reserved_quantity: Decimal
@@ -722,6 +724,10 @@ class InternalIssueLineCreate(BaseModel):
 
 class InternalIssueCreate(BaseModel):
     recipient_id: int = Field(gt=0)
+    issue_kind: Literal["permanent", "accountable"] = "permanent"
+    accountability_policy: Literal["return_required", "normative_writeoff"] | None = None
+    planned_close_date: date | None = None
+    auto_writeoff: bool = False
     reason: str = Field(min_length=1, max_length=500)
     request_reference: str | None = Field(default=None, max_length=120)
     idempotency_key: str = Field(min_length=1, max_length=120)
@@ -743,6 +749,62 @@ class InternalIssueCreate(BaseModel):
             return None
         normalized = value.strip()
         return normalized or None
+
+    @model_validator(mode="after")
+    def validate_return_terms(self):
+        if self.issue_kind == "permanent" and any(
+            (self.accountability_policy, self.planned_close_date, self.auto_writeoff)
+        ):
+            raise ValueError("accountability terms are only allowed for accountable issue")
+        if self.issue_kind == "accountable" and self.accountability_policy is None:
+            raise ValueError("accountability_policy is required for accountable issue")
+        if self.accountability_policy == "return_required" and self.auto_writeoff:
+            raise ValueError("auto_writeoff requires normative_writeoff policy")
+        if (
+            self.accountability_policy == "normative_writeoff"
+            and self.planned_close_date is None
+        ):
+            raise ValueError("planned_close_date is required for normative writeoff")
+        return self
+
+
+class InternalReturnLineCreate(BaseModel):
+    issue_movement_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int | None = Field(default=None, gt=0)
+    packaging_id: int | None = Field(default=None, gt=0)
+    quality_status: Literal["released", "quarantine"] = "released"
+    destination_scan: str = Field(min_length=1, max_length=120)
+    item_scan: str = Field(min_length=1, max_length=120)
+
+    @field_validator("destination_scan", "item_scan")
+    @classmethod
+    def normalize_return_scan(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("scan must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_input_unit(self):
+        if (self.input_uom_id is None) == (self.packaging_id is None):
+            raise ValueError("use either input_uom_id or packaging_id")
+        return self
+
+
+class InternalReturnCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    lines: list[InternalReturnLineCreate] = Field(min_length=1, max_length=100)
+
+    @field_validator("reason", "idempotency_key", "actor")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
 
 
 class StockReservationCreate(BaseModel):
@@ -1136,6 +1198,12 @@ class StockDocumentDetailRead(StockDocumentRead):
     movements: list[StockMovementRead]
 
 
+class InternalIssueMovementRead(StockMovementRead):
+    returned_quantity: Decimal
+    written_off_quantity: Decimal
+    remaining_quantity: Decimal
+
+
 class InternalIssueRead(BaseModel):
     uid: str
     status: StockDocumentStatus
@@ -1143,6 +1211,20 @@ class InternalIssueRead(BaseModel):
     recipient_code: str
     recipient_name: str
     recipient_kind: StockRecipientKind
+    issue_kind: Literal["permanent", "accountable"]
+    accountability_policy: Literal["return_required", "normative_writeoff"] | None
+    planned_close_date: date | None
+    auto_writeoff: bool
+    accountability_status: Literal[
+        "not_applicable",
+        "open",
+        "partial",
+        "returned",
+        "written_off",
+        "closed_mixed",
+    ]
+    return_uids: list[str]
+    writeoff_uids: list[str]
     request_reference: str | None
     actor: str
     reason: str
@@ -1152,7 +1234,52 @@ class InternalIssueRead(BaseModel):
     created_at: datetime
     posted_at: datetime | None
     reversed_at: datetime | None
+    movements: list[InternalIssueMovementRead]
+
+
+class InternalReturnRead(BaseModel):
+    uid: str
+    status: StockDocumentStatus
+    issue_uid: str
+    recipient_code: str
+    recipient_name: str
+    actor: str
+    reason: str
+    idempotency_key: str
+    warehouse_ids: list[int]
+    warehouse_codes: list[str]
+    created_at: datetime
+    posted_at: datetime | None
+    reversed_at: datetime | None
     movements: list[StockMovementRead]
+
+
+class InternalAccountabilityWriteoffCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+
+    @field_validator("reason", "idempotency_key", "actor")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class InternalAccountabilityWriteoffRead(BaseModel):
+    uid: str
+    status: StockDocumentStatus
+    issue_uid: str
+    recipient_code: str
+    recipient_name: str
+    actor: str
+    reason: str
+    idempotency_key: str
+    written_off_quantities: dict[str, Decimal]
+    created_at: datetime
+    posted_at: datetime | None
 
 
 class StockReconciliationIssueRead(BaseModel):

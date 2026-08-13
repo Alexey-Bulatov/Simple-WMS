@@ -153,6 +153,7 @@ def search_stock(
                 "base_uom_code": base_uom.code if base_uom else None,
                 "base_uom_symbol": base_uom.symbol if base_uom else None,
                 "base_uom_dimension": base_uom.dimension if base_uom else None,
+                "accountability_period_days": product.accountability_period_days,
                 "total_quantity": sum(
                     (item["quantity"] for item in position_payloads), Decimal("0")
                 ),

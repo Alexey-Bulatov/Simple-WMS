@@ -67,7 +67,7 @@ def console_markup() -> str:
 
 
 def document(title: str, body_class: str, body: str, script: str) -> str:
-    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/static/universal.css"></head><body class="{body_class}">{body}<div id="toast" class="toast" hidden></div><script src="{script}" defer></script><script src="/static/universal-auth-shell.js" defer></script></body></html>"""
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/static/universal.css?v=20260813-2"></head><body class="{body_class}">{body}<div id="toast" class="toast" hidden></div><script src="{script}" defer></script><script src="/static/universal-auth-shell.js" defer></script></body></html>"""
 
 
 @router.get("/", include_in_schema=False)
@@ -127,13 +127,17 @@ def stock_page() -> str:
       </section>
       <section id="issuePanel" class="issue-panel" hidden>
         <div class="panel-head"><div><span class="eyebrow">SCN-08</span><h2>Внутренняя выдача</h2></div><button id="closeIssue" class="icon-button" type="button" title="Закрыть" aria-label="Закрыть">×</button></div>
-        <div class="rail"><div class="rail-step done"><span>1</span><b>Источник</b></div><div class="rail-step active"><span>2</span><b>Получатель</b></div><div class="rail-step"><span>3</span><b>Списание</b></div></div>
+        <div class="rail"><div class="rail-step done"><span>1</span><b>Источник</b></div><div class="rail-step active"><span>2</span><b>Получатель</b></div><div class="rail-step"><span>3</span><b>Проведение</b></div></div>
         <div id="issueFacts" class="facts"></div>
         <form id="issueForm" class="issue-form">
           <label><span>Получатель</span><select id="issueRecipient" required></select></label>
+          <label><span>Вид выдачи</span><select id="issueKind" required><option value="permanent">Без возврата</option><option value="accountable:return_required">Под ответственность · вернуть</option><option value="accountable:normative_writeoff">Под ответственность · списать по нормативу</option></select></label>
           <label><span>Количество</span><input id="issueQuantity" type="number" min="0.000001" step="0.000001" required></label>
           <label><span>Единица</span><select id="issueUom" required></select></label>
+          <label id="plannedCloseField" hidden><span id="plannedCloseLabel">Плановая дата</span><input id="issuePlannedCloseDate" type="date"></label>
+          <label id="autoWriteoffField" class="check-row issue-check" hidden><input id="issueAutoWriteoff" type="checkbox" checked><span>Списать автоматически по нормативу</span></label>
           <label><span>Номер заявки</span><input id="issueRequestReference" maxlength="120" placeholder="Необязательно"></label>
+          <div id="existingIssueWarning" class="message warn issue-span" hidden></div>
           <label class="issue-span"><span>Основание выдачи</span><textarea id="issueReason" maxlength="500" required placeholder="Для чего и на каком основании выдаётся"></textarea></label>
           <label><span>Скан источника</span><input id="issueSourceScan" class="mono" autocomplete="off" required></label>
           <label><span>Скан товара или упаковки</span><input id="issueItemScan" class="mono" autocomplete="off" required></label>
@@ -142,7 +146,7 @@ def stock_page() -> str:
         <div id="issueMessage" class="message">Скан источника и товара защищает от выдачи не из той ячейки.</div>
       </section>
       <section class="recent-issues-panel">
-        <div class="panel-head"><div><span class="eyebrow">Последние операции</span><h2>Внутренние выдачи</h2></div><button id="refreshIssues" class="icon-button" type="button" title="Обновить" aria-label="Обновить">↻</button></div>
+        <div class="panel-head"><div><span class="eyebrow">Последние операции</span><h2>Выдачи и ответственность</h2></div><button id="refreshIssues" class="icon-button" type="button" title="Обновить" aria-label="Обновить">↻</button></div>
         <div id="recentIssues" class="data-list"></div>
       </section>
     </main>
@@ -154,6 +158,7 @@ def stock_page() -> str:
           <label><span>Название</span><input id="productName" maxlength="240" autocomplete="off" required></label>
           <label><span>Базовая единица</span><select id="productUom" required></select></label>
           <label><span>Срок годности, дней</span><input id="productShelfLife" type="number" min="1" step="1" placeholder="Необязательно"></label>
+          <label class="catalog-span"><span>Норматив ответственной выдачи, дней</span><input id="productAccountabilityPeriod" type="number" min="1" step="1" placeholder="Необязательно"></label>
         </div>
         <div id="productMessage" class="message">Код будет приведён к верхнему регистру.</div>
         <div class="dialog-actions"><button class="secondary" data-close-dialog="productDialog" type="button">Отмена</button><button class="primary" type="submit">Создать позицию</button></div>
@@ -174,12 +179,29 @@ def stock_page() -> str:
         <div class="dialog-actions"><button class="secondary" data-close-dialog="packagingDialog" type="button">Отмена</button><button class="primary" type="submit">Добавить упаковку</button></div>
       </form>
     </dialog>
+    <dialog id="returnDialog" class="catalog-dialog">
+      <form id="returnForm">
+        <div class="dialog-head"><div><span class="eyebrow">SCN-08</span><h2 id="returnTitle">Возврат по выдаче</h2></div><button class="icon-button" data-close-dialog="returnDialog" type="button" title="Закрыть" aria-label="Закрыть">×</button></div>
+        <div id="returnFacts" class="facts"></div>
+        <div class="catalog-form-grid">
+          <label class="catalog-span"><span>Позиция исходной выдачи</span><select id="returnMovement" required></select></label>
+          <label><span>Количество</span><input id="returnQuantity" type="number" min="0.000001" step="0.000001" required></label>
+          <label><span>Единица</span><select id="returnUom" required></select></label>
+          <label><span>Состояние</span><select id="returnQuality"><option value="released">Годно к хранению</option><option value="quarantine">Карантин / требуется проверка</option></select></label>
+          <label><span>Скан места возврата</span><input id="returnDestinationScan" class="mono" autocomplete="off" required></label>
+          <label class="catalog-span"><span>Скан товара или упаковки</span><input id="returnItemScan" class="mono" autocomplete="off" required></label>
+          <label class="catalog-span"><span>Основание возврата</span><textarea id="returnReason" maxlength="500" required placeholder="Например, увольнение или окончание работ"></textarea></label>
+        </div>
+        <div id="returnMessage" class="message">Количество сверяется с невозвращённым остатком исходной выдачи.</div>
+        <div class="dialog-actions"><button class="secondary" data-close-dialog="returnDialog" type="button">Отмена</button><button class="primary" type="submit">Подтвердить возврат</button></div>
+      </form>
+    </dialog>
     """
     return document(
         "Номенклатура Simple WMS",
         "stock-page",
         body,
-        "/static/universal-stock.js?v=20260813-2",
+        "/static/universal-stock.js?v=20260813-3",
     )
 
 

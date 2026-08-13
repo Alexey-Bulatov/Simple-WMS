@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,8 +13,13 @@ from app.db.session import get_db
 from app.main import app
 from app.api import routes as api_routes
 from app.internal_issues import (
+    accountability_writeoff_payload,
+    create_accountability_writeoff,
     create_internal_issue,
+    create_internal_return,
     internal_issue_payload,
+    internal_return_payload,
+    process_due_accountability_writeoffs,
     reverse_internal_issue,
 )
 from app.models.entities import (
@@ -31,11 +37,15 @@ from app.models.enums import LocationKind, StockDocumentStatus, StockRecipientKi
 from app.schemas import (
     InternalIssueCreate,
     InternalIssueLineCreate,
+    InternalAccountabilityWriteoffCreate,
+    InternalReturnCreate,
+    InternalReturnLineCreate,
     ProductCreate,
     StockDocumentReverseRequest,
 )
 from app.services import create_product, ensure_reference_catalogs
 from app.stock_search import search_stock
+from app.stock_ledger import reverse_stock_document
 
 
 @pytest.fixture()
@@ -127,9 +137,24 @@ def create_context(db, *, quantity: str = "10"):
     return product, pieces, owner, warehouse, location, position, recipient
 
 
-def issue_payload(position, pieces, recipient, *, key="issue:001", quantity="3"):
+def issue_payload(
+    position,
+    pieces,
+    recipient,
+    *,
+    key="issue:001",
+    quantity="3",
+    issue_kind="permanent",
+    accountability_policy=None,
+    planned_close_date=None,
+    auto_writeoff=False,
+):
     return InternalIssueCreate(
         recipient_id=recipient.id,
+        issue_kind=issue_kind,
+        accountability_policy=accountability_policy,
+        planned_close_date=planned_close_date,
+        auto_writeoff=auto_writeoff,
         reason="Выдача средств защиты",
         request_reference="REQ-42",
         idempotency_key=key,
@@ -140,6 +165,24 @@ def issue_payload(position, pieces, recipient, *, key="issue:001", quantity="3")
                 input_quantity=Decimal(quantity),
                 input_uom_id=pieces.id,
                 source_scan="WH-ISS-ST01-R01-L01-P01",
+                item_scan="460000000001",
+            )
+        ],
+    )
+
+
+def return_payload(issue, pieces, *, key="return:001", quantity="1", quality="released"):
+    return InternalReturnCreate(
+        reason="Возврат выданного имущества",
+        idempotency_key=key,
+        actor="storekeeper",
+        lines=[
+            InternalReturnLineCreate(
+                issue_movement_id=issue.movements[0].id,
+                input_quantity=Decimal(quantity),
+                input_uom_id=pieces.id,
+                quality_status=quality,
+                destination_scan="WH-ISS-ST01-R01-L01-P01",
                 item_scan="460000000001",
             )
         ],
@@ -281,6 +324,207 @@ def test_internal_issue_reversal_restores_stock_as_correction(db):
     assert len(list(db.scalars(select(StockDocument)))) == 2
 
 
+def test_accountable_issue_supports_partial_return_and_quarantine(db):
+    product, pieces, owner, warehouse, location, position, recipient = create_context(
+        db,
+        quantity="8",
+    )
+    issue = create_internal_issue(
+        db,
+        issue_payload(
+            position,
+            pieces,
+            recipient,
+            quantity="5",
+            issue_kind="accountable",
+            accountability_policy="return_required",
+            planned_close_date=date.today() + timedelta(days=30),
+        ),
+        warehouse_scope={warehouse.id},
+    )
+
+    first_return = create_internal_return(
+        db,
+        issue.uid,
+        return_payload(issue, pieces, quantity="2"),
+        warehouse_scope={warehouse.id},
+    )
+    repeated = create_internal_return(
+        db,
+        issue.uid,
+        return_payload(issue, pieces, quantity="2"),
+        warehouse_scope={warehouse.id},
+    )
+    second_return = create_internal_return(
+        db,
+        issue.uid,
+        return_payload(
+            issue,
+            pieces,
+            key="return:002",
+            quantity="1",
+            quality="quarantine",
+        ),
+        warehouse_scope={warehouse.id},
+    )
+    data = internal_issue_payload(db, issue)
+
+    assert repeated.id == first_return.id
+    assert internal_return_payload(db, second_return)["issue_uid"] == issue.uid
+    assert data["accountability_status"] == "partial"
+    assert data["movements"][0]["returned_quantity"] == Decimal("3")
+    assert data["movements"][0]["remaining_quantity"] == Decimal("2")
+    assert db.scalar(
+        select(StockPosition.quantity).where(
+            StockPosition.product_id == product.id,
+            StockPosition.owner_id == owner.id,
+            StockPosition.location_id == location.id,
+            StockPosition.quality_status == "released",
+        )
+    ) == Decimal("5")
+    assert db.scalar(
+        select(StockPosition.quantity).where(
+            StockPosition.product_id == product.id,
+            StockPosition.owner_id == owner.id,
+            StockPosition.location_id == location.id,
+            StockPosition.quality_status == "quarantine",
+        )
+    ) == Decimal("1")
+
+
+def test_internal_return_rejects_permanent_and_excess_quantity(db):
+    _, pieces, _, warehouse, _, position, recipient = create_context(db, quantity="6")
+    permanent = create_internal_issue(
+        db,
+        issue_payload(position, pieces, recipient, quantity="2"),
+        warehouse_scope={warehouse.id},
+    )
+    with pytest.raises(HTTPException, match="only an accountable"):
+        create_internal_return(
+            db,
+            permanent.uid,
+            return_payload(permanent, pieces),
+            warehouse_scope={warehouse.id},
+        )
+
+    position = db.scalar(select(StockPosition).where(StockPosition.product_id == position.product_id))
+    accountable = create_internal_issue(
+        db,
+        issue_payload(
+            position,
+            pieces,
+            recipient,
+            key="issue:accountable",
+            quantity="2",
+            issue_kind="accountable",
+            accountability_policy="return_required",
+        ),
+        warehouse_scope={warehouse.id},
+    )
+    with pytest.raises(HTTPException, match="exceeds the outstanding"):
+        create_internal_return(
+            db,
+            accountable.uid,
+            return_payload(
+                accountable,
+                pieces,
+                key="return:excess",
+                quantity="3",
+            ),
+            warehouse_scope={warehouse.id},
+        )
+    assert internal_issue_payload(db, accountable)["accountability_status"] == "open"
+
+
+def test_normative_auto_writeoff_closes_only_outstanding_accountability(db):
+    _, pieces, _, warehouse, _, position, recipient = create_context(db, quantity="10")
+    planned_date = date.today() - timedelta(days=1)
+    issue = create_internal_issue(
+        db,
+        issue_payload(
+            position,
+            pieces,
+            recipient,
+            quantity="4",
+            issue_kind="accountable",
+            accountability_policy="normative_writeoff",
+            planned_close_date=planned_date,
+            auto_writeoff=True,
+        ),
+        warehouse_scope={warehouse.id},
+    )
+    create_internal_return(
+        db,
+        issue.uid,
+        return_payload(issue, pieces, quantity="1"),
+        warehouse_scope={warehouse.id},
+    )
+    stock_before_writeoff = db.scalar(
+        select(StockPosition.quantity).where(StockPosition.id == position.id)
+    )
+
+    processed = process_due_accountability_writeoffs(db, as_of_date=date.today())
+    repeated = process_due_accountability_writeoffs(db, as_of_date=date.today())
+    data = internal_issue_payload(db, issue)
+
+    assert len(processed) == 1
+    assert repeated == []
+    assert accountability_writeoff_payload(db, processed[0])["issue_uid"] == issue.uid
+    assert data["accountability_status"] == "closed_mixed"
+    assert data["movements"][0]["returned_quantity"] == Decimal("1")
+    assert data["movements"][0]["written_off_quantity"] == Decimal("3")
+    assert data["movements"][0]["remaining_quantity"] == Decimal("0")
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.id == position.id)
+    ) == stock_before_writeoff
+
+    reverse_stock_document(
+        db,
+        processed[0].uid,
+        StockDocumentReverseRequest(
+            idempotency_key="writeoff:auto:reverse",
+            actor="manager",
+            reason="Исправление ошибочного норматива",
+        ),
+    )
+    reopened = internal_issue_payload(db, issue)
+    assert reopened["accountability_status"] == "partial"
+    assert reopened["movements"][0]["remaining_quantity"] == Decimal("3")
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.id == position.id)
+    ) == stock_before_writeoff
+
+
+def test_normative_writeoff_cannot_run_before_due_date(db):
+    _, pieces, _, warehouse, _, position, recipient = create_context(db)
+    issue = create_internal_issue(
+        db,
+        issue_payload(
+            position,
+            pieces,
+            recipient,
+            issue_kind="accountable",
+            accountability_policy="normative_writeoff",
+            planned_close_date=date.today() + timedelta(days=90),
+            auto_writeoff=True,
+        ),
+        warehouse_scope={warehouse.id},
+    )
+
+    assert process_due_accountability_writeoffs(db, as_of_date=date.today()) == []
+    with pytest.raises(HTTPException, match="date has not been reached"):
+        create_accountability_writeoff(
+            db,
+            issue.uid,
+            InternalAccountabilityWriteoffCreate(
+                reason="Попытка досрочного списания",
+                idempotency_key="writeoff:early",
+                actor="manager",
+            ),
+            as_of_date=date.today(),
+        )
+
+
 def test_search_and_internal_issue_api_contract(db, client):
     _, pieces, _, warehouse, _, position, recipient = create_context(db, quantity="5")
 
@@ -297,8 +541,55 @@ def test_search_and_internal_issue_api_contract(db, client):
     )
     assert issue_response.status_code == 200, issue_response.text
     assert issue_response.json()["recipient_code"] == "EMP-001"
+    assert issue_response.json()["issue_kind"] == "permanent"
+    assert issue_response.json()["accountability_status"] == "not_applicable"
     assert issue_response.json()["movements"][0]["quantity"] == "3.000000"
     assert client.get("/api/internal-issues").json()[0]["uid"] == issue_response.json()["uid"]
+
+
+def test_accountable_issue_and_return_api_contract(db, client):
+    _, pieces, _, warehouse, _, position, recipient = create_context(db, quantity="5")
+    payload = issue_payload(
+        position,
+        pieces,
+        recipient,
+        key="issue:api-accountable",
+        quantity="2",
+        issue_kind="accountable",
+        accountability_policy="return_required",
+    )
+    issue_response = client.post(
+        "/api/internal-issues",
+        json=payload.model_dump(mode="json"),
+    )
+    assert issue_response.status_code == 200, issue_response.text
+    issue = issue_response.json()
+    movement_id = issue["movements"][0]["id"]
+
+    return_response = client.post(
+        f"/api/internal-issues/{issue['uid']}/returns",
+        json={
+            "reason": "Возврат после работ",
+            "idempotency_key": "return:api-accountable",
+            "actor": "storekeeper",
+            "lines": [
+                {
+                    "issue_movement_id": movement_id,
+                    "input_quantity": "2",
+                    "input_uom_id": pieces.id,
+                    "quality_status": "released",
+                    "destination_scan": "WH-ISS-ST01-R01-L01-P01",
+                    "item_scan": "GLOVES",
+                }
+            ],
+        },
+    )
+    assert return_response.status_code == 200, return_response.text
+    assert return_response.json()["issue_uid"] == issue["uid"]
+    refreshed = client.get(f"/api/internal-issues/{issue['uid']}").json()
+    assert refreshed["accountability_status"] == "returned"
+    assert refreshed["movements"][0]["remaining_quantity"] == "0"
+    assert len(client.get(f"/api/internal-issues/{issue['uid']}/returns").json()) == 1
 
 
 def test_catalog_creation_api_feeds_stock_search_and_web_scenario(db, client):

@@ -736,7 +736,48 @@ def reverse_stock_document(
     if original.document_type == "opening_balance":
         raise _conflict("opening balance must be corrected by an adjustment document")
     if not original.movements:
-        raise _conflict("stock document has no movements to reverse")
+        if original.document_type != "internal_accountability_writeoff":
+            raise _conflict("stock document has no movements to reverse")
+        reversed_at = utcnow()
+        reversal = StockDocument(
+            uid=f"MOV-{uuid4().hex[:20].upper()}",
+            document_type=REVERSAL_DOCUMENT_TYPE,
+            status=StockDocumentStatus.POSTED,
+            reference_type="stock_document",
+            reference_uid=original.uid,
+            idempotency_key=payload.idempotency_key,
+            reversal_of_id=original.id,
+            actor=payload.actor,
+            reason=payload.reason,
+            attributes={
+                "operation": "stock_reversal",
+                "original_document_id": original.id,
+                "original_document_uid": original.uid,
+                "original_document_type": original.document_type,
+            },
+            posted_at=reversed_at,
+        )
+        original.status = StockDocumentStatus.REVERSED
+        original.reversed_at = reversed_at
+        db.add(reversal)
+        db.add(
+            OperationEvent(
+                operation="stock_document_reversed",
+                object_type="stock_document",
+                object_uid=original.uid,
+                actor=payload.actor,
+                reason=payload.reason,
+                before={"status": StockDocumentStatus.POSTED.value},
+                after={
+                    "status": StockDocumentStatus.REVERSED.value,
+                    "reversal_document_uid": reversal.uid,
+                    "reversed_at": reversed_at.isoformat(),
+                },
+            )
+        )
+        db.commit()
+        db.refresh(reversal)
+        return reversal
     db.scalar(
         select(StockReservation)
         .where(StockReservation.consumed_by_document_id == original.id)

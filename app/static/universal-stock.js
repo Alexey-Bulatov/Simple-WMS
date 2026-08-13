@@ -1,9 +1,10 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { user: null, warehouses: [], recipients: [], uoms: [], result: null, item: null, position: null, canManageCatalog: false };
+  const state = { user: null, warehouses: [], recipients: [], uoms: [], issues: [], result: null, item: null, position: null, returnIssue: null, canManageCatalog: false };
   const recipientLabels = { employee: "Сотрудник", department: "Подразделение", workplace: "Рабочее место" };
   const statusLabels = { posted: "Проведена", reversed: "Исправлена", released: "Годен", quarantine: "Карантин" };
   const dimensionLabels = { quantity: "Количество", mass: "Масса", volume: "Объём", length: "Длина", area: "Площадь" };
+  const accountabilityLabels = { not_applicable: "Без возврата", open: "На ответственности", partial: "Возвращено частично", returned: "Возвращено", written_off: "Списано по нормативу", closed_mixed: "Закрыто возвратом и списанием" };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const number = (value) => Number(value || 0).toLocaleString("ru-RU", { maximumFractionDigits: 6 });
 
@@ -36,6 +37,15 @@
   }
   function compatibleUoms(item) {
     return state.uoms.filter((uom) => uom.dimension === item.base_uom_dimension);
+  }
+  function dateAfterDays(days) {
+    const result = new Date();
+    result.setDate(result.getDate() + Number(days));
+    return result.toISOString().slice(0, 10);
+  }
+  function selectedIssueMode() {
+    const [issueKind, accountabilityPolicy] = $("issueKind").value.split(":");
+    return { issueKind, accountabilityPolicy: accountabilityPolicy || null };
   }
 
   function renderSearchResults() {
@@ -74,14 +84,45 @@
     $("issuePanel").hidden = false;
     $("issueFacts").innerHTML = `${fact("Товар", state.item.product_name)}${fact("Источник", sourceLabel(position))}${fact("Доступно", `${number(position.available_quantity)} ${state.item.base_uom_symbol || state.item.base_uom_code}`)}${fact("Партия / серия", position.batch_number || position.serial_number || "Без партии")}`;
     $("issueUom").innerHTML = issueOptions(state.item);
+    $("issueKind").value = "permanent";
     $("issueQuantity").value = "1";
     $("issueReason").value = "";
     $("issueRequestReference").value = "";
     $("issueSourceScan").value = "";
     $("issueItemScan").value = "";
+    updateIssueTerms();
+    updateExistingIssueWarning();
     message("issueMessage", "Отсканируйте источник, затем товар или упаковку.");
     $("issuePanel").scrollIntoView({ behavior: "smooth", block: "start" });
     setTimeout(() => $("issueSourceScan").focus(), 250);
+  }
+
+  function updateIssueTerms() {
+    const { issueKind, accountabilityPolicy } = selectedIssueMode();
+    const accountable = issueKind === "accountable";
+    $("plannedCloseField").hidden = !accountable;
+    $("autoWriteoffField").hidden = accountabilityPolicy !== "normative_writeoff";
+    $("plannedCloseLabel").textContent = accountabilityPolicy === "normative_writeoff" ? "Дата списания по нормативу" : "Ожидаемая дата возврата";
+    $("issuePlannedCloseDate").required = accountabilityPolicy === "normative_writeoff";
+    if (accountabilityPolicy === "normative_writeoff" && !$("issuePlannedCloseDate").value && state.item?.accountability_period_days) {
+      $("issuePlannedCloseDate").value = dateAfterDays(state.item.accountability_period_days);
+    }
+    if (!accountable) $("issuePlannedCloseDate").value = "";
+    updateExistingIssueWarning();
+  }
+
+  function updateExistingIssueWarning() {
+    if (!state.item || !$("issueRecipient").value) return;
+    const recipientId = Number($("issueRecipient").value);
+    const openLines = state.issues.flatMap((issue) => issue.recipient_id === recipientId && issue.issue_kind === "accountable" ? issue.movements.filter((movement) => movement.product_id === state.item.product_id && Number(movement.remaining_quantity) > 0).map((movement) => ({ issue, movement })) : []);
+    if (!openLines.length) {
+      $("existingIssueWarning").hidden = true;
+      return;
+    }
+    const total = openLines.reduce((sum, item) => sum + Number(item.movement.remaining_quantity), 0);
+    const dates = openLines.map((item) => item.issue.planned_close_date).filter(Boolean).sort();
+    $("existingIssueWarning").textContent = `У получателя уже числится ${number(total)} ${state.item.base_uom_symbol || state.item.base_uom_code}${dates.length ? `, ближайшая плановая дата ${new Date(`${dates[0]}T00:00:00`).toLocaleDateString("ru-RU")}` : ""}. Новая выдача разрешена.`;
+    $("existingIssueWarning").hidden = false;
   }
 
   async function search() {
@@ -119,6 +160,7 @@
 
   async function submitProduct() {
     const shelfLife = $("productShelfLife").value.trim();
+    const accountabilityPeriod = $("productAccountabilityPeriod").value.trim();
     const created = await api("/api/products", {
       method: "POST",
       body: JSON.stringify({
@@ -126,6 +168,7 @@
         name: $("productName").value,
         base_uom_id: Number($("productUom").value),
         shelf_life_days: shelfLife ? Number(shelfLife) : null,
+        accountability_period_days: accountabilityPeriod ? Number(accountabilityPeriod) : null,
       }),
     });
     $("productDialog").close();
@@ -165,10 +208,15 @@
       source_scan: $("issueSourceScan").value,
       item_scan: $("issueItemScan").value,
     };
+    const { issueKind, accountabilityPolicy } = selectedIssueMode();
     const result = await api("/api/internal-issues", {
       method: "POST",
       body: JSON.stringify({
         recipient_id: Number($("issueRecipient").value),
+        issue_kind: issueKind,
+        accountability_policy: accountabilityPolicy,
+        planned_close_date: $("issuePlannedCloseDate").value || null,
+        auto_writeoff: accountabilityPolicy === "normative_writeoff" && $("issueAutoWriteoff").checked,
         reason: $("issueReason").value,
         request_reference: $("issueRequestReference").value || null,
         idempotency_key: `web-issue:${crypto.randomUUID()}`,
@@ -176,18 +224,77 @@
         lines: [line],
       }),
     });
-    message("issueMessage", `Выдача ${result.uid} проведена. Остаток уменьшен.`, "ok");
+    message("issueMessage", `Выдача ${result.uid} проведена. ${issueKind === "accountable" ? "Ответственность получателя открыта." : "Запас списан без возврата."}`, "ok");
     document.querySelectorAll("#issuePanel .rail-step").forEach((step, index) => { step.classList.toggle("done", index < 3); step.classList.remove("active"); });
     await Promise.all([search(), loadIssues()]);
   }
 
   async function loadIssues() {
-    const rows = await api("/api/internal-issues?limit=20");
-    $("recentIssues").innerHTML = rows.length ? rows.map((issue) => {
+    state.issues = await api("/api/internal-issues?limit=50");
+    $("recentIssues").innerHTML = state.issues.length ? state.issues.map((issue) => {
       const quantity = issue.movements.reduce((total, movement) => total + Number(movement.quantity), 0);
+      const remaining = issue.movements.reduce((total, movement) => total + Number(movement.remaining_quantity), 0);
       const product = issue.movements[0]?.product_code || "Без строк";
-      return `<div class="data-row"><div class="data-row-head"><strong>${esc(issue.recipient_name)}</strong><span class="badge ${issue.status === "posted" ? "completed" : "in_progress"}">${esc(statusLabels[issue.status] || issue.status)}</span></div><small><span class="mono">${esc(issue.uid)}</span> · ${esc(product)} · ${number(quantity)} · ${new Date(issue.posted_at || issue.created_at).toLocaleString("ru-RU")}</small></div>`;
+      const accountable = issue.issue_kind === "accountable";
+      const canReturn = issue.status === "posted" && accountable && remaining > 0;
+      const terms = accountable ? `${accountabilityLabels[issue.accountability_status] || issue.accountability_status}${issue.planned_close_date ? ` · до ${new Date(`${issue.planned_close_date}T00:00:00`).toLocaleDateString("ru-RU")}` : ""}` : "Без возврата";
+      return `<div class="data-row issue-row"><div class="data-row-head"><strong>${esc(issue.recipient_name)}</strong><span class="badge ${accountable && remaining > 0 ? "in_progress" : "completed"}">${esc(terms)}</span></div><small><span class="mono">${esc(issue.uid)}</span> · ${esc(product)} · выдано ${number(quantity)}${accountable ? ` · осталось ${number(remaining)}` : ""} · ${new Date(issue.posted_at || issue.created_at).toLocaleString("ru-RU")}</small>${canReturn ? `<button class="secondary" data-return-issue="${esc(issue.uid)}" type="button">Оформить возврат</button>` : ""}</div>`;
     }).join("") : '<div class="empty-list">Выдач пока нет</div>';
+    updateExistingIssueWarning();
+  }
+
+  function returnMovementOptions(issue) {
+    return issue.movements.filter((movement) => Number(movement.remaining_quantity) > 0).map((movement) => `<option value="${movement.id}">${esc(movement.product_code)} · осталось ${number(movement.remaining_quantity)} ${esc(movement.base_uom_code)}</option>`).join("");
+  }
+
+  function updateReturnMovement() {
+    if (!state.returnIssue) return;
+    const movement = state.returnIssue.movements.find((item) => item.id === Number($("returnMovement").value));
+    if (!movement) return;
+    $("returnQuantity").value = movement.remaining_quantity;
+    $("returnQuantity").max = movement.remaining_quantity;
+    $("returnUom").innerHTML = `<option value="${movement.base_uom_id}">${esc(movement.base_uom_code)}</option>`;
+    $("returnDestinationScan").value = movement.source_logistic_unit_uid || movement.source_location_code || "";
+    $("returnItemScan").value = movement.serial_number || movement.product_code;
+  }
+
+  function openReturn(issueUid) {
+    const issue = state.issues.find((item) => item.uid === issueUid);
+    if (!issue) return;
+    state.returnIssue = issue;
+    $("returnForm").reset();
+    $("returnTitle").textContent = `Возврат по ${issue.uid}`;
+    $("returnFacts").innerHTML = `${fact("Получатель", issue.recipient_name)}${fact("Статус", accountabilityLabels[issue.accountability_status] || issue.accountability_status)}`;
+    $("returnMovement").innerHTML = returnMovementOptions(issue);
+    message("returnMessage", "Количество сверяется с невозвращённым остатком исходной выдачи.");
+    updateReturnMovement();
+    $("returnDialog").showModal();
+    setTimeout(() => $("returnQuantity").focus(), 50);
+  }
+
+  async function submitReturn() {
+    if (!state.returnIssue) throw new Error("Исходная выдача не выбрана");
+    const result = await api(`/api/internal-issues/${encodeURIComponent(state.returnIssue.uid)}/returns`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: $("returnReason").value,
+        idempotency_key: `web-return:${crypto.randomUUID()}`,
+        actor: state.user?.username || "web-operator",
+        lines: [{
+          issue_movement_id: Number($("returnMovement").value),
+          input_quantity: $("returnQuantity").value,
+          input_uom_id: Number($("returnUom").value),
+          packaging_id: null,
+          quality_status: $("returnQuality").value,
+          destination_scan: $("returnDestinationScan").value,
+          item_scan: $("returnItemScan").value,
+        }],
+      }),
+    });
+    $("returnDialog").close();
+    state.returnIssue = null;
+    await Promise.all([loadIssues(), state.item ? search() : Promise.resolve()]);
+    message("stockSearchMessage", `Возврат ${result.uid} проведён. Остаток восстановлен.`, "ok");
   }
 
   async function start() {
@@ -216,9 +323,14 @@
   $("packagingForm").addEventListener("submit", (event) => { event.preventDefault(); submitPackaging().catch((error) => message("packagingMessage", error.message, "err")); });
   document.addEventListener("click", (event) => { const button = event.target.closest("[data-close-dialog]"); if (button) $(button.dataset.closeDialog).close(); });
   $("issueForm").addEventListener("submit", (event) => { event.preventDefault(); submitIssue().catch((error) => message("issueMessage", error.message, "err")); });
+  $("issueKind").addEventListener("change", updateIssueTerms);
+  $("issueRecipient").addEventListener("change", updateExistingIssueWarning);
   $("closeIssue").addEventListener("click", () => { $("issuePanel").hidden = true; state.position = null; });
   $("issueSourceScan").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); $("issueItemScan").focus(); } });
   $("issueItemScan").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); $("issueReason").focus(); } });
   $("refreshIssues").addEventListener("click", () => loadIssues().catch((error) => message("stockSearchMessage", error.message, "err")));
+  $("recentIssues").addEventListener("click", (event) => { const button = event.target.closest("[data-return-issue]"); if (button) openReturn(button.dataset.returnIssue); });
+  $("returnMovement").addEventListener("change", updateReturnMovement);
+  $("returnForm").addEventListener("submit", (event) => { event.preventDefault(); submitReturn().catch((error) => message("returnMessage", error.message, "err")); });
   start();
 })();

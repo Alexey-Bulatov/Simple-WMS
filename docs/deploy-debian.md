@@ -67,6 +67,19 @@ sudo systemctl enable --now simple-wms
 sudo systemctl status simple-wms
 ```
 
+Для ежедневного закрытия ответственных выдач по наступившему нормативу
+установите и включите отдельный таймер:
+
+```bash
+sudo install -m 644 deploy/systemd/simple-wms-accountability.service /etc/systemd/system/
+sudo install -m 644 deploy/systemd/simple-wms-accountability.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now simple-wms-accountability.timer
+```
+
+Автоматическое списание не меняет складской остаток повторно: товар уже выбыл
+при выдаче. Оно создаёт отдельный документ и закрывает оставшуюся ответственность.
+
 ## Первоначальный администратор
 
 После миграции сначала оставьте `AUTH_ENFORCEMENT_ENABLED=false` и один раз
