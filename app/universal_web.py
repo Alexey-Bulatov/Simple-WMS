@@ -113,7 +113,7 @@ def stock_page() -> str:
     <header class="product-header"><a class="brand" href="/work">Simple WMS</a><nav>{navigation("stock")}</nav></header>
     <main class="stock-page-main">
       <section class="stock-search-panel">
-        <div class="panel-head"><div><span class="eyebrow">SCN-02</span><h1>Номенклатура и остатки</h1></div></div>
+        <div class="panel-head"><div><span class="eyebrow">SCN-02</span><h1>Номенклатура и остатки</h1></div><button id="newProduct" class="secondary" type="button" hidden>Новая позиция</button></div>
         <form id="stockSearchForm" class="stock-search-form">
           <label><span>Склад</span><select id="stockWarehouse"><option value="">Все доступные склады</option></select></label>
           <label><span>Название, артикул или штрихкод</span><input id="stockQuery" class="scan-input" autocomplete="off" autofocus placeholder="Например, перчатки"></label>
@@ -146,12 +146,40 @@ def stock_page() -> str:
         <div id="recentIssues" class="data-list"></div>
       </section>
     </main>
+    <dialog id="productDialog" class="catalog-dialog">
+      <form id="productForm">
+        <div class="dialog-head"><div><span class="eyebrow">Справочник</span><h2>Новая номенклатура</h2></div><button class="icon-button" data-close-dialog="productDialog" type="button" title="Закрыть" aria-label="Закрыть">×</button></div>
+        <div class="catalog-form-grid">
+          <label><span>Код</span><input id="productCode" class="mono" maxlength="64" autocomplete="off" required></label>
+          <label><span>Название</span><input id="productName" maxlength="240" autocomplete="off" required></label>
+          <label><span>Базовая единица</span><select id="productUom" required></select></label>
+          <label><span>Срок годности, дней</span><input id="productShelfLife" type="number" min="1" step="1" placeholder="Необязательно"></label>
+        </div>
+        <div id="productMessage" class="message">Код будет приведён к верхнему регистру.</div>
+        <div class="dialog-actions"><button class="secondary" data-close-dialog="productDialog" type="button">Отмена</button><button class="primary" type="submit">Создать позицию</button></div>
+      </form>
+    </dialog>
+    <dialog id="packagingDialog" class="catalog-dialog">
+      <form id="packagingForm">
+        <div class="dialog-head"><div><span class="eyebrow">Упаковка и код</span><h2 id="packagingTitle">Новая упаковка</h2></div><button class="icon-button" data-close-dialog="packagingDialog" type="button" title="Закрыть" aria-label="Закрыть">×</button></div>
+        <div id="packagingFacts" class="facts"></div>
+        <div class="catalog-form-grid">
+          <label><span>Код упаковки</span><input id="packagingCode" class="mono" maxlength="64" autocomplete="off" required></label>
+          <label><span>Название</span><input id="packagingName" maxlength="160" autocomplete="off" required></label>
+          <label><span>Количество</span><input id="packagingQuantity" type="number" min="0.000001" step="0.000001" required></label>
+          <label><span>Единица</span><select id="packagingUom" required></select></label>
+          <label class="catalog-span"><span>Штрихкод или QR-код</span><input id="packagingBarcode" class="mono" maxlength="120" autocomplete="off" placeholder="Необязательно"></label>
+        </div>
+        <div id="packagingMessage" class="message">Количество будет пересчитано в базовую единицу товара.</div>
+        <div class="dialog-actions"><button class="secondary" data-close-dialog="packagingDialog" type="button">Отмена</button><button class="primary" type="submit">Добавить упаковку</button></div>
+      </form>
+    </dialog>
     """
     return document(
         "Номенклатура Simple WMS",
         "stock-page",
         body,
-        "/static/universal-stock.js?v=20260813",
+        "/static/universal-stock.js?v=20260813-2",
     )
 
 

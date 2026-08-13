@@ -250,7 +250,11 @@ def test_reservation_changes_available_quantity_and_release_restores_it(db):
     assert released.status == StockReservationStatus.RELEASED
     assert stock_position_payload(db, position)["available_quantity"] == Decimal("5")
     assert stock_position_payload(db, position)["reserved_quantity"] == Decimal("0")
-    assert db.scalar(select(func.count(OperationEvent.id))) == 2
+    assert db.scalar(
+        select(func.count(OperationEvent.id)).where(
+            OperationEvent.object_type == "stock_reservation"
+        )
+    ) == 2
 
 
 def test_reservation_rejects_overbooking_and_protects_reserved_stock(db):

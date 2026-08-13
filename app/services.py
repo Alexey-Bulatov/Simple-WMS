@@ -1359,6 +1359,8 @@ def update_equipment_profile(
 def create_product(db: Session, payload: ProductCreate) -> Product:
     ensure_reference_catalogs(db)
     data = payload.model_dump()
+    data["code"] = payload.code.strip().upper()
+    data["name"] = payload.name.strip()
     base_uom_id = data.get("base_uom_id")
     if base_uom_id is not None:
         unit = db.get(UnitOfMeasure, base_uom_id)
@@ -1376,6 +1378,17 @@ def create_product(db: Session, payload: ProductCreate) -> Product:
         data["unit"] = legacy_unit
     product = Product(**data)
     db.add(product)
+    create_event(
+        db,
+        operation="product_created",
+        object_type="product",
+        object_uid=data["code"],
+        after={
+            "name": data["name"],
+            "base_uom_id": data["base_uom_id"],
+            "shelf_life_days": data["shelf_life_days"],
+        },
+    )
     commit_or_409(db, "product already exists")
     db.refresh(product)
     return product

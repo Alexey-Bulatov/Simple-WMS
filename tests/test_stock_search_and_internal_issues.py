@@ -299,3 +299,50 @@ def test_search_and_internal_issue_api_contract(db, client):
     assert issue_response.json()["recipient_code"] == "EMP-001"
     assert issue_response.json()["movements"][0]["quantity"] == "3.000000"
     assert client.get("/api/internal-issues").json()[0]["uid"] == issue_response.json()["uid"]
+
+
+def test_catalog_creation_api_feeds_stock_search_and_web_scenario(db, client):
+    _, pieces, _, warehouse, _, _, _ = create_context(db)
+
+    page = client.get("/stock")
+    assert page.status_code == 200
+    assert "Новая позиция" in page.text
+    assert "Добавить упаковку" in page.text
+
+    product_response = client.post(
+        "/api/products",
+        json={
+            "code": " pen-001 ",
+            "name": " Ручка шариковая ",
+            "base_uom_id": pieces.id,
+            "shelf_life_days": None,
+        },
+    )
+    assert product_response.status_code == 200, product_response.text
+    product = product_response.json()
+    assert product["code"] == "PEN-001"
+    assert product["name"] == "Ручка шариковая"
+
+    packaging_response = client.post(
+        "/api/product-packagings",
+        json={
+            "product_id": product["id"],
+            "code": "box-50",
+            "name": "Коробка 50 штук",
+            "quantity": "50",
+            "uom_id": pieces.id,
+            "barcode": "4600000000050",
+        },
+    )
+    assert packaging_response.status_code == 200, packaging_response.text
+    assert packaging_response.json()["code"] == "BOX-50"
+
+    search_response = client.get(
+        "/api/stock-search",
+        params={"query": "4600000000050", "warehouse_id": warehouse.id},
+    )
+    assert search_response.status_code == 200, search_response.text
+    item = search_response.json()["items"][0]
+    assert item["product_code"] == "PEN-001"
+    assert item["available_quantity"] == "0"
+    assert item["packagings"][0]["matched"] is True
