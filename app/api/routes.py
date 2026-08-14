@@ -76,7 +76,10 @@ from app.schemas import (
     LogisticTaskCreate,
     LogisticTaskRead,
     LogisticShipmentCreate,
+    LogisticShipmentLoadQuantityRequest,
+    LogisticShipmentPickQuantityRequest,
     LogisticShipmentRead,
+    LogisticShipmentReserveQuantityRequest,
     LogisticTransferCreate,
     LogisticTransferRead,
     LogisticUnitTypeCreate,
@@ -176,6 +179,11 @@ from app.services import (
     remove_logistic_unit_child,
     remove_logistic_unit_content,
     reopen_logistic_unit,
+)
+from app.quantitative_shipments import (
+    load_shipment_quantities,
+    pick_shipment_quantities,
+    reserve_shipment_quantities,
 )
 from app.stock import stock_position_payload
 from app.stock_search import search_stock
@@ -977,6 +985,19 @@ def api_reserve_logistic_shipment_unit(
 
 
 @router.post(
+    "/logistic-shipments/{shipment_uid}/reserve-quantities",
+    response_model=LogisticShipmentRead,
+)
+def api_reserve_logistic_shipment_quantities(
+    shipment_uid: str,
+    payload: LogisticShipmentReserveQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = reserve_shipment_quantities(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post(
     "/logistic-shipments/{shipment_uid}/expedition",
     response_model=LogisticShipmentRead,
 )
@@ -990,6 +1011,19 @@ def api_stage_logistic_shipment(
 
 
 @router.post(
+    "/logistic-shipments/{shipment_uid}/pick-quantities",
+    response_model=LogisticShipmentRead,
+)
+def api_pick_logistic_shipment_quantities(
+    shipment_uid: str,
+    payload: LogisticShipmentPickQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = pick_shipment_quantities(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post(
     "/logistic-shipments/{shipment_uid}/load",
     response_model=LogisticShipmentRead,
 )
@@ -999,6 +1033,19 @@ def api_load_logistic_shipment_unit(
     db: Session = Depends(get_db),
 ) -> dict:
     shipment = load_logistic_shipment_unit(db, shipment_uid, payload)
+    return logistic_shipment_payload(db, shipment)
+
+
+@router.post(
+    "/logistic-shipments/{shipment_uid}/load-quantities",
+    response_model=LogisticShipmentRead,
+)
+def api_load_logistic_shipment_quantities(
+    shipment_uid: str,
+    payload: LogisticShipmentLoadQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    shipment = load_shipment_quantities(db, shipment_uid, payload)
     return logistic_shipment_payload(db, shipment)
 
 

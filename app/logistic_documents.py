@@ -190,8 +190,11 @@ def document_unit_payload(
 
 
 def logistic_shipment_payload(db: Session, shipment: LogisticShipment) -> dict:
+    from app.quantitative_shipments import quantity_lines_payload
+
     warehouse = db.get(Warehouse, shipment.warehouse_id)
     links = logistic_shipment_links(db, shipment.id)
+    quantity_lines = quantity_lines_payload(db, shipment)
     return {
         "id": shipment.id,
         "shipment_uid": shipment.shipment_uid,
@@ -208,6 +211,30 @@ def logistic_shipment_payload(db: Session, shipment: LogisticShipment) -> dict:
             1 for link in links if link.status in {"loaded", "shipped"}
         ),
         "units": [document_unit_payload(db, link) for link in links],
+        "quantity_line_count": len(quantity_lines),
+        "quantity_ready_line_count": sum(
+            line["reserved_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "quantity_picked_line_count": sum(
+            line["picked_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "quantity_loaded_line_count": sum(
+            line["loaded_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "picking_stock_document_uid": (
+            shipment.picking_stock_document.uid
+            if shipment.picking_stock_document
+            else None
+        ),
+        "loading_stock_document_uid": (
+            shipment.loading_stock_document.uid
+            if shipment.loading_stock_document
+            else None
+        ),
+        "lines": quantity_lines,
     }
 
 
@@ -314,6 +341,11 @@ def create_logistic_shipment(
         planned_date=payload.planned_date,
     )
     db.add(shipment)
+    db.flush()
+    if payload.lines:
+        from app.quantitative_shipments import add_quantity_lines
+
+        add_quantity_lines(db, shipment, payload.lines)
     create_event(
         db,
         operation="logistic_shipment_created",
@@ -324,6 +356,7 @@ def create_logistic_shipment(
             "warehouse_code": warehouse.code,
             "customer_name": shipment.customer_name,
             "destination": shipment.destination,
+            "quantity_line_count": len(payload.lines),
         },
     )
     from app.logistic_tasks import sync_logistic_shipment_tasks
@@ -380,11 +413,23 @@ def stage_logistic_shipment(
     payload: LogisticDocumentStageRequest,
 ) -> LogisticShipment:
     shipment = get_logistic_shipment(db, shipment_uid, for_update=True)
-    if shipment.status != ShipmentStatus.RESERVED:
+    if shipment.status not in {
+        ShipmentStatus.RESERVED,
+        ShipmentStatus.EXPEDITION,
+        ShipmentStatus.LOADING,
+    }:
         raise bad_request("only a reserved shipment can be moved to expedition")
+    if shipment.lines and any(
+        line.reserved_base_quantity != line.requested_base_quantity
+        for line in shipment.lines
+    ):
+        raise bad_request("all shipment quantity lines must be fully reserved")
     links = logistic_shipment_links(db, shipment.id)
     if not links:
         raise bad_request("shipment has no reserved logistic units")
+    pending_links = [link for link in links if link.status == "reserved"]
+    if not pending_links:
+        raise bad_request("shipment has no logistic units awaiting expedition")
     location = get_active_location(db, payload.location_code)
     if (
         location.kind != LocationKind.EXPEDITION
@@ -392,10 +437,10 @@ def stage_logistic_shipment(
     ):
         raise bad_request("expedition location must belong to the shipment warehouse")
     occupied = logistic_location_occupied_count(db, location.id)
-    if occupied + len(links) > location.capacity_units:
+    if occupied + len(pending_links) > location.capacity_units:
         raise bad_request("expedition location capacity is already reached")
     now = utcnow()
-    for link in links:
+    for link in pending_links:
         unit = db.get(LogisticUnit, link.logistic_unit_id)
         if (
             unit is None
@@ -420,7 +465,8 @@ def stage_logistic_shipment(
                 "shipment_uid": shipment.shipment_uid,
             },
         )
-    shipment.status = ShipmentStatus.EXPEDITION
+    if shipment.status != ShipmentStatus.LOADING:
+        shipment.status = ShipmentStatus.EXPEDITION
     db.commit()
     db.refresh(shipment)
     return shipment
@@ -476,8 +522,13 @@ def close_logistic_shipment(
     if shipment.status != ShipmentStatus.LOADING:
         raise bad_request("shipment can be closed only after loading has started")
     links = logistic_shipment_links(db, shipment.id)
-    if not links or any(link.status != "loaded" for link in links):
+    if not links and not shipment.lines:
+        raise bad_request("shipment has no loaded cargo")
+    if any(link.status != "loaded" for link in links):
         raise bad_request("all shipment units must be loaded before closing")
+    from app.quantitative_shipments import validate_quantity_lines_loaded
+
+    validate_quantity_lines_loaded(shipment)
     for link in links:
         unit = db.get(LogisticUnit, link.logistic_unit_id)
         if unit is None or unit.status != LogisticUnitStatus.LOADED:
@@ -506,7 +557,11 @@ def close_logistic_shipment(
         object_uid=shipment.shipment_uid,
         actor=payload.actor,
         reason=payload.reason,
-        after={"status": shipment.status.value, "unit_count": len(links)},
+        after={
+            "status": shipment.status.value,
+            "unit_count": len(links),
+            "quantity_line_count": len(shipment.lines),
+        },
     )
     from app.logistic_tasks import sync_logistic_shipment_tasks
 

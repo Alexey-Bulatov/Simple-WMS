@@ -1280,10 +1280,169 @@ class LogisticShipment(Base):
     planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    picking_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    picking_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, unique=True, index=True
+    )
+    picking_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    loading_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    loading_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, unique=True, index=True
+    )
+    loading_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     units: Mapped[list["LogisticShipmentUnit"]] = relationship(
         back_populates="shipment",
         cascade="all, delete-orphan",
+    )
+    lines: Mapped[list["LogisticShipmentLine"]] = relationship(
+        back_populates="shipment",
+        cascade="all, delete-orphan",
+        order_by="LogisticShipmentLine.line_no",
+    )
+    reservation_attempts: Mapped[list["LogisticShipmentReservationAttempt"]] = relationship(
+        back_populates="shipment",
+        cascade="all, delete-orphan",
+    )
+    picking_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[picking_stock_document_id]
+    )
+    loading_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[loading_stock_document_id]
+    )
+
+
+class LogisticShipmentLine(Base):
+    __tablename__ = "logistic_shipment_lines"
+    __table_args__ = (
+        UniqueConstraint("shipment_id", "line_no", name="uq_shipment_line_no"),
+        UniqueConstraint("line_uid", name="uq_shipment_line_uid"),
+        CheckConstraint("input_quantity > 0", name="ck_shipment_line_input_qty"),
+        CheckConstraint("requested_base_quantity > 0", name="ck_shipment_line_base_qty"),
+        CheckConstraint("conversion_factor > 0", name="ck_shipment_line_factor"),
+        CheckConstraint("reserved_base_quantity >= 0", name="ck_shipment_line_reserved"),
+        CheckConstraint("picked_base_quantity >= 0", name="ck_shipment_line_picked"),
+        CheckConstraint("loaded_base_quantity >= 0", name="ck_shipment_line_loaded"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shipment_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_shipments.id", ondelete="CASCADE"), index=True
+    )
+    line_no: Mapped[int] = mapped_column(Integer)
+    line_uid: Mapped[str] = mapped_column(String(80), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("stock_owners.id"), index=True)
+    input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    packaging_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_packagings.id"), nullable=True, index=True
+    )
+    requested_base_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batches.id"), nullable=True, index=True
+    )
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    quality_status: Mapped[str] = mapped_column(String(40), default="released", index=True)
+    reservation_result: Mapped[StockReservationResult] = mapped_column(
+        Enum(StockReservationResult, native_enum=False, length=24),
+        default=StockReservationResult.NONE,
+        index=True,
+    )
+    reserved_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    picked_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    loaded_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    shipment: Mapped[LogisticShipment] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship()
+    owner: Mapped[StockOwner] = relationship()
+    input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
+    base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
+    packaging: Mapped[ProductPackaging | None] = relationship()
+    batch: Mapped[Batch | None] = relationship()
+    allocations: Mapped[list["LogisticShipmentAllocation"]] = relationship(
+        back_populates="line",
+        cascade="all, delete-orphan",
+        order_by="LogisticShipmentAllocation.id",
+    )
+
+
+class LogisticShipmentReservationAttempt(Base):
+    __tablename__ = "logistic_shipment_reservation_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shipment_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_shipments.id", ondelete="CASCADE"), index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    command_hash: Mapped[str] = mapped_column(String(64))
+    full_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    partial_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    missing_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    actor: Mapped[str] = mapped_column(String(80), index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    shipment: Mapped[LogisticShipment] = relationship(back_populates="reservation_attempts")
+
+
+class LogisticShipmentAllocation(Base):
+    __tablename__ = "logistic_shipment_allocations"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", name="uq_shipment_allocation_reservation"),
+        CheckConstraint("quantity > 0", name="ck_shipment_allocation_quantity"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shipment_line_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_shipment_lines.id", ondelete="CASCADE"), index=True
+    )
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("stock_reservations.id", ondelete="RESTRICT"), index=True
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="reserved", index=True)
+    expedition_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"), nullable=True, index=True
+    )
+    picking_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    loading_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    line: Mapped[LogisticShipmentLine] = relationship(back_populates="allocations")
+    reservation: Mapped[StockReservation] = relationship()
+    base_uom: Mapped[UnitOfMeasure] = relationship()
+    expedition_location: Mapped["Location | None"] = relationship()
+    picking_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[picking_stock_document_id]
+    )
+    loading_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[loading_stock_document_id]
     )
 
 

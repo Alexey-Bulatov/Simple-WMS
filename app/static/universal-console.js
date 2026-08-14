@@ -123,7 +123,7 @@
       return [fact("Тип", object.type_name), fact("Статус", objectStatusLabels[object.status] || object.status), fact("Ячейка", object.current_location_code), fact("Состав", `${object.contents?.length || 0} поз. / ${object.child_units?.length || 0} ед.`)].join("");
     }
     if (task.object_type === "logistic_shipment") {
-      return [fact("Статус", objectStatusLabels[object.status] || object.status), fact("Единиц", object.unit_count), fact("Погружено", object.loaded_count), fact("Получатель", object.customer_name)].join("");
+      return [fact("Статус", objectStatusLabels[object.status] || object.status), fact("ЛЕ", `${object.loaded_count} / ${object.unit_count}`), fact("Строки", `${object.quantity_loaded_line_count} / ${object.quantity_line_count}`), fact("Получатель", object.customer_name)].join("");
     }
     if (task.object_type === "logistic_transfer") {
       return [fact("Статус", objectStatusLabels[object.status] || object.status), fact("Маршрут", `${object.source_warehouse_code} → ${object.destination_warehouse_code}`), fact("Единиц", object.unit_count), fact("Принято", object.received_count)].join("");
@@ -149,7 +149,13 @@
         : { text: `Отсканируйте ${task.object_uid}.`, hint: "Код логистической единицы", scan: true };
     }
     if (task.task_type === "ship") {
-      if (state.scanMode === "stage") return { text: "Отсканируйте ячейку экспедиции.", hint: "Зона экспедиции", scan: true };
+      if (["stage", "quantity-pick"].includes(state.scanMode)) return { text: "Отсканируйте ячейку экспедиции.", hint: "Зона экспедиции", scan: true };
+      if (object.quantity_line_count && !object.unit_count) {
+        if (object.quantity_ready_line_count < object.quantity_line_count) return { text: "Зарезервируйте товары по строкам отгрузки.", hint: "", scan: false };
+        if (object.quantity_picked_line_count < object.quantity_line_count) return { text: "Товары готовы к отбору в экспедицию.", hint: "", scan: false };
+        if (object.quantity_loaded_line_count < object.quantity_line_count) return { text: "Отбор завершён. Подтвердите фактическую погрузку.", hint: "", scan: false };
+        return { text: "Все товары погружены. Завершите отгрузку.", hint: "", scan: false };
+      }
       if (["draft", "reserved"].includes(object.status)) return { text: "Сканируйте единицы для резерва.", hint: "Доступная логистическая единица", scan: true };
       return { text: "Сканируйте единицы при погрузке.", hint: "Единица из заявки", scan: true };
     }
@@ -174,8 +180,17 @@
     if (task.task_type === "receipt_control") return button("Подтвердить контроль", "confirm-receipt-control");
     if (task.task_type === "ship") {
       let html = "";
-      if (object.status === "reserved") html += button("Передать в экспедицию", "stage", "secondary");
-      if (object.status === "loading" && object.unit_count && object.loaded_count === object.unit_count) html += button("Завершить отгрузку", "close-shipment");
+      const hasQuantity = Boolean(object.quantity_line_count);
+      const quantitiesReserved = hasQuantity && object.quantity_ready_line_count === object.quantity_line_count;
+      const quantitiesPicked = hasQuantity && object.quantity_picked_line_count === object.quantity_line_count;
+      const quantitiesLoaded = !hasQuantity || object.quantity_loaded_line_count === object.quantity_line_count;
+      const unitsNeedStage = object.units?.some((item) => item.item_status === "reserved");
+      const unitsLoaded = !object.unit_count || object.loaded_count === object.unit_count;
+      if (hasQuantity && !quantitiesReserved) html += button("Зарезервировать товары", "reserve-quantities");
+      if (unitsNeedStage) html += button("Передать ЛЕ в экспедицию", "stage", "secondary");
+      if (quantitiesReserved && !quantitiesPicked) html += button("Отобрать товары", "quantity-pick", "secondary");
+      if (quantitiesPicked && !quantitiesLoaded) html += button("Подтвердить погрузку товаров", "load-quantities");
+      if (object.status === "loading" && unitsLoaded && quantitiesLoaded) html += button("Завершить отгрузку", "close-shipment");
       return html;
     }
     if (task.task_type === "transfer") {
@@ -263,6 +278,18 @@
       return refreshCurrent(task.task_type === "place" ? "Единица размещена." : "Единица перемещена.");
     }
     if (task.task_type === "ship") {
+      if (state.scanMode === "quantity-pick") {
+        state.commandKey ||= `shipment-pick:${task.task_uid}:${crypto.randomUUID()}`;
+        await post(`/api/logistic-shipments/${encodeURIComponent(task.object_uid)}/pick-quantities`, {
+          expedition_location_code: code,
+          idempotency_key: state.commandKey,
+          actor: actor(),
+          reason: "Отбор товаров в экспедицию",
+        });
+        state.commandKey = null;
+        state.scanMode = null;
+        return refreshCurrent("Товары отобраны в экспедицию.");
+      }
       if (state.scanMode === "stage") {
         await post(`/api/logistic-shipments/${encodeURIComponent(task.object_uid)}/expedition`, { location_code: code, actor: actor() });
         state.scanMode = null;
@@ -310,6 +337,28 @@
       return refreshCurrent("Расхождения проверены.");
     }
     if (action === "stage") { state.scanMode = "stage"; renderOperation(); return; }
+    if (action === "quantity-pick") { state.scanMode = "quantity-pick"; renderOperation(); return; }
+    if (action === "reserve-quantities") {
+      state.commandKey ||= `shipment-reserve:${task.task_uid}:${crypto.randomUUID()}`;
+      await post(`/api/logistic-shipments/${encodeURIComponent(task.object_uid)}/reserve-quantities`, {
+        idempotency_key: state.commandKey,
+        allow_partial: true,
+        actor: actor(),
+        reason: "Автоматический резерв по отгрузке",
+      });
+      state.commandKey = null;
+      return refreshCurrent("Резерв рассчитан.");
+    }
+    if (action === "load-quantities") {
+      state.commandKey ||= `shipment-load:${task.task_uid}:${crypto.randomUUID()}`;
+      await post(`/api/logistic-shipments/${encodeURIComponent(task.object_uid)}/load-quantities`, {
+        idempotency_key: state.commandKey,
+        actor: actor(),
+        reason: "Фактическая погрузка товаров",
+      });
+      state.commandKey = null;
+      return refreshCurrent("Товары погружены.");
+    }
     if (action === "change-location") { state.targetLocation = null; renderOperation(); return; }
     if (action === "close-shipment") {
       await post(`/api/logistic-shipments/${encodeURIComponent(task.object_uid)}/close`, { actor: actor(), reason: "Погрузка завершена" });

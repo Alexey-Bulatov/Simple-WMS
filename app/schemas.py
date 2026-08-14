@@ -1874,12 +1874,150 @@ class LogisticDocumentUnitRead(BaseModel):
     received_at: datetime | None = None
 
 
+class LogisticShipmentLineCreate(BaseModel):
+    product_id: int = Field(gt=0)
+    owner_id: int = Field(gt=0)
+    input_quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    input_uom_id: int | None = Field(default=None, gt=0)
+    packaging_id: int | None = Field(default=None, gt=0)
+    batch_id: int | None = Field(default=None, gt=0)
+    serial_number: str | None = Field(default=None, max_length=120)
+    quality_status: Literal["released"] = "released"
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("serial_number")
+    @classmethod
+    def normalize_shipment_serial(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("note")
+    @classmethod
+    def normalize_shipment_line_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_shipment_quantity_source(self):
+        if (self.input_uom_id is None) == (self.packaging_id is None):
+            raise ValueError("use either input_uom_id or packaging_id")
+        return self
+
+
+class LogisticShipmentReserveQuantityRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    allow_partial: bool = True
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("idempotency_key", "actor")
+    @classmethod
+    def normalize_shipment_reserve_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_shipment_reserve_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class LogisticShipmentPickQuantityRequest(BaseModel):
+    expedition_location_code: str = Field(min_length=1, max_length=120)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("expedition_location_code")
+    @classmethod
+    def normalize_shipment_expedition(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_shipment_pick_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class LogisticShipmentLoadQuantityRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_shipment_load_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class LogisticShipmentAllocationRead(BaseModel):
+    id: int
+    reservation_uid: str
+    status: str
+    quantity: Decimal
+    base_uom_code: str
+    source_holder: str
+    source_location_code: str | None
+    source_logistic_unit_uid: str | None
+    expedition_location_code: str | None
+    picking_stock_document_uid: str | None
+    loading_stock_document_uid: str | None
+    picked_at: datetime | None
+    loaded_at: datetime | None
+
+
+class LogisticShipmentLineRead(BaseModel):
+    id: int
+    line_no: int
+    line_uid: str
+    product_id: int
+    product_code: str
+    product_name: str
+    owner_id: int
+    owner_code: str
+    input_quantity: Decimal
+    input_uom_id: int
+    input_uom_code: str
+    packaging_id: int | None
+    packaging_code: str | None
+    requested_base_quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    conversion_factor: Decimal
+    batch_id: int | None
+    batch_number: str | None
+    serial_number: str | None
+    quality_status: str
+    reservation_result: StockReservationResult
+    reserved_base_quantity: Decimal
+    picked_base_quantity: Decimal
+    loaded_base_quantity: Decimal
+    note: str | None
+    allocations: list[LogisticShipmentAllocationRead]
+
+
 class LogisticShipmentCreate(BaseModel):
     warehouse_code: str = Field(min_length=1, max_length=32)
     customer_name: str = Field(min_length=1, max_length=160)
     destination: str = Field(min_length=1, max_length=160)
     planned_date: date | None = None
     actor: str = Field(default="system", min_length=1, max_length=80)
+    lines: list[LogisticShipmentLineCreate] = Field(default_factory=list, max_length=500)
 
 
 class LogisticShipmentRead(BaseModel):
@@ -1896,6 +2034,13 @@ class LogisticShipmentRead(BaseModel):
     unit_count: int
     loaded_count: int
     units: list[LogisticDocumentUnitRead]
+    quantity_line_count: int
+    quantity_ready_line_count: int
+    quantity_picked_line_count: int
+    quantity_loaded_line_count: int
+    picking_stock_document_uid: str | None
+    loading_stock_document_uid: str | None
+    lines: list[LogisticShipmentLineRead]
 
 
 class LogisticTransferCreate(BaseModel):
