@@ -939,7 +939,7 @@ async def request_warehouse_ids(db: Session, request: Request) -> set[int]:
             action = segments[-1]
             if request.method in {"GET", "HEAD", "OPTIONS"}:
                 result.update({item.source_warehouse_id, item.destination_warehouse_id})
-            elif "receive" in segments or action == "receive":
+            elif "receive" in segments or action.startswith("receive"):
                 result.add(item.destination_warehouse_id)
             else:
                 result.add(item.source_warehouse_id)

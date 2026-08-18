@@ -1493,10 +1493,201 @@ class LogisticTransfer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    picking_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    picking_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, unique=True, index=True
+    )
+    picking_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    dispatch_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, unique=True, index=True
+    )
+    dispatch_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    receiving_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    receiving_idempotency_key: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, unique=True, index=True
+    )
+    receiving_command_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     units: Mapped[list["LogisticTransferUnit"]] = relationship(
         back_populates="transfer",
         cascade="all, delete-orphan",
+    )
+    lines: Mapped[list["LogisticTransferLine"]] = relationship(
+        back_populates="transfer",
+        cascade="all, delete-orphan",
+        order_by="LogisticTransferLine.line_no",
+    )
+    reservation_attempts: Mapped[list["LogisticTransferReservationAttempt"]] = relationship(
+        back_populates="transfer",
+        cascade="all, delete-orphan",
+    )
+    picking_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[picking_stock_document_id]
+    )
+    dispatch_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[dispatch_stock_document_id]
+    )
+    receiving_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[receiving_stock_document_id]
+    )
+
+
+class LogisticTransferLine(Base):
+    __tablename__ = "logistic_transfer_lines"
+    __table_args__ = (
+        UniqueConstraint("transfer_id", "line_no", name="uq_transfer_line_no"),
+        UniqueConstraint("line_uid", name="uq_transfer_line_uid"),
+        CheckConstraint("input_quantity > 0", name="ck_transfer_line_input_qty"),
+        CheckConstraint("requested_base_quantity > 0", name="ck_transfer_line_base_qty"),
+        CheckConstraint("conversion_factor > 0", name="ck_transfer_line_factor"),
+        CheckConstraint("reserved_base_quantity >= 0", name="ck_transfer_line_reserved"),
+        CheckConstraint("picked_base_quantity >= 0", name="ck_transfer_line_picked"),
+        CheckConstraint("dispatched_base_quantity >= 0", name="ck_transfer_line_dispatched"),
+        CheckConstraint("received_base_quantity >= 0", name="ck_transfer_line_received"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_transfers.id", ondelete="CASCADE"), index=True
+    )
+    line_no: Mapped[int] = mapped_column(Integer)
+    line_uid: Mapped[str] = mapped_column(String(80), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("stock_owners.id"), index=True)
+    input_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    input_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    packaging_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_packagings.id"), nullable=True, index=True
+    )
+    requested_base_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batches.id"), nullable=True, index=True
+    )
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    quality_status: Mapped[str] = mapped_column(String(40), default="released", index=True)
+    reservation_result: Mapped[StockReservationResult] = mapped_column(
+        Enum(StockReservationResult, native_enum=False, length=24),
+        default=StockReservationResult.NONE,
+        index=True,
+    )
+    reserved_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    picked_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    dispatched_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    received_base_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), default=Decimal("0")
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    transfer: Mapped[LogisticTransfer] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship()
+    owner: Mapped[StockOwner] = relationship()
+    input_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[input_uom_id])
+    base_uom: Mapped[UnitOfMeasure] = relationship(foreign_keys=[base_uom_id])
+    packaging: Mapped[ProductPackaging | None] = relationship()
+    batch: Mapped[Batch | None] = relationship()
+    allocations: Mapped[list["LogisticTransferAllocation"]] = relationship(
+        back_populates="line",
+        cascade="all, delete-orphan",
+        order_by="LogisticTransferAllocation.id",
+    )
+
+
+class LogisticTransferReservationAttempt(Base):
+    __tablename__ = "logistic_transfer_reservation_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_transfers.id", ondelete="CASCADE"), index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    command_hash: Mapped[str] = mapped_column(String(64))
+    full_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    partial_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    missing_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    actor: Mapped[str] = mapped_column(String(80), index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    transfer: Mapped[LogisticTransfer] = relationship(back_populates="reservation_attempts")
+
+
+class LogisticTransferAllocation(Base):
+    __tablename__ = "logistic_transfer_allocations"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", name="uq_transfer_allocation_reservation"),
+        CheckConstraint("quantity > 0", name="ck_transfer_allocation_quantity"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_line_id: Mapped[int] = mapped_column(
+        ForeignKey("logistic_transfer_lines.id", ondelete="CASCADE"), index=True
+    )
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("stock_reservations.id", ondelete="RESTRICT"), index=True
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("units_of_measure.id"), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="reserved", index=True)
+    transfer_out_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"), nullable=True, index=True
+    )
+    transfer_in_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"), nullable=True, index=True
+    )
+    picking_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    dispatch_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    receiving_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    line: Mapped[LogisticTransferLine] = relationship(back_populates="allocations")
+    reservation: Mapped[StockReservation] = relationship()
+    base_uom: Mapped[UnitOfMeasure] = relationship()
+    transfer_out_location: Mapped["Location | None"] = relationship(
+        foreign_keys=[transfer_out_location_id]
+    )
+    transfer_in_location: Mapped["Location | None"] = relationship(
+        foreign_keys=[transfer_in_location_id]
+    )
+    picking_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[picking_stock_document_id]
+    )
+    dispatch_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[dispatch_stock_document_id]
+    )
+    receiving_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[receiving_stock_document_id]
     )
 
 

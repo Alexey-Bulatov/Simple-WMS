@@ -2043,6 +2043,108 @@ class LogisticShipmentRead(BaseModel):
     lines: list[LogisticShipmentLineRead]
 
 
+class LogisticTransferLineCreate(LogisticShipmentLineCreate):
+    pass
+
+
+class LogisticTransferReserveQuantityRequest(LogisticShipmentReserveQuantityRequest):
+    pass
+
+
+class LogisticTransferPickQuantityRequest(BaseModel):
+    transfer_out_location_code: str = Field(min_length=1, max_length=120)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("transfer_out_location_code")
+    @classmethod
+    def normalize_transfer_out_location(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_transfer_pick_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class LogisticTransferDispatchQuantityRequest(LogisticShipmentLoadQuantityRequest):
+    pass
+
+
+class LogisticTransferReceiveQuantityRequest(BaseModel):
+    transfer_in_location_code: str = Field(min_length=1, max_length=120)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    actor: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("transfer_in_location_code")
+    @classmethod
+    def normalize_transfer_in_location(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("idempotency_key", "actor", "reason")
+    @classmethod
+    def normalize_transfer_receive_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
+class LogisticTransferAllocationRead(BaseModel):
+    id: int
+    reservation_uid: str
+    status: str
+    quantity: Decimal
+    base_uom_code: str
+    source_holder: str
+    source_location_code: str | None
+    source_logistic_unit_uid: str | None
+    transfer_out_location_code: str | None
+    transfer_in_location_code: str | None
+    picking_stock_document_uid: str | None
+    dispatch_stock_document_uid: str | None
+    receiving_stock_document_uid: str | None
+    picked_at: datetime | None
+    dispatched_at: datetime | None
+    received_at: datetime | None
+
+
+class LogisticTransferLineRead(BaseModel):
+    id: int
+    line_no: int
+    line_uid: str
+    product_id: int
+    product_code: str
+    product_name: str
+    owner_id: int
+    owner_code: str
+    input_quantity: Decimal
+    input_uom_id: int
+    input_uom_code: str
+    packaging_id: int | None
+    packaging_code: str | None
+    requested_base_quantity: Decimal
+    base_uom_id: int
+    base_uom_code: str
+    conversion_factor: Decimal
+    batch_id: int | None
+    batch_number: str | None
+    serial_number: str | None
+    quality_status: str
+    reservation_result: StockReservationResult
+    reserved_base_quantity: Decimal
+    picked_base_quantity: Decimal
+    dispatched_base_quantity: Decimal
+    received_base_quantity: Decimal
+    note: str | None
+    allocations: list[LogisticTransferAllocationRead]
+
+
 class LogisticTransferCreate(BaseModel):
     source_warehouse_code: str = Field(min_length=1, max_length=32)
     destination_warehouse_code: str = Field(min_length=1, max_length=32)
@@ -2050,6 +2152,13 @@ class LogisticTransferCreate(BaseModel):
     planned_date: date | None = None
     vehicle_number: str | None = Field(default=None, max_length=80)
     actor: str = Field(default="system", min_length=1, max_length=80)
+    lines: list[LogisticTransferLineCreate] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_quantity_transfer_kind(self):
+        if self.lines and self.transfer_kind != TransferKind.TRANSPORT:
+            raise ValueError("quantity lines currently require a transport transfer")
+        return self
 
 
 class LogisticTransferRead(BaseModel):
@@ -2070,6 +2179,15 @@ class LogisticTransferRead(BaseModel):
     loaded_count: int
     received_count: int
     units: list[LogisticDocumentUnitRead]
+    quantity_line_count: int
+    quantity_ready_line_count: int
+    quantity_picked_line_count: int
+    quantity_dispatched_line_count: int
+    quantity_received_line_count: int
+    picking_stock_document_uid: str | None
+    dispatch_stock_document_uid: str | None
+    receiving_stock_document_uid: str | None
+    lines: list[LogisticTransferLineRead]
 
 
 class LogisticInventoryStartRequest(BaseModel):

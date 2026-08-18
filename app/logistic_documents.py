@@ -239,9 +239,12 @@ def logistic_shipment_payload(db: Session, shipment: LogisticShipment) -> dict:
 
 
 def logistic_transfer_payload(db: Session, transfer: LogisticTransfer) -> dict:
+    from app.quantitative_transfers import quantity_lines_payload
+
     source = db.get(Warehouse, transfer.source_warehouse_id)
     destination = db.get(Warehouse, transfer.destination_warehouse_id)
     links = logistic_transfer_links(db, transfer.id)
+    quantity_lines = quantity_lines_payload(transfer)
     return {
         "id": transfer.id,
         "transfer_uid": transfer.transfer_uid,
@@ -264,6 +267,39 @@ def logistic_transfer_payload(db: Session, transfer: LogisticTransfer) -> dict:
         ),
         "received_count": sum(1 for link in links if link.status == "received"),
         "units": [document_unit_payload(db, link) for link in links],
+        "quantity_line_count": len(quantity_lines),
+        "quantity_ready_line_count": sum(
+            line["reserved_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "quantity_picked_line_count": sum(
+            line["picked_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "quantity_dispatched_line_count": sum(
+            line["dispatched_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "quantity_received_line_count": sum(
+            line["received_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
+        "picking_stock_document_uid": (
+            transfer.picking_stock_document.uid
+            if transfer.picking_stock_document
+            else None
+        ),
+        "dispatch_stock_document_uid": (
+            transfer.dispatch_stock_document.uid
+            if transfer.dispatch_stock_document
+            else None
+        ),
+        "receiving_stock_document_uid": (
+            transfer.receiving_stock_document.uid
+            if transfer.receiving_stock_document
+            else None
+        ),
+        "lines": quantity_lines,
     }
 
 
@@ -596,6 +632,11 @@ def create_logistic_transfer(
         ),
     )
     db.add(transfer)
+    db.flush()
+    if payload.lines:
+        from app.quantitative_transfers import add_quantity_lines
+
+        add_quantity_lines(db, transfer, payload.lines)
     create_event(
         db,
         operation="logistic_transfer_created",
@@ -607,6 +648,7 @@ def create_logistic_transfer(
             "destination_warehouse_code": destination.code,
             "transfer_kind": transfer.transfer_kind.value,
             "vehicle_number": transfer.vehicle_number,
+            "quantity_line_count": len(payload.lines),
         },
     )
     from app.logistic_tasks import sync_logistic_transfer_tasks
@@ -623,6 +665,8 @@ def reserve_unit_for_logistic_transfer(
     payload: LogisticDocumentUnitRequest,
 ) -> LogisticTransfer:
     transfer = get_logistic_transfer(db, transfer_uid, for_update=True)
+    if transfer.lines:
+        raise bad_request("quantity transfer cannot be mixed with logistic units yet")
     if transfer.status not in {TransferStatus.DRAFT, TransferStatus.RESERVED}:
         raise bad_request("transfer cannot accept units from its current status")
     unit, location = require_available_top_level_unit(
