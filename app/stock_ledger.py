@@ -17,6 +17,7 @@ from app.models.entities import (
     LogisticUnit,
     LogisticUnitContent,
     LogisticTask,
+    LogisticTransferAllocation,
     OperationEvent,
     Product,
     StockDocument,
@@ -703,9 +704,7 @@ def _reverse_inbound_putaway(
         None,
     )
     if task is not None:
-        task.status = (
-            TaskStatus.IN_PROGRESS if task.assigned_to else TaskStatus.NEW
-        )
+        task.status = TaskStatus.IN_PROGRESS if task.assigned_to else TaskStatus.NEW
         task.completed_at = None
     db.add(
         OperationEvent(
@@ -721,6 +720,69 @@ def _reverse_inbound_putaway(
             },
             after={
                 "receipt_result_id": result.id,
+                "reversal_document_uid": reversal.uid,
+                "task_status": task.status.value if task else None,
+            },
+        )
+    )
+
+
+def _reverse_transfer_putaway(
+    db: Session,
+    original: StockDocument,
+    reversal: StockDocument,
+    *,
+    actor: str,
+    reason: str,
+) -> None:
+    if original.document_type != "transfer_putaway":
+        return
+    allocation = db.scalar(
+        select(LogisticTransferAllocation)
+        .where(LogisticTransferAllocation.placement_stock_document_id == original.id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if allocation is None:
+        raise _conflict("transfer putaway allocation not found for reversal")
+    transfer = allocation.line.transfer
+    allocation.status = "received"
+    allocation.storage_location_id = None
+    allocation.placement_stock_document_id = None
+    allocation.placed_at = None
+    task = next(
+        (
+            item
+            for item in db.scalars(
+                select(LogisticTask).where(
+                    LogisticTask.task_type == TaskType.PUTAWAY,
+                    LogisticTask.object_type == "logistic_transfer",
+                    LogisticTask.object_uid == transfer.transfer_uid,
+                    LogisticTask.status == TaskStatus.COMPLETED,
+                )
+            )
+            if (item.parameters or {}).get("transfer_allocation_id")
+            == allocation.id
+        ),
+        None,
+    )
+    if task is not None:
+        task.status = TaskStatus.IN_PROGRESS if task.assigned_to else TaskStatus.NEW
+        task.completed_at = None
+    db.add(
+        OperationEvent(
+            operation="logistic_transfer_quantity_putaway_reversed",
+            object_type="logistic_transfer",
+            object_uid=transfer.transfer_uid,
+            actor=actor,
+            reason=reason,
+            before={
+                "transfer_allocation_id": allocation.id,
+                "stock_document_uid": original.uid,
+                "task_uid": task.task_uid if task else None,
+            },
+            after={
+                "transfer_allocation_id": allocation.id,
                 "reversal_document_uid": reversal.uid,
                 "task_status": task.status.value if task else None,
             },
@@ -950,6 +1012,13 @@ def reverse_stock_document(
             reason=payload.reason,
         )
         _reverse_inbound_putaway(
+            db,
+            original,
+            reversal,
+            actor=payload.actor,
+            reason=payload.reason,
+        )
+        _reverse_transfer_putaway(
             db,
             original,
             reversal,

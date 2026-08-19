@@ -1658,6 +1658,9 @@ class LogisticTransferAllocation(Base):
     transfer_in_location_id: Mapped[int | None] = mapped_column(
         ForeignKey("locations.id"), nullable=True, index=True
     )
+    storage_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id"), nullable=True, index=True
+    )
     picking_stock_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -1667,9 +1670,16 @@ class LogisticTransferAllocation(Base):
     receiving_stock_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("stock_documents.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    placement_stock_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     line: Mapped[LogisticTransferLine] = relationship(back_populates="allocations")
     reservation: Mapped[StockReservation] = relationship()
@@ -1680,6 +1690,9 @@ class LogisticTransferAllocation(Base):
     transfer_in_location: Mapped["Location | None"] = relationship(
         foreign_keys=[transfer_in_location_id]
     )
+    storage_location: Mapped["Location | None"] = relationship(
+        foreign_keys=[storage_location_id]
+    )
     picking_stock_document: Mapped[StockDocument | None] = relationship(
         foreign_keys=[picking_stock_document_id]
     )
@@ -1688,6 +1701,9 @@ class LogisticTransferAllocation(Base):
     )
     receiving_stock_document: Mapped[StockDocument | None] = relationship(
         foreign_keys=[receiving_stock_document_id]
+    )
+    placement_stock_document: Mapped[StockDocument | None] = relationship(
+        foreign_keys=[placement_stock_document_id]
     )
 
 

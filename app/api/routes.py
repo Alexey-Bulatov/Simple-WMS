@@ -267,7 +267,7 @@ from app.logistic_tasks import (
     create_logistic_task,
     get_logistic_task,
     logistic_task_payload,
-    putaway_inbound_receipt_result,
+    putaway_logistic_task,
     reopen_logistic_task,
     start_logistic_task,
     sync_logistic_tasks,
@@ -1605,12 +1605,12 @@ def api_complete_logistic_task(
     "/logistic-tasks/{task_uid}/putaway",
     response_model=LogisticTaskRead,
 )
-def api_putaway_inbound_receipt_result(
+def api_putaway_logistic_task(
     task_uid: str,
     payload: InboundReceiptPutawayRequest,
     db: Session = Depends(get_db),
 ) -> dict:
-    task = putaway_inbound_receipt_result(db, task_uid, payload)
+    task = putaway_logistic_task(db, task_uid, payload)
     return logistic_task_payload(db, task)
 
 

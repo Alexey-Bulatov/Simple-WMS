@@ -8,7 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base, get_db
-from app.logistic_documents import create_logistic_transfer
+from app.logistic_documents import create_logistic_transfer, logistic_transfer_payload
+from app.logistic_tasks import putaway_logistic_task, start_logistic_task
 from app.main import app
 from app.models.entities import (
     Location,
@@ -26,7 +27,9 @@ from app.models.enums import (
     LocationKind,
     StockReservationResult,
     StockReservationStatus,
+    TaskPriority,
     TaskStatus,
+    TaskType,
     TransferStatus,
 )
 from app.quantitative_transfers import (
@@ -36,6 +39,7 @@ from app.quantitative_transfers import (
     reserve_transfer_quantities,
 )
 from app.schemas import (
+    InboundReceiptPutawayRequest,
     LogisticTransferCreate,
     LogisticTransferDispatchQuantityRequest,
     LogisticTransferLineCreate,
@@ -43,10 +47,12 @@ from app.schemas import (
     LogisticTransferReceiveQuantityRequest,
     LogisticTransferReserveQuantityRequest,
     ProductCreate,
+    StockDocumentReverseRequest,
 )
 from app.services import create_product, ensure_reference_catalogs
 from app.stock import stock_position_payload
 from app.stock_search import search_stock
+from app.stock_ledger import reverse_stock_document
 
 
 @pytest.fixture()
@@ -117,6 +123,9 @@ def transfer_context(db, *, quantities=("4", "6")):
     transfer_in = add_location(
         db, destination, "WH-TRF-B-IN-1", LocationKind.TRANSFER_IN
     )
+    destination_storage = add_location(
+        db, destination, "WH-TRF-B-ST-1", LocationKind.STORAGE
+    )
     wrong_transfer_in = add_location(
         db, source, "WH-TRF-A-IN-1", LocationKind.TRANSFER_IN
     )
@@ -141,6 +150,7 @@ def transfer_context(db, *, quantities=("4", "6")):
         storages,
         transfer_out,
         transfer_in,
+        destination_storage,
         wrong_transfer_in,
         positions,
     )
@@ -189,6 +199,7 @@ def test_quantity_transfer_moves_stock_through_transit_to_destination(db):
         _,
         transfer_out,
         transfer_in,
+        destination_storage,
         _,
         _,
     ) = transfer_context(db)
@@ -269,6 +280,57 @@ def test_quantity_transfer_moves_stock_through_transit_to_destination(db):
     assert destination_item["available_quantity"] == Decimal("0")
     assert destination_item["in_transit_quantity"] == Decimal("0")
 
+    putaway_tasks = list(
+        db.scalars(
+            select(LogisticTask)
+            .where(
+                LogisticTask.object_uid == transfer.transfer_uid,
+                LogisticTask.task_type == TaskType.PUTAWAY,
+            )
+            .order_by(LogisticTask.id)
+        )
+    )
+    assert len(putaway_tasks) == 2
+    assert all(task.status == TaskStatus.NEW for task in putaway_tasks)
+    assert all(task.priority == TaskPriority.HIGH for task in putaway_tasks)
+    assert all(task.warehouse_id == destination.id for task in putaway_tasks)
+    for index, task in enumerate(putaway_tasks, start=1):
+        start_logistic_task(db, task.task_uid, actor="storekeeper")
+        command = InboundReceiptPutawayRequest(
+            idempotency_key=f"transfer:putaway:{index}",
+            target_location_code=destination_storage.code,
+            actor="storekeeper",
+            reason="Размещение принятой передачи",
+        )
+        putaway_logistic_task(db, task.task_uid, command)
+        putaway_logistic_task(db, task.task_uid, command)
+
+    assert db.scalar(
+        select(StockPosition).where(StockPosition.location_id == transfer_in.id)
+    ) is None
+    assert db.scalar(
+        select(StockPosition.quantity).where(
+            StockPosition.location_id == destination_storage.id
+        )
+    ) == Decimal("8")
+    assert all(
+        allocation.status == "placed"
+        and allocation.storage_location_id == destination_storage.id
+        and allocation.placement_stock_document_id is not None
+        and allocation.placed_at is not None
+        for allocation in transfer.lines[0].allocations
+    )
+    payload = logistic_transfer_payload(db, transfer)
+    assert payload["quantity_placed_line_count"] == 1
+    assert payload["lines"][0]["placed_base_quantity"] == Decimal("8")
+    placed_item = search_stock(
+        db,
+        product.code,
+        warehouse_scope=None,
+        warehouse_id=destination.id,
+    )["items"][0]
+    assert placed_item["available_quantity"] == Decimal("8")
+
     documents = list(
         db.scalars(
             select(StockDocument)
@@ -287,6 +349,19 @@ def test_quantity_transfer_moves_stock_through_transit_to_destination(db):
     assert documents[1].movements[0].destination_warehouse_id is None
     assert documents[2].movements[0].source_warehouse_id is None
     assert documents[2].movements[0].destination_warehouse_id == destination.id
+    placement_documents = list(
+        db.scalars(
+            select(StockDocument).where(
+                StockDocument.document_type == "transfer_putaway"
+            )
+        )
+    )
+    assert len(placement_documents) == 2
+    assert all(
+        item.movements[0].source_warehouse_id == destination.id
+        and item.movements[0].destination_warehouse_id == destination.id
+        for item in placement_documents
+    )
 
     tasks = list(
         db.scalars(
@@ -306,6 +381,7 @@ def test_quantity_transfer_rejects_wrong_receiving_warehouse(db):
         _,
         _,
         transfer_out,
+        _,
         _,
         wrong_transfer_in,
         _,
@@ -354,6 +430,7 @@ def test_quantity_transfer_api_exposes_full_line_progress(db):
         _,
         transfer_out,
         transfer_in,
+        destination_storage,
         _,
         _,
     ) = transfer_context(db, quantities=("8",))
@@ -427,9 +504,183 @@ def test_quantity_transfer_api_exposes_full_line_progress(db):
             assert body["quantity_received_line_count"] == 1
             assert body["lines"][0]["received_base_quantity"] == "8.000000"
             assert body["receiving_stock_document_uid"]
+            putaway_task = db.scalar(
+                select(LogisticTask).where(
+                    LogisticTask.object_uid == transfer_uid,
+                    LogisticTask.task_type == TaskType.PUTAWAY,
+                )
+            )
+            assert putaway_task is not None
+            started = client.post(
+                f"/api/logistic-tasks/{putaway_task.task_uid}/start",
+                json={"actor": "api-test"},
+            )
+            assert started.status_code == 200, started.text
+            placed = client.post(
+                f"/api/logistic-tasks/{putaway_task.task_uid}/putaway",
+                json={
+                    "idempotency_key": "api:transfer:putaway",
+                    "target_location_code": destination_storage.code,
+                    "actor": "api-test",
+                    "reason": "Размещение передачи",
+                },
+            )
+            assert placed.status_code == 200, placed.text
+            assert placed.json()["status"] == "completed"
+            assert placed.json()["object_status"] == "placed"
 
             detail = client.get(f"/api/logistic-transfers/{transfer_uid}")
             assert detail.status_code == 200
             assert detail.json()["quantity_line_count"] == 1
+            assert detail.json()["quantity_placed_line_count"] == 1
+            assert detail.json()["lines"][0]["placed_base_quantity"] == "8.000000"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_transfer_quantity_putaway_rejects_source_warehouse_storage(db):
+    (
+        product,
+        pieces,
+        owner,
+        _,
+        _,
+        source_storages,
+        transfer_out,
+        transfer_in,
+        _,
+        _,
+        _,
+    ) = transfer_context(db, quantities=("8",))
+    transfer = create_quantity_transfer(db, product, pieces, owner)
+    reserve(db, transfer)
+    pick_transfer_quantities(
+        db,
+        transfer.transfer_uid,
+        LogisticTransferPickQuantityRequest(
+            transfer_out_location_code=transfer_out.code,
+            idempotency_key="transfer:pick:wrong-putaway",
+            actor="picker",
+            reason="Отбор",
+        ),
+    )
+    dispatch_transfer_quantities(
+        db,
+        transfer.transfer_uid,
+        LogisticTransferDispatchQuantityRequest(
+            idempotency_key="transfer:dispatch:wrong-putaway",
+            actor="loader",
+            reason="Отправка",
+        ),
+    )
+    receive_transfer_quantities(
+        db,
+        transfer.transfer_uid,
+        LogisticTransferReceiveQuantityRequest(
+            transfer_in_location_code=transfer_in.code,
+            idempotency_key="transfer:receive:wrong-putaway",
+            actor="receiver",
+            reason="Приёмка",
+        ),
+    )
+    task = db.scalar(
+        select(LogisticTask).where(LogisticTask.task_type == TaskType.PUTAWAY)
+    )
+    start_logistic_task(db, task.task_uid, actor="storekeeper")
+    with pytest.raises(HTTPException, match="storage in destination warehouse"):
+        putaway_logistic_task(
+            db,
+            task.task_uid,
+            InboundReceiptPutawayRequest(
+                idempotency_key="transfer:putaway:wrong-warehouse",
+                target_location_code=source_storages[0].code,
+                actor="storekeeper",
+                reason="Неверный склад",
+            ),
+        )
+
+
+def test_transfer_quantity_putaway_reversal_reopens_task(db):
+    (
+        product,
+        pieces,
+        owner,
+        _,
+        _,
+        _,
+        transfer_out,
+        transfer_in,
+        destination_storage,
+        _,
+        _,
+    ) = transfer_context(db, quantities=("8",))
+    transfer = create_quantity_transfer(db, product, pieces, owner)
+    reserve(db, transfer)
+    pick_transfer_quantities(
+        db,
+        transfer.transfer_uid,
+        LogisticTransferPickQuantityRequest(
+            transfer_out_location_code=transfer_out.code,
+            idempotency_key="transfer:pick:reverse-putaway",
+            actor="picker",
+            reason="Отбор",
+        ),
+    )
+    dispatch_transfer_quantities(
+        db,
+        transfer.transfer_uid,
+        LogisticTransferDispatchQuantityRequest(
+            idempotency_key="transfer:dispatch:reverse-putaway",
+            actor="loader",
+            reason="Отправка",
+        ),
+    )
+    receive_transfer_quantities(
+        db,
+        transfer.transfer_uid,
+        LogisticTransferReceiveQuantityRequest(
+            transfer_in_location_code=transfer_in.code,
+            idempotency_key="transfer:receive:reverse-putaway",
+            actor="receiver",
+            reason="Приёмка",
+        ),
+    )
+    task = db.scalar(
+        select(LogisticTask).where(LogisticTask.task_type == TaskType.PUTAWAY)
+    )
+    start_logistic_task(db, task.task_uid, actor="storekeeper")
+    putaway_logistic_task(
+        db,
+        task.task_uid,
+        InboundReceiptPutawayRequest(
+            idempotency_key="transfer:putaway:reverse",
+            target_location_code=destination_storage.code,
+            actor="storekeeper",
+            reason="Размещение",
+        ),
+    )
+    allocation = transfer.lines[0].allocations[0]
+    placement_uid = allocation.placement_stock_document.uid
+
+    reverse_stock_document(
+        db,
+        placement_uid,
+        StockDocumentReverseRequest(
+            idempotency_key="transfer:putaway:reversal",
+            actor="manager",
+            reason="Возврат задания на размещение",
+        ),
+    )
+
+    assert allocation.status == "received"
+    assert allocation.storage_location_id is None
+    assert allocation.placement_stock_document_id is None
+    assert allocation.placed_at is None
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.completed_at is None
+    assert db.scalar(
+        select(StockPosition.quantity).where(StockPosition.location_id == transfer_in.id)
+    ) == Decimal("8")
+    assert db.scalar(
+        select(StockPosition).where(StockPosition.location_id == destination_storage.id)
+    ) is None

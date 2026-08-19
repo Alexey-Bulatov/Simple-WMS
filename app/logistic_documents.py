@@ -284,6 +284,10 @@ def logistic_transfer_payload(db: Session, transfer: LogisticTransfer) -> dict:
             line["received_base_quantity"] == line["requested_base_quantity"]
             for line in quantity_lines
         ),
+        "quantity_placed_line_count": sum(
+            line["placed_base_quantity"] == line["requested_base_quantity"]
+            for line in quantity_lines
+        ),
         "picking_stock_document_uid": (
             transfer.picking_stock_document.uid
             if transfer.picking_stock_document
