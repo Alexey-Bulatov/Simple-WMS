@@ -3,7 +3,15 @@ from decimal import Decimal
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Product, ProductPackaging, StockPosition, UnitOfMeasure
+from app.models.entities import (
+    LogisticTransfer,
+    LogisticTransferAllocation,
+    LogisticTransferLine,
+    Product,
+    ProductPackaging,
+    StockPosition,
+    UnitOfMeasure,
+)
 from app.stock import stock_position_payload
 
 
@@ -56,9 +64,13 @@ def search_stock(
     serial_query = select(StockPosition.product_id).where(
         StockPosition.serial_number.ilike(contains)
     )
+    transfer_serial_query = select(LogisticTransferLine.product_id).where(
+        LogisticTransferLine.serial_number.ilike(contains)
+    )
     product_ids = set(db.scalars(product_query))
     product_ids.update(db.scalars(packaging_query))
     product_ids.update(db.scalars(serial_query))
+    product_ids.update(db.scalars(transfer_serial_query))
     if not product_ids and any(ord(character) > 127 for character in term):
         folded = term.casefold()
         product_ids.update(
@@ -113,6 +125,38 @@ def search_stock(
             for item in position_payloads
             if item["serial_number"]
         }
+        transit_query = (
+            select(LogisticTransferAllocation)
+            .join(LogisticTransferLine)
+            .join(LogisticTransfer)
+            .where(
+                LogisticTransferLine.product_id == product.id,
+                LogisticTransferAllocation.status == "in_transit",
+            )
+        )
+        if warehouse_scope is not None:
+            transit_query = transit_query.where(
+                or_(
+                    LogisticTransfer.source_warehouse_id.in_(warehouse_scope),
+                    LogisticTransfer.destination_warehouse_id.in_(warehouse_scope),
+                )
+            )
+        if warehouse_id is not None:
+            transit_query = transit_query.where(
+                or_(
+                    LogisticTransfer.source_warehouse_id == warehouse_id,
+                    LogisticTransfer.destination_warehouse_id == warehouse_id,
+                )
+            )
+        transit_allocations = list(db.scalars(transit_query))
+        transit_quantity = sum(
+            (allocation.quantity for allocation in transit_allocations), Decimal("0")
+        )
+        serial_numbers.update(
+            allocation.line.serial_number.upper()
+            for allocation in transit_allocations
+            if allocation.line.serial_number
+        )
         reason = _match_reason(product, packagings, serial_numbers, term)
         base_uom = db.get(UnitOfMeasure, product.base_uom_id) if product.base_uom_id else None
         packaging_payloads = []
@@ -156,7 +200,8 @@ def search_stock(
                 "accountability_period_days": product.accountability_period_days,
                 "total_quantity": sum(
                     (item["quantity"] for item in position_payloads), Decimal("0")
-                ),
+                )
+                + transit_quantity,
                 "available_quantity": sum(
                     (item["available_quantity"] for item in position_payloads),
                     Decimal("0"),
@@ -176,7 +221,8 @@ def search_stock(
                 "in_transit_quantity": sum(
                     (item["in_transit_quantity"] for item in position_payloads),
                     Decimal("0"),
-                ),
+                )
+                + transit_quantity,
                 "match_reason": reason,
                 "packagings": packaging_payloads,
                 "positions": position_payloads,

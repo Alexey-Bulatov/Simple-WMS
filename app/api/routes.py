@@ -81,7 +81,11 @@ from app.schemas import (
     LogisticShipmentRead,
     LogisticShipmentReserveQuantityRequest,
     LogisticTransferCreate,
+    LogisticTransferDispatchQuantityRequest,
+    LogisticTransferPickQuantityRequest,
     LogisticTransferRead,
+    LogisticTransferReceiveQuantityRequest,
+    LogisticTransferReserveQuantityRequest,
     LogisticUnitTypeCreate,
     LogisticUnitTypeRead,
     LocationCreate,
@@ -184,6 +188,12 @@ from app.quantitative_shipments import (
     load_shipment_quantities,
     pick_shipment_quantities,
     reserve_shipment_quantities,
+)
+from app.quantitative_transfers import (
+    dispatch_transfer_quantities,
+    pick_transfer_quantities,
+    receive_transfer_quantities,
+    reserve_transfer_quantities,
 )
 from app.stock import stock_position_payload
 from app.stock_search import search_stock
@@ -1116,6 +1126,58 @@ def api_reserve_logistic_transfer_unit(
     db: Session = Depends(get_db),
 ) -> dict:
     transfer = reserve_unit_for_logistic_transfer(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/reserve-quantities",
+    response_model=LogisticTransferRead,
+)
+def api_reserve_logistic_transfer_quantities(
+    transfer_uid: str,
+    payload: LogisticTransferReserveQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = reserve_transfer_quantities(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/pick-quantities",
+    response_model=LogisticTransferRead,
+)
+def api_pick_logistic_transfer_quantities(
+    transfer_uid: str,
+    payload: LogisticTransferPickQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = pick_transfer_quantities(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/dispatch-quantities",
+    response_model=LogisticTransferRead,
+)
+def api_dispatch_logistic_transfer_quantities(
+    transfer_uid: str,
+    payload: LogisticTransferDispatchQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = dispatch_transfer_quantities(db, transfer_uid, payload)
+    return logistic_transfer_payload(db, transfer)
+
+
+@router.post(
+    "/logistic-transfers/{transfer_uid}/receive-quantities",
+    response_model=LogisticTransferRead,
+)
+def api_receive_logistic_transfer_quantities(
+    transfer_uid: str,
+    payload: LogisticTransferReceiveQuantityRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    transfer = receive_transfer_quantities(db, transfer_uid, payload)
     return logistic_transfer_payload(db, transfer)
 
 
