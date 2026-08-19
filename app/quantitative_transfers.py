@@ -135,6 +135,9 @@ def _allocation_payload(allocation: LogisticTransferAllocation) -> dict:
             if allocation.transfer_in_location
             else None
         ),
+        "storage_location_code": (
+            allocation.storage_location.code if allocation.storage_location else None
+        ),
         "picking_stock_document_uid": (
             allocation.picking_stock_document.uid
             if allocation.picking_stock_document
@@ -150,9 +153,15 @@ def _allocation_payload(allocation: LogisticTransferAllocation) -> dict:
             if allocation.receiving_stock_document
             else None
         ),
+        "placement_stock_document_uid": (
+            allocation.placement_stock_document.uid
+            if allocation.placement_stock_document
+            else None
+        ),
         "picked_at": allocation.picked_at,
         "dispatched_at": allocation.dispatched_at,
         "received_at": allocation.received_at,
+        "placed_at": allocation.placed_at,
     }
 
 
@@ -185,6 +194,14 @@ def quantity_lines_payload(transfer: LogisticTransfer) -> list[dict]:
             "picked_base_quantity": line.picked_base_quantity,
             "dispatched_base_quantity": line.dispatched_base_quantity,
             "received_base_quantity": line.received_base_quantity,
+            "placed_base_quantity": sum(
+                (
+                    allocation.quantity
+                    for allocation in line.allocations
+                    if allocation.placement_stock_document_id is not None
+                ),
+                Decimal("0"),
+            ),
             "note": line.note,
             "allocations": [_allocation_payload(item) for item in line.allocations],
         }

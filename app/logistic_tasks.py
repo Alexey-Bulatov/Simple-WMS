@@ -14,6 +14,8 @@ from app.models.entities import (
     LogisticShipment,
     LogisticTask,
     LogisticTransfer,
+    LogisticTransferAllocation,
+    LogisticTransferLine,
     LogisticUnit,
     StockDocument,
     Warehouse,
@@ -157,6 +159,32 @@ def get_task_transfer(db: Session, object_uid: str) -> LogisticTransfer:
     return transfer
 
 
+def get_task_transfer_allocation(
+    db: Session,
+    transfer: LogisticTransfer,
+    parameters: dict,
+    *,
+    for_update: bool = False,
+) -> LogisticTransferAllocation:
+    allocation_id = parameters.get("transfer_allocation_id")
+    if not isinstance(allocation_id, int):
+        raise bad_request("transfer putaway task requires transfer_allocation_id")
+    query = (
+        select(LogisticTransferAllocation)
+        .join(LogisticTransferAllocation.line)
+        .where(
+            LogisticTransferAllocation.id == allocation_id,
+            LogisticTransferLine.transfer_id == transfer.id,
+        )
+    )
+    if for_update:
+        query = query.with_for_update()
+    allocation = db.scalar(query)
+    if allocation is None:
+        raise bad_request("allocation does not belong to the logistic transfer")
+    return allocation
+
+
 def get_task_inbound_receipt(db: Session, object_uid: str) -> InboundReceipt:
     receipt = db.scalar(
         select(InboundReceipt).where(
@@ -234,7 +262,13 @@ def task_object_status(db: Session, task: LogisticTask) -> str | None:
     if task.object_type == "logistic_inventory":
         return get_task_inventory(db, task.object_uid).status.value
     if task.object_type == "logistic_transfer":
-        return get_task_transfer(db, task.object_uid).status.value
+        transfer = get_task_transfer(db, task.object_uid)
+        if task.task_type == TaskType.PUTAWAY:
+            allocation = get_task_transfer_allocation(
+                db, transfer, task.parameters or {}
+            )
+            return "placed" if allocation.placement_stock_document_id else "ready"
+        return transfer.status.value
     if task.object_type == "inbound_receipt":
         receipt = get_task_inbound_receipt(db, task.object_uid)
         if task.task_type == TaskType.PUTAWAY:
@@ -373,6 +407,26 @@ def validate_document_task(
     object_uid: str,
     parameters: dict,
 ) -> object:
+    if task_type == TaskType.PUTAWAY and "transfer_allocation_id" in parameters:
+        transfer = get_task_transfer(db, object_uid)
+        if transfer.destination_warehouse_id != warehouse.id:
+            raise bad_request("transfer putaway belongs to destination warehouse")
+        if transfer.status != TransferStatus.COMPLETED:
+            raise bad_request("transfer must be received before putaway")
+        allocation = get_task_transfer_allocation(db, transfer, parameters)
+        if allocation.placement_stock_document_id is not None:
+            raise bad_request("transfer allocation is already placed")
+        source = allocation.transfer_in_location
+        if (
+            allocation.status != "received"
+            or source is None
+            or source.kind != LocationKind.TRANSFER_IN
+            or source.warehouse_id != transfer.destination_warehouse_id
+        ):
+            raise bad_request("transfer allocation is not ready for putaway")
+        if allocation.line.quality_status != "released":
+            raise bad_request("quarantine stock cannot be placed without a quality decision")
+        return transfer
     if task_type in {TaskType.RECEIPT_CONTROL, TaskType.PUTAWAY}:
         return validate_inbound_receipt_task(
             db,
@@ -435,13 +489,18 @@ def create_logistic_task(
     if warehouse is None:
         raise not_found("warehouse")
     object_uid = payload.object_uid.strip().upper()
-    object_type = TASK_OBJECT_TYPES[payload.task_type]
     parameters = normalize_task_parameters(
         db,
         warehouse=warehouse,
         task_type=payload.task_type,
         parameters=payload.parameters,
     )
+    object_type = TASK_OBJECT_TYPES[payload.task_type]
+    if (
+        payload.task_type == TaskType.PUTAWAY
+        and "transfer_allocation_id" in parameters
+    ):
+        object_type = "logistic_transfer"
     if object_type == "logistic_unit":
         validate_unit_task(
             db,
@@ -465,6 +524,11 @@ def create_logistic_task(
         phase=(parameters.get("phase") if payload.task_type == TaskType.TRANSFER else None),
         receipt_result_id=(
             parameters.get("receipt_result_id")
+            if payload.task_type == TaskType.PUTAWAY
+            else None
+        ),
+        transfer_allocation_id=(
+            parameters.get("transfer_allocation_id")
             if payload.task_type == TaskType.PUTAWAY
             else None
         ),
@@ -614,6 +678,9 @@ def task_operation_is_complete(db: Session, task: LogisticTask) -> bool:
         return get_task_inventory(db, task.object_uid).status == InventoryStatus.COMPLETED
     if task.object_type == "logistic_transfer":
         transfer = get_task_transfer(db, task.object_uid)
+        if task.task_type == TaskType.PUTAWAY:
+            allocation = get_task_transfer_allocation(db, transfer, parameters)
+            return allocation.placement_stock_document_id is not None
         if parameters.get("phase") == "dispatch":
             return transfer.status in {
                 TransferStatus.IN_TRANSIT,
@@ -640,6 +707,7 @@ def active_logistic_task(
     object_uid: str,
     phase: str | None = None,
     receipt_result_id: int | None = None,
+    transfer_allocation_id: int | None = None,
 ) -> LogisticTask | None:
     tasks = list(
         db.scalars(
@@ -652,8 +720,18 @@ def active_logistic_task(
             .order_by(LogisticTask.created_at)
         )
     )
-    if phase is None and receipt_result_id is None:
+    if phase is None and receipt_result_id is None and transfer_allocation_id is None:
         return tasks[0] if tasks else None
+    if transfer_allocation_id is not None:
+        return next(
+            (
+                task
+                for task in tasks
+                if (task.parameters or {}).get("transfer_allocation_id")
+                == transfer_allocation_id
+            ),
+            None,
+        )
     if receipt_result_id is not None:
         return next(
             (
@@ -747,12 +825,18 @@ def ensure_logistic_task(
         if task_type == TaskType.PUTAWAY
         else None
     )
+    transfer_allocation_id = (
+        normalized_parameters.get("transfer_allocation_id")
+        if task_type == TaskType.PUTAWAY
+        else None
+    )
     existing = active_logistic_task(
         db,
         task_type=task_type,
         object_uid=object_uid,
         phase=phase,
         receipt_result_id=receipt_result_id,
+        transfer_allocation_id=transfer_allocation_id,
     )
     if existing is not None:
         return existing
@@ -928,8 +1012,18 @@ def sync_logistic_transfer_tasks(
         object_uid=transfer.transfer_uid,
         phase="receive",
     )
+    putaway_tasks = list(
+        db.scalars(
+            select(LogisticTask).where(
+                LogisticTask.task_type == TaskType.PUTAWAY,
+                LogisticTask.object_type == "logistic_transfer",
+                LogisticTask.object_uid == transfer.transfer_uid,
+                LogisticTask.status.in_(ACTIVE_TASK_STATUSES),
+            )
+        )
+    )
     if transfer.status == TransferStatus.CANCELLED:
-        for task in (dispatch_task, receive_task):
+        for task in [dispatch_task, receive_task, *putaway_tasks]:
             if task is not None:
                 cancel_logistic_task_automatically(db, task, actor=actor)
         return
@@ -966,8 +1060,184 @@ def sync_logistic_transfer_tasks(
                 title=f"Принять передачу {transfer.transfer_uid}",
                 parameters={"phase": "receive"},
             )
-    elif transfer.status == TransferStatus.COMPLETED and receive_task is not None:
-        complete_logistic_task_automatically(db, receive_task, actor=actor)
+    elif transfer.status == TransferStatus.COMPLETED:
+        if receive_task is not None:
+            complete_logistic_task_automatically(db, receive_task, actor=actor)
+        if destination is None:
+            return
+        for line in transfer.lines:
+            for allocation in line.allocations:
+                task = active_logistic_task(
+                    db,
+                    task_type=TaskType.PUTAWAY,
+                    object_uid=transfer.transfer_uid,
+                    transfer_allocation_id=allocation.id,
+                )
+                if allocation.placement_stock_document_id is not None:
+                    if task is not None:
+                        complete_logistic_task_automatically(db, task, actor=actor)
+                    continue
+                source = allocation.transfer_in_location
+                if (
+                    allocation.status != "received"
+                    or source is None
+                    or source.kind != LocationKind.TRANSFER_IN
+                    or line.quality_status != "released"
+                ):
+                    continue
+                ensure_logistic_task(
+                    db,
+                    warehouse_code=destination.code,
+                    task_type=TaskType.PUTAWAY,
+                    object_uid=transfer.transfer_uid,
+                    actor=actor,
+                    priority=TaskPriority.HIGH,
+                    title=(
+                        f"Разместить передачу {transfer.transfer_uid}: "
+                        f"{line.product.code}, {allocation.quantity} "
+                        f"{allocation.base_uom.symbol}"
+                    ),
+                    parameters={
+                        "transfer_uid": transfer.transfer_uid,
+                        "transfer_allocation_id": allocation.id,
+                        "product_code": line.product.code,
+                        "product_name": line.product.name,
+                        "quantity": str(allocation.quantity),
+                        "uom_symbol": allocation.base_uom.symbol,
+                        "source_location_code": source.code,
+                    },
+                )
+
+
+def putaway_logistic_transfer_allocation(
+    db: Session,
+    task_uid: str,
+    payload: InboundReceiptPutawayRequest,
+) -> LogisticTask:
+    task = get_logistic_task(db, task_uid, for_update=True)
+    if task.task_type != TaskType.PUTAWAY or task.object_type != "logistic_transfer":
+        raise bad_request("task is not a transfer putaway task")
+    transfer = get_task_transfer(db, task.object_uid)
+    allocation = get_task_transfer_allocation(
+        db,
+        transfer,
+        task.parameters or {},
+        for_update=True,
+    )
+    if allocation.placement_stock_document_id is not None:
+        document = db.get(StockDocument, allocation.placement_stock_document_id)
+        attributes = document.attributes if document is not None else {}
+        if (
+            document is not None
+            and document.idempotency_key == payload.idempotency_key
+            and document.actor == payload.actor
+            and document.reason == payload.reason
+            and attributes.get("target_location_code") == payload.target_location_code
+        ):
+            return task
+        raise conflict("transfer allocation is already placed by another command")
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise bad_request("putaway task must be started before placement")
+    if task.assigned_to and task.assigned_to != payload.actor:
+        raise bad_request("task is assigned to another operator")
+    if transfer.status != TransferStatus.COMPLETED:
+        raise bad_request("transfer must be received before putaway")
+    source = allocation.transfer_in_location
+    if (
+        allocation.status != "received"
+        or source is None
+        or source.kind != LocationKind.TRANSFER_IN
+        or source.warehouse_id != transfer.destination_warehouse_id
+    ):
+        raise bad_request("transfer allocation is not in a transfer-in location")
+    target = get_active_location(db, payload.target_location_code)
+    if (
+        target.warehouse_id != transfer.destination_warehouse_id
+        or target.kind != LocationKind.STORAGE
+    ):
+        raise bad_request("putaway target must be storage in destination warehouse")
+    if allocation.line.quality_status != "released":
+        raise bad_request("quarantine stock cannot be placed without a quality decision")
+
+    reservation = allocation.reservation
+    stock_payload = StockDocumentPost(
+        uid=(
+            "TRF-PUT-"
+            f"{hashlib.sha256(payload.idempotency_key.encode()).hexdigest()[:20].upper()}"
+        ),
+        document_type="transfer_putaway",
+        reference_type="logistic_transfer_allocation",
+        reference_uid=f"{transfer.transfer_uid}:{allocation.id}",
+        idempotency_key=payload.idempotency_key,
+        actor=payload.actor,
+        reason=payload.reason,
+        attributes={
+            "transfer_id": transfer.id,
+            "transfer_uid": transfer.transfer_uid,
+            "transfer_allocation_id": allocation.id,
+            "task_uid": task.task_uid,
+            "source_location_code": source.code,
+            "target_location_code": target.code,
+        },
+        movements=[
+            StockMovementPost(
+                product_id=reservation.product_id,
+                batch_id=reservation.batch_id,
+                serial_number=reservation.serial_number,
+                owner_id=reservation.owner_id,
+                source_quality_status=reservation.quality_status,
+                destination_quality_status=reservation.quality_status,
+                input_quantity=allocation.quantity,
+                input_uom_id=allocation.base_uom_id,
+                source_location_id=source.id,
+                destination_location_id=target.id,
+            )
+        ],
+    )
+
+    def finalize(document: StockDocument) -> None:
+        allocation.status = "placed"
+        allocation.storage_location_id = target.id
+        allocation.placement_stock_document_id = document.id
+        allocation.placed_at = utcnow()
+        complete_logistic_task_automatically(db, task, actor=payload.actor)
+        create_event(
+            db,
+            operation="logistic_transfer_quantity_placed",
+            object_type="logistic_transfer",
+            object_uid=transfer.transfer_uid,
+            actor=payload.actor,
+            reason=payload.reason,
+            before={
+                "transfer_allocation_id": allocation.id,
+                "location_code": source.code,
+            },
+            after={
+                "transfer_allocation_id": allocation.id,
+                "location_code": target.code,
+                "stock_document_uid": document.uid,
+                "task_uid": task.task_uid,
+            },
+        )
+
+    from app.stock_ledger import post_stock_document
+
+    post_stock_document(db, stock_payload, before_commit=finalize)
+    db.refresh(task)
+    return task
+
+
+def putaway_logistic_task(
+    db: Session,
+    task_uid: str,
+    payload: InboundReceiptPutawayRequest,
+) -> LogisticTask:
+    task = get_logistic_task(db, task_uid)
+    if task.object_type == "inbound_receipt":
+        return putaway_inbound_receipt_result(db, task_uid, payload)
+    if task.object_type == "logistic_transfer":
+        return putaway_logistic_transfer_allocation(db, task_uid, payload)
+    raise bad_request("task does not support quantitative putaway")
 
 
 def sync_inbound_receipt_tasks(
@@ -1274,10 +1544,21 @@ def sync_logistic_tasks(
         )
     ):
         sync_logistic_inventory_tasks(db, inventory, actor=actor)
+    pending_transfer_putaway_ids = (
+        select(LogisticTransferLine.transfer_id)
+        .join(LogisticTransferAllocation)
+        .where(
+            LogisticTransferAllocation.status == "received",
+            LogisticTransferAllocation.placement_stock_document_id.is_(None),
+        )
+    )
     for transfer in db.scalars(
         select(LogisticTransfer).where(
-            LogisticTransfer.status.not_in(
-                {TransferStatus.COMPLETED, TransferStatus.CANCELLED}
+            (
+                LogisticTransfer.status.not_in(
+                    {TransferStatus.COMPLETED, TransferStatus.CANCELLED}
+                )
+                | LogisticTransfer.id.in_(pending_transfer_putaway_ids)
             ),
             (
                 (LogisticTransfer.source_warehouse_id == warehouse.id)

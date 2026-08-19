@@ -2106,12 +2106,15 @@ class LogisticTransferAllocationRead(BaseModel):
     source_logistic_unit_uid: str | None
     transfer_out_location_code: str | None
     transfer_in_location_code: str | None
+    storage_location_code: str | None
     picking_stock_document_uid: str | None
     dispatch_stock_document_uid: str | None
     receiving_stock_document_uid: str | None
+    placement_stock_document_uid: str | None
     picked_at: datetime | None
     dispatched_at: datetime | None
     received_at: datetime | None
+    placed_at: datetime | None
 
 
 class LogisticTransferLineRead(BaseModel):
@@ -2141,6 +2144,7 @@ class LogisticTransferLineRead(BaseModel):
     picked_base_quantity: Decimal
     dispatched_base_quantity: Decimal
     received_base_quantity: Decimal
+    placed_base_quantity: Decimal
     note: str | None
     allocations: list[LogisticTransferAllocationRead]
 
@@ -2184,6 +2188,7 @@ class LogisticTransferRead(BaseModel):
     quantity_picked_line_count: int
     quantity_dispatched_line_count: int
     quantity_received_line_count: int
+    quantity_placed_line_count: int
     picking_stock_document_uid: str | None
     dispatch_stock_document_uid: str | None
     receiving_stock_document_uid: str | None
